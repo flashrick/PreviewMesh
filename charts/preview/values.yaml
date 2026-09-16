@@ -1,0 +1,12 @@
+image: ghcr.io/example/preview@sha256:0000000000000000000000000000000000000000000000000000000000000000
+commitSHA: "0000000000000000000000000000000000000000"
+port: 8080
+hostname: preview.example.test
+imagePullSecret: ghcr-pull
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi

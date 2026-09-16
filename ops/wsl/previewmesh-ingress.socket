@@ -1,0 +1,10 @@
+[Unit]
+Description=PreviewMesh Windows localhost ingress
+
+[Socket]
+ListenStream=127.0.0.1:80
+Accept=no
+Service=previewmesh-ingress.service
+
+[Install]
+WantedBy=sockets.target

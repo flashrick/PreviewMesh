@@ -1,0 +1,184 @@
+name: PreviewMesh lifecycle
+on:
+  workflow_dispatch:
+    inputs:
+      repository_id:
+        description: Registered numeric repository ID
+        required: true
+        type: string
+      source_repository:
+        description: Registered owner/name
+        required: true
+        type: string
+      pr_number:
+        description: Canonical positive PR number
+        required: true
+        type: string
+permissions:
+  contents: read
+# The public repository ships this workflow as a template. A private control
+# repository must explicitly enable it before any deployment job can run.
+# All accepted identities are canonical before any source build or local mutation.
+concurrency:
+  group: previewmesh-${{ inputs.repository_id }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && vars.PREVIEWMESH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      pending_reporting: ${{ steps.pending.outcome }}
+      failure_reporting: ${{ steps.failure_report.outcome }}
+      sha: ${{ steps.state.outputs.sha }}
+      image: ${{ steps.build.outputs.image }}
+      source_secret: ${{ steps.registration.outputs.source_secret }}
+      port: ${{ steps.registration.outputs.port }}
+    env:
+      REPOSITORY_ID: ${{ inputs.repository_id }}
+      SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.25.1'
+          cache: false
+      - name: Compile trusted tools
+        working-directory: control
+        run: |
+          go build -o "$RUNNER_TEMP/control" ./cmd/control
+          go build -o "$RUNNER_TEMP/previewmesh" ./cmd/previewmesh
+      - name: Resolve trusted registration
+        id: registration
+        working-directory: control
+        run: |
+          "$RUNNER_TEMP/control" resolve --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER"
+      - name: Read current PR and authorize
+        id: state
+        working-directory: control
+        env:
+          SOURCE_TOKEN: ${{ secrets[steps.registration.outputs.source_secret] }}
+        run: |
+          "$RUNNER_TEMP/control" inspect --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER"
+      - name: Report pending attempt
+        id: pending
+        if: steps.state.outputs.state == 'open'
+        continue-on-error: true
+        working-directory: control
+        env:
+          SOURCE_TOKEN: ${{ secrets[steps.registration.outputs.source_secret] }}
+          ATTEMPT_SHA: ${{ steps.state.outputs.sha }}
+        run: |
+          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state pending --description 'Building preview' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Check out exact source revision
+        if: steps.state.outputs.state == 'open'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ steps.registration.outputs.source_repository }}
+          ref: ${{ steps.state.outputs.sha }}
+          token: ${{ secrets[steps.registration.outputs.source_secret] }}
+          path: source
+          persist-credentials: false
+      - name: Build and push immutable image
+        if: steps.state.outputs.state == 'open'
+        id: build
+        working-directory: control
+        env:
+          ATTEMPT_SHA: ${{ steps.state.outputs.sha }}
+          PUBLISH_TOKEN: ${{ github.token }}
+          DOCKER_CONFIG: ${{ runner.temp }}/previewmesh-docker
+        run: |
+          mkdir -p "$DOCKER_CONFIG" evidence
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$PUBLISH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          "$RUNNER_TEMP/previewmesh" build --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/previewmesh-r$REPOSITORY_ID" --source-dir "$GITHUB_WORKSPACE/source" --evidence evidence/build.csv --result-file evidence/build.json --timeout 20m
+          python3 - <<'PY'
+          import json, os
+          with open('evidence/build.json') as f: result = json.load(f)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f: f.write('image=' + result['image'] + '\n')
+          PY
+      - name: Report failed build or authorization
+        id: failure_report
+        if: failure() && steps.state.outputs.sha != ''
+        continue-on-error: true
+        working-directory: control
+        env:
+          SOURCE_TOKEN: ${{ secrets[steps.registration.outputs.source_secret] }}
+          ATTEMPT_SHA: ${{ steps.state.outputs.sha }}
+        run: |
+          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state failure --description 'Preview build or authorization failed' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: build-${{ github.run_attempt }}
+          path: control/evidence/
+          if-no-files-found: ignore
+  local:
+    needs: build
+    if: vars.PREVIEWMESH_ENABLED == 'true' && needs.build.result == 'success'
+    runs-on: [self-hosted, Linux, X64, previewmesh]
+    timeout-minutes: 45
+    env:
+      REPOSITORY_ID: ${{ inputs.repository_id }}
+      SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      BUILT_SHA: ${{ needs.build.outputs.sha }}
+      BUILT_IMAGE: ${{ needs.build.outputs.image }}
+      SOURCE_TOKEN: ${{ secrets[needs.build.outputs.source_secret] }}
+      PREVIEWMESH_GHCR_USER: ${{ github.repository_owner }}
+      PREVIEWMESH_GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Apply current desired state
+        run: bash scripts/local-attempt.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: local-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: ignore
+  report:
+    needs: [build, local]
+    if: always() && github.ref == 'refs/heads/main' && vars.PREVIEWMESH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BUILD_RESULT: ${{ needs.build.result }}
+      PENDING_REPORTING: ${{ needs.build.outputs.pending_reporting }}
+      BUILD_FAILURE_REPORTING: ${{ needs.build.outputs.failure_reporting }}
+      LOCAL_RESULT: ${{ needs.local.result }}
+      REQUESTED_SHA: ${{ needs.build.outputs.sha }}
+      REPOSITORY_ID: ${{ inputs.repository_id }}
+      SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          pattern: '*-${{ github.run_attempt }}'
+          path: collected
+      - name: Combine partial evidence and summarize
+        run: python3 scripts/report.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: combined-${{ github.run_attempt }}
+          path: evidence/

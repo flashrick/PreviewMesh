@@ -1,0 +1,17 @@
+[Unit]
+Description=Forward Windows localhost requests to K3s Traefik
+Requires=k3s.service
+After=k3s.service
+Requires=previewmesh-ingress.socket
+After=previewmesh-ingress.socket
+
+[Service]
+# Create /etc/previewmesh/ingress.env with the ClusterIP and port for your cluster.
+Type=notify
+Sockets=previewmesh-ingress.socket
+EnvironmentFile=-/etc/previewmesh/ingress.env
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd ${PREVIEWMESH_TRAEFIK_ENDPOINT}
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes

@@ -1,0 +1,12 @@
+# Keep the packaged Traefik Service internal. The WSL systemd proxy owns the
+# host-facing port 80 and forwards to Traefik's ClusterIP.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        type: ClusterIP

@@ -1,0 +1,95 @@
+"""Run orchestration regression checks with tool doubles, without GitHub or Kubernetes."""
+import csv
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+sha = 'a' * 40
+control = '''#!/usr/bin/env python3
+import json, os, pathlib, sys
+command = sys.argv[1]
+scenario = os.environ['SCENARIO']
+if command == 'resolve':
+    print('{}')
+elif command == 'inspect':
+    counter = pathlib.Path('counter')
+    count = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(count + 1))
+    if scenario == 'inspect_failure': sys.exit(1)
+    state = 'closed' if scenario in ['pre_closed', 'report_failure'] or (scenario == 'post_closed' and count) else 'open'
+    sha = 'b' * 40 if scenario == 'pre_superseded' or (scenario == 'post_superseded' and count) else 'a' * 40
+    print(json.dumps({'state':state, 'sha':sha, 'port':8080}))
+elif command == 'status':
+    if scenario == 'report_failure': sys.exit(1)
+'''
+preview = '''#!/usr/bin/env python3
+import json, os, pathlib, sys
+command = sys.argv[1]
+with open('mutations', 'a') as f: f.write(command+'\\n')
+failed = os.environ['SCENARIO'] == 'deploy_failure' and command == 'deploy'
+result = {'result':'failure' if failed else 'success', 'served_sha':'a'*40,
+          'cleanup':'confirmed_absent' if command == 'cleanup' else 'not_attempted'}
+pathlib.Path(sys.argv[sys.argv.index('--result-file')+1]).write_text(json.dumps(result))
+sys.exit(1 if failed else 0)
+'''
+with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
+    temp = Path(temp)
+    for scenario, expected, mutations, exitcode in [
+        ('pre_closed', 'removed', ['cleanup'], 0),
+        ('pre_superseded', 'superseded', [], 0),
+        ('post_closed', 'removed', ['deploy', 'cleanup'], 0),
+        ('post_superseded', 'superseded', ['deploy'], 0),
+        ('ready', 'ready', ['deploy'], 0),
+        ('deploy_failure', 'failure', ['deploy'], 1),
+        ('inspect_failure', 'failure', [], 1),
+        ('report_failure', 'removed', ['cleanup'], 0),
+    ]:
+        case = temp / scenario
+        case.mkdir()
+        tools = case / 'tools'
+        tools.mkdir()
+        for name, content in [('control', control), ('previewmesh', preview)]:
+            path = tools / name
+            path.write_text(content)
+            path.chmod(0o700)
+        go = tools / 'go'
+        go.write_text('#!/bin/sh\ncp "$MOCK_TOOLS/$(basename "$3")" "$3"\n')
+        go.chmod(0o700)
+        env = dict(os.environ, PATH=str(tools)+os.pathsep+os.environ['PATH'], MOCK_TOOLS=str(tools),
+                   SCENARIO=scenario, REPOSITORY_ID='12', SOURCE_REPOSITORY='owner/demo', PR_NUMBER='3',
+                   BUILT_SHA=sha, BUILT_IMAGE='unused', GITHUB_SERVER_URL='https://github.com',
+                   GITHUB_REPOSITORY='owner/control', GITHUB_RUN_ID='1')
+        completed = subprocess.run(['bash', str(root/'scripts/local-attempt.sh')], cwd=case, env=env, capture_output=True, text=True)
+        assert completed.returncode == exitcode, (scenario, completed.stderr)
+        outcome = json.loads((case/'evidence/outcome.json').read_text())
+        assert outcome['outcome'] == expected, (scenario, outcome)
+        actual = (case/'mutations').read_text().splitlines() if (case/'mutations').exists() else []
+        assert actual == mutations, (scenario, actual)
+        if scenario == 'report_failure':
+            assert outcome['reporting_result'] == 'failure'
+
+    # Timing metadata is available, but it must not hide missing lifecycle evidence.
+    report = temp/'report'
+    (report/'collected/local').mkdir(parents=True)
+    env = dict(os.environ, GITHUB_REPOSITORY='owner/control', GITHUB_RUN_ID='1', GITHUB_RUN_ATTEMPT='1',
+               GH_TOKEN='test', BUILD_RESULT='success', LOCAL_RESULT='failure', GITHUB_STEP_SUMMARY=str(report/'summary.md'))
+    fake_api = '''import io,json,runpy,sys,urllib.request
+run={'run_started_at':'2026-01-01T00:00:00Z'}
+jobs={'jobs':[{'name':'build','created_at':'2026-01-01T00:00:00Z','started_at':'2026-01-01T00:00:01Z','status':'completed'}]}
+urllib.request.urlopen=lambda req,timeout: io.StringIO(json.dumps(jobs if '/jobs?' in req.full_url else run))
+runpy.run_path(sys.argv[1],run_name='__main__')
+'''
+    subprocess.run(['python3','-c',fake_api,str(root/'scripts/report.py')], cwd=report, env=env, check=True)
+    with (report/'evidence/combined.csv').open() as f:
+        rows = list(csv.DictReader(f))
+    assert any(r['stage']=='queue:build' for r in rows)
+    assert any(r['stage']=='attempt' and r['result']=='failure' and r['error'] for r in rows)
+    (report/'collected/local/cleanup.json').write_text(json.dumps({'result':'failure','failed_stage':'cleanup','error':'API unavailable','cleanup':'not_attempted'}))
+    subprocess.run(['python3','-c',fake_api,str(root/'scripts/report.py')], cwd=report, env=env, check=True)
+    summary = json.loads((report/'evidence/summary.json').read_text())
+    assert summary['failed_stage']=='cleanup' and summary['error']=='API unavailable'
+    assert summary['remaining_namespace_resources'] is None
+print('PASS: 8 current-state scenarios and reporting regressions (tool doubles only).')

@@ -1,0 +1,12 @@
+[Unit]
+Description=Map Docker bridge TCP egress to WSL ephemeral ports
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/previewmesh-docker-egress
+
+[Install]
+WantedBy=multi-user.target

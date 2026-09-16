@@ -1,0 +1,8 @@
+[
+  {
+    "repository_id": "123456789",
+    "source_repository": "YOUR_GITHUB_OWNER/your-application",
+    "port": 8080,
+    "source_secret": "SOURCE_APP"
+  }
+]
