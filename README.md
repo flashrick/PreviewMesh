@@ -244,6 +244,30 @@ curl --fail --max-time 10 "http://$PREVIEW_HOST/health"
 
 The response must contain the SHA of the pull request head. Closing or merging the pull request should remove the owned namespace. Repeated close notifications should remain safe.
 
+## Updating a private control repository
+
+Creating a repository from the GitHub template copies the files but does not create a synchronizable fork. For the easiest long-term updates, preserve the Git history when creating the private control repository and keep the public repository as `upstream`:
+
+```bash
+git remote add upstream https://github.com/flashrick/PreviewMesh.git
+git fetch upstream main
+scripts/update-upstream.sh --remote upstream --ref main
+```
+
+The script creates a review branch and never pushes it. Review the branch, run the local checks, then push it to the private repository and open a pull request:
+
+```bash
+git push -u origin update/previewmesh-main-YYYYMMDDHHMMSS
+```
+
+`config/repositories.json` is customer-owned and is restored from the current private branch during the update. GitHub secrets are outside Git and are not changed. If the update has conflicts outside that registry file, the script stops for manual review; do not resolve workflow or deployment changes by blindly choosing one side.
+
+New copies also include **Update PreviewMesh from upstream**, which checks weekly and can be started manually. It creates an update PR on a GitHub-hosted runner. Set the optional repository variable `PREVIEWMESH_UPSTREAM_REPOSITORY` if the public template is maintained under another owner.
+
+If the private repository was created with **Use this template**, its history is unrelated to the template. The first updater run creates a small history-bridge commit while preserving the current private tree; later updates use normal Git merges. The first bridge still needs review, and any customer-specific files outside the registry remain the customer's responsibility.
+
+The copied `templates/source-notify.yml` in each source repository and installed WSL/K3s files are separate update surfaces. Synchronize or reapply them when their corresponding upstream files change.
+
 ## Local verification
 
 Run these checks from the private control checkout before changing GitHub or K3s:

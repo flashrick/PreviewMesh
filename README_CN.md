@@ -244,6 +244,30 @@ curl --fail --max-time 10 "http://$PREVIEW_HOST/health"
 
 响应必须包含 PR head 的 SHA。关闭或合并 PR 后，应删除其归属的 Namespace；重复的关闭通知也应安全。
 
+## 更新 private control 仓库
+
+通过 GitHub 模板创建仓库只会复制文件，不会创建可以自动同步的 fork。为了便于长期更新，创建 private control 仓库时应保留 Git 历史，并把公开仓库作为 `upstream`：
+
+```bash
+git remote add upstream https://github.com/flashrick/PreviewMesh.git
+git fetch upstream main
+scripts/update-upstream.sh --remote upstream --ref main
+```
+
+脚本会创建更新分支，但不会推送。请先检查差异、运行本地检查，再推送到 private 仓库并创建 Pull Request：
+
+```bash
+git push -u origin update/previewmesh-main-YYYYMMDDHHMMSS
+```
+
+`config/repositories.json` 属于客户；更新过程中会从当前 private 分支恢复它。GitHub Secrets 不在 Git 中，因此不会被修改。如果除了该登记文件以外还有冲突，脚本会停止并要求人工检查；不要对工作流或部署代码直接选择一侧覆盖。
+
+新创建的副本还包含 **Update PreviewMesh from upstream** 工作流，每周检查一次，也可以手动运行。它只在 GitHub hosted Runner 上创建更新 Pull Request，不使用部署 Runner 或客户 Secrets。如果公开模板由其他 owner 维护，可设置可选的 repository variable：`PREVIEWMESH_UPSTREAM_REPOSITORY`。
+
+如果 private 仓库是通过 **Use this template** 创建的，它与模板之间没有共同 Git 历史。第一次运行更新器时会创建一个小的历史桥接提交，同时保留当前 private 文件；之后就可以使用普通 Git merge。第一次桥接仍需审核，登记文件以外的客户自定义文件也需要客户自己确认。
+
+source 仓库中复制出来的 `templates/source-notify.yml`，以及已经安装的 WSL/K3s 文件，是独立的更新面。当对应的上游文件改变时，需要分别同步或重新应用。
+
 ## 本地检查
 
 在修改 GitHub 或 K3s 前，从 private control checkout 执行：
