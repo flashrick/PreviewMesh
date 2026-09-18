@@ -67,7 +67,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UPDATE_BRANCH: ${{ steps.update.outputs.branch }}
         run: |
+          # The updater adds an upstream remote, so pin gh to this repository.
           gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
             --base main \
             --head "$UPDATE_BRANCH" \
             --title "chore: update PreviewMesh from upstream" \
