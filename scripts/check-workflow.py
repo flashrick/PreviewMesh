@@ -30,6 +30,7 @@ elif command == 'inspect':
     sha = 'b' * 40 if scenario == 'pre_superseded' or (scenario == 'post_superseded' and count) else 'a' * 40
     print(json.dumps({'state':state, 'sha':sha, 'port':8080}))
 elif command == 'status':
+    pathlib.Path('reported.json').write_text(json.dumps(sys.argv[2:]))
     if scenario == 'report_failure': sys.exit(1)
 '''
 preview = '''#!/usr/bin/env python3
@@ -75,6 +76,17 @@ with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
         assert outcome['outcome'] == expected, (scenario, outcome)
         actual = (case/'mutations').read_text().splitlines() if (case/'mutations').exists() else []
         assert actual == mutations, (scenario, actual)
+        reported = json.loads((case/'reported.json').read_text())
+        assert '--comment' in reported, (scenario, reported)
+        assert reported[reported.index('--build-state')+1] == 'success'
+        if mutations:
+            assert reported[reported.index('--result-file')+1] == ('evidence/cleanup.json' if 'cleanup' in mutations else 'evidence/deploy.json')
+        else:
+            assert '--result-file' not in reported
+        assert reported[reported.index('--run-url')+1] == 'https://github.com/owner/control/actions/runs/1'
+        target = reported[reported.index('--url')+1]
+        assert target == ('http://pm-r12-pr3.preview.test' if scenario == 'ready' else 'https://github.com/owner/control/actions/runs/1'), (scenario, target)
+        assert reported[reported.index('--state')+1] == ('success' if expected in ['ready', 'removed'] else 'failure')
         if scenario == 'report_failure':
             assert outcome['reporting_result'] == 'failure'
 

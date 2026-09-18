@@ -176,7 +176,7 @@ Create least-privilege tokens and store them only in the locations below:
 
 | Secret | Store in | Minimum purpose |
 | --- | --- | --- |
-| `SOURCE_APP` or each configured `source_secret` | Control repository | Read source contents, read pull requests and metadata, write commit statuses for that one source repository |
+| `SOURCE_APP` or each configured `source_secret` | Control repository | Read source contents and metadata, write pull requests (result comments) and commit statuses for that one source repository |
 | `PREVIEWMESH_DISPATCH_TOKEN` | Every source repository | Dispatch the workflow in the private control repository |
 | `GHCR_READ_TOKEN` | Control repository | Classic PAT with `read:packages` for the control-owned images |
 
@@ -289,6 +289,12 @@ The Python checks use fake tools and do not contact GitHub or Kubernetes. Passin
 
 `control resolve` validates a registration without calling GitHub. `control inspect` rechecks the current PR, fork status, and author permission. `control status` writes the `PreviewMesh` commit status.
 
+The workflow posts a result comment to the source PR after each completed attempt, including its commit SHA, deployment status, and workflow run link. A verified deployment also includes an **Open preview** link. Build/deployment failures, superseded revisions, and cleanup results do not advertise a live preview. Pending builds appear in the PR's `PreviewMesh` status check. Each result is a new comment; reruns can add another comment for the same commit.
+
+`control status --comment --run-url <workflow-url>` enables result comments. The source token needs **Pull requests: Read and write** in addition to **Commit statuses: Read and write**; update existing tokens before enabling this feature. Both writes are attempted independently, and reporting failures are recorded without changing the deployment or cleanup outcome. Preview URLs still require the configured network access and hosts entries; publishing a link does not expose the local environment publicly.
+
+Comments include the build result, observed Deployment replica counts, Pod readiness and failure reasons, Service/Ingress presence, the last HTTP status from `/health`, commit verification, rollback, and cleanup results. Runtime observations describe the end of the attempt (after rollback when attempted); unavailable or unexecuted checks are explicitly marked. HTTP 200 alone is not a successful verification: the response must also contain `status: ok` and the expected commit SHA. Service/Ingress presence alone does not prove reachability. The CLI accepts `--build-state` and `--result-file` to supply this evidence.
+
 `previewmesh build`, `deploy`, `verify`, and `cleanup` are lower-level operations used by the workflow. Use the workflow for the complete PR lifecycle because it rechecks current PR state before and after deployment and handles superseded revisions and cleanup.
 
 ## Project layout
@@ -308,7 +314,7 @@ The Python checks use fake tools and do not contact GitHub or Kubernetes. Passin
 - **Workflow is skipped:** confirm the control repository has the Actions variable `PREVIEWMESH_ENABLED` set to exactly `true`.
 - **Registration rejected:** verify the numeric repository ID, owner/name, port, and Secret name match the registry and GitHub.
 - **Source checkout fails:** check the source token's repository scope and pull-request read permission.
-- **No status is reported:** check commit-status write permission and the source token selected by `source_secret`.
+- **No status or PR comment is reported:** check commit-status and pull-request write permissions and the source token selected by `source_secret`.
 - **Image pull fails:** verify `GHCR_READ_TOKEN`, package access, and the `ghcr-pull` Secret in the preview namespace.
 - **HTTP verification fails:** test the `/health` contract, hostname resolution, Traefik route, and that the response reports `PREVIEW_COMMIT_SHA`.
 - **WSL Docker networking fails:** use the optional, narrowly scoped helper in [the WSL egress notes](ops/wsl/docker-egress.md).

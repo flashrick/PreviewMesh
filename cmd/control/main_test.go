@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,86 @@ import (
 	"strings"
 	"testing"
 )
+
+// TestReportStatus verifies visible PR results and independent reporting failures.
+func TestReportStatus(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	runURL := "https://github.com/owner/control/actions/runs/1"
+	previewURL := "http://pm-r12-pr3.preview.test"
+	for _, tc := range []struct {
+		name, status, description, target string
+		comment, preview                  bool
+		statusCode, commentCode           int
+	}{
+		{"pending", "pending", "Building preview", runURL, false, false, 201, 201},
+		{"ready", "success", "Preview ready at verified revision", previewURL, true, true, 201, 201},
+		{"removed", "success", "Preview removed", runURL, true, false, 201, 201},
+		{"failed", "failure", "Preview attempt failed", runURL, true, false, 201, 201},
+		{"superseded", "failure", "Preview attempt superseded by newer revision", runURL, true, false, 201, 201},
+		{"status denied", "success", "Preview ready", previewURL, true, true, 403, 201},
+		{"comment denied", "success", "Preview ready", previewURL, true, true, 201, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statusCalls, commentCalls := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != "POST" || req.Header.Get("Authorization") != "Bearer test" {
+					t.Errorf("unexpected request method or authentication")
+				}
+				var payload map[string]string
+				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				switch req.URL.Path {
+				case "/repos/owner/demo/statuses/" + sha:
+					statusCalls++
+					if payload["state"] != tc.status || payload["target_url"] != tc.target || payload["context"] != "PreviewMesh" {
+						t.Errorf("unexpected status: %v", payload)
+					}
+					w.WriteHeader(tc.statusCode)
+				case "/repos/owner/demo/issues/3/comments":
+					commentCalls++
+					body := payload["body"]
+					for _, want := range []string{sha, tc.description, runURL, "**" + tc.status + "**"} {
+						if !strings.Contains(body, want) {
+							t.Errorf("missing %q in comment %q", want, body)
+						}
+					}
+					if strings.Contains(body, "[Open preview]") != tc.preview || strings.Contains(body, previewURL) != tc.preview {
+						t.Errorf("incorrect preview link: %s", body)
+					}
+					w.WriteHeader(tc.commentCode)
+				default:
+					t.Errorf("unexpected path: %s", req.URL.Path)
+					w.WriteHeader(404)
+				}
+			}))
+			defer srv.Close()
+			err := reportStatus(api{base: srv.URL, token: "test", client: srv.Client()}, registration{Source: "owner/demo"}, "3", sha, tc.status, tc.description, tc.target, runURL, tc.comment)
+			wantError := tc.statusCode >= 400 || tc.commentCode >= 400
+			if (err != nil) != wantError || statusCalls != 1 || (commentCalls == 1) != tc.comment {
+				t.Fatalf("error=%v status calls=%d comment calls=%d", err, statusCalls, commentCalls)
+			}
+		})
+	}
+}
+
+// TestReportRejectsInvalidInput ensures malformed input causes no remote writes.
+func TestReportRejectsInvalidInput(t *testing.T) {
+	for _, tc := range []struct{ sha, status, target, run string }{
+		{"bad", "success", "https://example.com", "https://example.com/run"},
+		{strings.Repeat("a", 40), "unknown", "https://example.com", "https://example.com/run"},
+		{strings.Repeat("a", 40), "pending", "https://example.com", "https://example.com/run"},
+		{strings.Repeat("a", 40), "success", "javascript:alert(1)", "https://example.com/run"},
+		{strings.Repeat("a", 40), "success", "https://example.com/>)", "https://example.com/run"},
+		{strings.Repeat("a", 40), "success", "https://user:secret@example.com", "https://example.com/run"},
+		{strings.Repeat("a", 40), "success", "https://example.com", ""},
+	} {
+		// A nil client would panic if validation accidentally issued a request.
+		if err := reportStatus(api{}, registration{}, "3", tc.sha, tc.status, "Preview", tc.target, tc.run, true); err == nil {
+			t.Errorf("accepted invalid input: %+v", tc)
+		}
+	}
+}
 
 // TestCurrentPRPolicy checks open, closed, forked, and permission-denied PRs.
 func TestCurrentPRPolicy(t *testing.T) {

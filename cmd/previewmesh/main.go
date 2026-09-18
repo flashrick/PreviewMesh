@@ -48,16 +48,19 @@ type options struct {
 
 // result is the structured outcome shared by the CLI and automation.
 type result struct {
-	Namespace    string `json:"namespace"`
-	RequestedSHA string `json:"requested_sha"`
-	ServedSHA    string `json:"served_sha"`
-	Image        string `json:"image"`
-	URL          string `json:"url"`
-	Result       string `json:"result"`
-	FailedStage  string `json:"failed_stage"`
-	Rollback     string `json:"rollback"`
-	Cleanup      string `json:"cleanup"`
-	Error        string `json:"error"`
+	Namespace        string            `json:"namespace"`
+	RequestedSHA     string            `json:"requested_sha"`
+	ServedSHA        string            `json:"served_sha"`
+	Image            string            `json:"image"`
+	URL              string            `json:"url"`
+	Result           string            `json:"result"`
+	FailedStage      string            `json:"failed_stage"`
+	Rollback         string            `json:"rollback"`
+	Cleanup          string            `json:"cleanup"`
+	Error            string            `json:"error"`
+	Runtime          map[string]string `json:"runtime,omitempty"`
+	HTTPStatus       int               `json:"http_status,omitempty"`
+	HTTPVerification string            `json:"http_verification,omitempty"`
 }
 
 // namespace contains the Kubernetes fields needed for ownership checks.
@@ -355,6 +358,11 @@ func (x *runner) build() error {
 
 // health polls the preview until it serves the requested commit.
 func health(ctx context.Context, url, sha string) (string, error) {
+	return healthObserved(ctx, url, sha, nil)
+}
+
+// healthObserved records the last HTTP response separately from revision verification.
+func healthObserved(ctx context.Context, url, sha string, status *int) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	last := "no response"
 	served := ""
@@ -370,6 +378,9 @@ func health(ctx context.Context, url, sha string) (string, error) {
 				last = "HTTP request failed"
 			}
 		} else {
+			if status != nil {
+				*status = resp.StatusCode
+			}
 			var body struct {
 				Status string `json:"status"`
 				SHA    string `json:"commit_sha"`
@@ -410,7 +421,12 @@ func (x *runner) check(sha string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), x.o.httpTimeout)
 	defer cancel()
-	served, err := health(ctx, x.r.URL, sha)
+	x.r.HTTPStatus = 0
+	x.r.HTTPVerification = "failure"
+	served, err := healthObserved(ctx, x.r.URL, sha, &x.r.HTTPStatus)
+	if err == nil {
+		x.r.HTTPVerification = "success"
+	}
 	x.r.ServedSHA = served
 	return err
 }
@@ -502,6 +518,8 @@ func (x *runner) deploy() error {
 	if err != nil {
 		return err
 	}
+	// Observe only an owned namespace, including the runtime left after rollback.
+	defer x.observeRuntime()
 	if err = x.annotate(map[string]string{domain + "state": "deploying"}); err != nil {
 		return err
 	}
@@ -545,6 +563,7 @@ func (x *runner) verify() error {
 	if ns == nil {
 		return errors.New("namespace does not exist")
 	}
+	defer x.observeRuntime()
 	if err = x.stage("http_verify", func() error { return x.check(x.o.sha) }); err != nil {
 		return x.recover(ns, err)
 	}

@@ -200,6 +200,44 @@ func outputs(s state) error {
 	return nil
 }
 
+// reportStatus keeps commit checks and PR conversation results independently observable.
+func reportStatus(a api, r registration, pr, sha, status, description, target, runURL string, comment bool, evidence ...reportEvidence) error {
+	if !fullSHA.MatchString(sha) || (status != "pending" && status != "success" && status != "failure") || len(description) > 140 {
+		return errors.New("invalid commit status input")
+	}
+	// URLs are also embedded in Markdown; reject delimiters and credentials.
+	validURL := func(raw string) bool {
+		u, err := url.Parse(raw)
+		return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil && !strings.ContainsAny(raw, "<>\\\r\n\t ")
+	}
+	if !validURL(target) || (comment && (!validURL(runURL) || status == "pending")) {
+		return errors.New("invalid reporting URL or nonterminal comment")
+	}
+	statusErr := a.request("POST", "/repos/"+r.Source+"/statuses/"+sha, map[string]string{"state": status, "context": "PreviewMesh", "description": description, "target_url": target}, nil)
+	if statusErr != nil {
+		statusErr = fmt.Errorf("commit status: %w", statusErr)
+	}
+	if !comment {
+		return statusErr
+	}
+	// Append an attempt result so older revisions cannot overwrite newer feedback.
+	escape := strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;", "`", "\\`", "\n", " ", "\r", " ")
+	body := fmt.Sprintf("### PreviewMesh deployment\n\nStatus: **%s** — %s\n\nCommit: `%s`\n\n[Workflow run](<%s>)\n", status, escape.Replace(description), sha, runURL)
+	details := reportEvidence{}
+	if len(evidence) > 0 {
+		details = evidence[0]
+	}
+	body += details.markdown()
+	if status == "success" && target != runURL {
+		body += fmt.Sprintf("\n[Open preview](<%s>)\n\nThis preview URL requires access to the preview network and its hostname mapping.\n", target)
+	}
+	commentErr := a.request("POST", "/repos/"+r.Source+"/issues/"+pr+"/comments", map[string]string{"body": body}, nil)
+	if commentErr != nil {
+		commentErr = fmt.Errorf("PR comment: %w", commentErr)
+	}
+	return errors.Join(statusErr, commentErr)
+}
+
 // main resolves the registration and runs the selected control command.
 func main() {
 	if len(os.Args) < 2 {
@@ -216,6 +254,10 @@ func main() {
 	status := f.String("state", "", "commit status")
 	description := f.String("description", "", "status description")
 	target := f.String("url", "", "status target")
+	comment := f.Bool("comment", false, "also post a terminal result to the PR conversation")
+	runURL := f.String("run-url", "", "workflow run URL for the PR comment")
+	resultFile := f.String("result-file", "", "deployment or cleanup result JSON for PR feedback")
+	buildState := f.String("build-state", "", "observed image build result")
 	f.Parse(os.Args[2:])
 	// Resolve identity before making any API request or status update.
 	r, err := resolve(*registry, *id, *source, *pr)
@@ -234,17 +276,18 @@ func main() {
 	case "inspect":
 		s, err = inspect(a, r, *pr)
 	case "status":
-		// Status updates accept only known states and an absolute target URL.
-		if !fullSHA.MatchString(*sha) || (*status != "pending" && *status != "success" && *status != "failure") || len(*description) > 140 {
-			err = errors.New("invalid commit status input")
-			break
+		details := reportEvidence{Build: *buildState}
+		if *resultFile != "" {
+			var data []byte
+			data, err = os.ReadFile(*resultFile)
+			if err == nil {
+				err = json.Unmarshal(data, &details)
+			}
+			if err != nil {
+				break
+			}
 		}
-		u, e := url.Parse(*target)
-		if e != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			err = errors.New("invalid status URL")
-			break
-		}
-		err = a.request("POST", "/repos/"+r.Source+"/statuses/"+*sha, map[string]string{"state": *status, "context": "PreviewMesh", "description": *description, "target_url": *target}, nil)
+		err = reportStatus(a, r, *pr, *sha, *status, *description, *target, *runURL, *comment, details)
 	default:
 		err = errors.New("unknown control command")
 	}

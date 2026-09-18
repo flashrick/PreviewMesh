@@ -176,7 +176,7 @@ kubectl auth can-i create clusterroles
 
 | Secret | 保存位置 | 最小用途 |
 | --- | --- | --- |
-| SOURCE_APP 或每个配置中的 source_secret | Control 仓库 | 读取对应 source 的代码、PR 和元数据，并写入该 source 的 commit status |
+| SOURCE_APP 或每个配置中的 source_secret | Control 仓库 | 读取对应 source 的代码和元数据，读写 PR（发布结果评论），并写入该 source 的 commit status |
 | PREVIEWMESH_DISPATCH_TOKEN | 每个 source 仓库 | 触发 private control 仓库的工作流 |
 | GHCR_READ_TOKEN | Control 仓库 | 带 read:packages 的 classic PAT，用于拉取 control 所有的镜像 |
 
@@ -289,6 +289,12 @@ Python 检查使用模拟工具，不会访问 GitHub 或 Kubernetes。通过本
 
 control resolve 只验证登记文件，不访问 GitHub。control inspect 会重新检查当前 PR、Fork 状态和作者权限。control status 会写入 PreviewMesh commit status。
 
+每次尝试结束后，工作流会在 source PR 中发布结果评论，包含提交 SHA、部署状态和工作流运行链接。部署验证通过后还会显示 **Open preview** 链接。构建或部署失败、版本过期和清理结果不会显示可用预览链接。构建中的状态显示在 PR 的 PreviewMesh 状态检查中。每次结果都会新增评论，重跑同一提交可能再次产生评论。
+
+`control status --comment --run-url <workflow-url>` 启用结果评论。source Token 除了 **Commit statuses: Read and write**，还需要 **Pull requests: Read and write**；启用前请更新现有 Token 权限。两种回写会独立尝试，回写失败会记录在结果中，不改变实际部署或清理结果。预览链接仍要求配置相应网络访问和 hosts 映射，发布链接不会把本地环境公开到互联网。
+
+评论还展示构建结果、Deployment 副本数量、Pod 就绪情况及失败原因、Service/Ingress 是否存在、`/health` 最后一次 HTTP 状态码、提交版本验证、回滚和清理结果。运行状态是本次尝试结束时的快照（若进行了回滚，则为回滚之后），未执行或无法获取的检查会明确标记。HTTP 200 不直接等于验证成功，响应还必须包含 `status: ok` 和预期提交 SHA；Service/Ingress 存在也不代表可访问。CLI 通过 `--build-state` 和 `--result-file` 接收这些证据。
+
 previewmesh build、deploy、verify 和 cleanup 是工作流使用的底层操作。完整 PR 生命周期应使用工作流，因为它会在部署前后重新检查 PR 状态，并处理过期版本和清理。
 
 ## 项目结构
@@ -308,7 +314,7 @@ previewmesh build、deploy、verify 和 cleanup 是工作流使用的底层操�
 - **工作流被跳过：** 确认 control 仓库的 Actions variable PREVIEWMESH_ENABLED 严格为 true。
 - **登记被拒绝：** 检查数字仓库 ID、owner/name、端口和 Secret 名称是否同时匹配登记文件与 GitHub。
 - **Source checkout 失败：** 检查 source Token 的仓库范围和 Pull Request 读取权限。
-- **没有回写状态：** 检查 commit status 写权限，以及 source_secret 选择的 Token。
+- **没有回写状态或 PR 评论：** 检查 commit status 和 Pull Request 写权限，以及 source_secret 选择的 Token。
 - **镜像拉取失败：** 检查 GHCR_READ_TOKEN、Package 权限和预览 Namespace 中的 ghcr-pull Secret。
 - **HTTP 验证失败：** 检查 /health 契约、域名解析、Traefik 路由，以及响应是否使用了 PREVIEW_COMMIT_SHA。
 - **WSL Docker 网络失败：** 参考 [WSL 出站网络说明](ops/wsl/docker-egress.md)中的可选辅助配置。

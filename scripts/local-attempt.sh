@@ -17,7 +17,14 @@ finish() {
     removed) status=success; description='Preview removed';;
     superseded) description='Preview attempt superseded by newer revision';;
   esac
-  if bin/control status "${common[@]}" --sha "$ATTEMPT_SHA" --state "$status" --description "$description" --url "$target"; then
+  details=(--build-state 'not attempted')
+  if [ -n "$BUILT_IMAGE" ]; then details=(--build-state success); fi
+  if [ -f evidence/cleanup.json ]; then
+    details+=(--result-file evidence/cleanup.json)
+  elif [ -f evidence/deploy.json ]; then
+    details+=(--result-file evidence/deploy.json)
+  fi
+  if bin/control status "${common[@]}" --sha "$ATTEMPT_SHA" --state "$status" --description "$description" --url "$target" --comment --run-url "$run_url" "${details[@]}"; then
     export REPORTING_RESULT=success
   else
     export REPORTING_RESULT=failure
