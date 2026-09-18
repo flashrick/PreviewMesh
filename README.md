@@ -223,6 +223,8 @@ PREVIEWMESH_CONTROL_REPOSITORY: previewmesh-control
 
 Commit the workflow to the source repository's default branch. Enable Actions there. The source repository's `PREVIEWMESH_DISPATCH_TOKEN` must be present before opening a pull request.
 
+The notification workflow listens for `opened`, `reopened`, `synchronize`, and `closed`. `synchronize` is GitHub's event for a new commit pushed to an existing pull request, so each new PR head requests another build and deployment. The control workflow reads the current head before building and checks it again around deployment; if a newer commit supersedes an attempt, that attempt is left undeployed and the newer notification deploys the latest revision.
+
 ### 8. Run a preview
 
 Open a pull request whose base and head repositories are the registered source repository. The notification workflow dispatches the private control workflow. You can also dispatch it manually:

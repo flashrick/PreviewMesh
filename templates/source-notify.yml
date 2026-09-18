@@ -1,6 +1,7 @@
 name: Notify PreviewMesh
 on:
   pull_request_target:
+    # synchronize fires whenever an existing PR receives a new head commit.
     types: [opened, synchronize, reopened, closed]
 permissions: {}
 jobs:

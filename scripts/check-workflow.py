@@ -8,6 +8,13 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 sha = 'a' * 40
+
+# Keep the source-side relay wired to PR head updates. Without synchronize,
+# an already-open PR would never request a deployment for its next commit.
+notification = (root / 'templates/source-notify.yml').read_text()
+assert 'pull_request_target:' in notification
+assert 'types: [opened, synchronize, reopened, closed]' in notification
+
 control = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 command = sys.argv[1]
@@ -92,4 +99,4 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     summary = json.loads((report/'evidence/summary.json').read_text())
     assert summary['failed_stage']=='cleanup' and summary['error']=='API unavailable'
     assert summary['remaining_namespace_resources'] is None
-print('PASS: 8 current-state scenarios and reporting regressions (tool doubles only).')
+print('PASS: synchronize notification and 8 current-state/reporting regressions (tool doubles only).')

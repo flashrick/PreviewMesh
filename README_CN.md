@@ -223,6 +223,8 @@ PREVIEWMESH_CONTROL_REPOSITORY: previewmesh-control
 
 将该工作流提交到 source 仓库默认分支，并启用 Actions。打开 PR 前，source 仓库必须已经配置 PREVIEWMESH_DISPATCH_TOKEN。
 
+通知工作流监听 `opened`、`reopened`、`synchronize` 和 `closed`。GitHub 使用 `synchronize` 表示已打开的 Pull Request 推送了新 commit，因此每个新的 PR head 都会再次请求构建和部署。控制工作流会在构建前读取当前 head，并在部署前后再次检查；如果某次尝试已被更新的 commit 取代，就不会发布旧版本，后续通知会部署最新 revision。
+
 ### 8. 运行预览
 
 创建一个 base 和 head 都属于已登记 source 仓库的 PR。通知工作流会触发 private control 工作流。也可以手动触发：
