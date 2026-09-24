@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,16 @@ type result struct {
 	HTTPStatus           int               `json:"http_status,omitempty"`
 	HTTPVerification     string            `json:"http_verification,omitempty"`
 	RevisionVerification string            `json:"revision_verification"`
+	StageTimings         []stageTiming     `json:"stage_timings,omitempty"`
+}
+
+// stageTiming records one operation interval in UTC for later evaluation.
+type stageTiming struct {
+	Stage           string  `json:"stage"`
+	StartedAtUTC    string  `json:"started_at_utc"`
+	EndedAtUTC      string  `json:"ended_at_utc"`
+	DurationSeconds float64 `json:"duration_seconds"`
+	Result          string  `json:"result"`
 }
 
 // namespace contains the Kubernetes fields needed for ownership checks.
@@ -216,6 +227,18 @@ func (x *runner) stage(name string, fn func() error) error {
 			x.r.FailedStage = name
 		}
 	}
+	startedAt := start.UTC().Format(time.RFC3339Nano)
+	endedAt := end.UTC().Format(time.RFC3339Nano)
+	x.r.StageTimings = append(x.r.StageTimings, stageTiming{
+		Stage: name, StartedAtUTC: startedAt, EndedAtUTC: endedAt,
+		DurationSeconds: end.Sub(start).Seconds(), Result: outcome,
+	})
+	// Nested stages can finish before their enclosing stage, so keep JSON in start order.
+	sort.SliceStable(x.r.StageTimings, func(i, j int) bool {
+		left, _ := time.Parse(time.RFC3339Nano, x.r.StageTimings[i].StartedAtUTC)
+		right, _ := time.Parse(time.RFC3339Nano, x.r.StageTimings[j].StartedAtUTC)
+		return left.Before(right)
+	})
 	if x.o.evidence != "" {
 		// Evidence is append-only so each stage keeps its timing and outcome.
 		if e := os.MkdirAll(filepath.Dir(x.o.evidence), 0700); e != nil {
@@ -235,7 +258,7 @@ func (x *runner) stage(name string, fn func() error) error {
 			e = w.Write([]string{"run_id", "attempt", "repository_id", "source_repository", "pr_number", "requested_sha", "served_sha", "stage", "started_at_utc", "ended_at_utc", "duration_seconds", "result", "error"})
 		}
 		if e == nil {
-			e = w.Write([]string{os.Getenv("GITHUB_RUN_ID"), os.Getenv("GITHUB_RUN_ATTEMPT"), x.o.repoID, x.o.source, x.o.pr, x.o.sha, x.r.ServedSHA, name, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano), strconv.FormatFloat(end.Sub(start).Seconds(), 'f', 6, 64), outcome, message})
+			e = w.Write([]string{os.Getenv("GITHUB_RUN_ID"), os.Getenv("GITHUB_RUN_ATTEMPT"), x.o.repoID, x.o.source, x.o.pr, x.o.sha, x.r.ServedSHA, name, startedAt, endedAt, strconv.FormatFloat(end.Sub(start).Seconds(), 'f', 6, 64), outcome, message})
 		}
 		w.Flush()
 		e = errors.Join(e, w.Error(), f.Close())
@@ -553,13 +576,13 @@ func (x *runner) pullSecret() error {
 }
 
 // deploy creates or updates the preview and verifies the served commit.
-func (x *runner) deploy() error {
+func (x *runner) deploy() (resultErr error) {
 	ns, err := x.ensureNS()
 	if err != nil {
 		return err
 	}
 	// Observe only an owned namespace, including the runtime left after rollback.
-	defer x.observeRuntime()
+	defer func() { resultErr = errors.Join(resultErr, x.recordRuntime()) }()
 	if err = x.annotate(map[string]string{domain + "state": "deploying"}); err != nil {
 		return err
 	}
@@ -598,7 +621,7 @@ func (x *runner) deploy() error {
 }
 
 // verify checks an existing preview without changing its desired revision.
-func (x *runner) verify() error {
+func (x *runner) verify() (resultErr error) {
 	ns, err := x.getNS()
 	if err != nil {
 		return err
@@ -606,7 +629,7 @@ func (x *runner) verify() error {
 	if ns == nil {
 		return errors.New("namespace does not exist")
 	}
-	defer x.observeRuntime()
+	defer func() { resultErr = errors.Join(resultErr, x.recordRuntime()) }()
 	if err = x.stage("readiness", x.waitReadiness); err != nil {
 		return x.recover(ns, err)
 	}
@@ -619,8 +642,12 @@ func (x *runner) verify() error {
 // cleanup deletes only an owned namespace and confirms that it is gone.
 func (x *runner) cleanup() error {
 	err := x.stage("cleanup", func() error {
-		ns, err := x.getNS()
-		if err != nil {
+		var ns *namespace
+		if err := x.stage("resource_verify", func() error {
+			var getErr error
+			ns, getErr = x.getNS()
+			return getErr
+		}); err != nil {
 			return err
 		}
 		if ns == nil {
@@ -632,19 +659,24 @@ func (x *runner) cleanup() error {
 		}
 		// Bind deletion to this UID so a recreated namespace cannot be removed.
 		options, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": map[string]string{"uid": ns.Metadata.UID}})
-		if _, err = x.run(options, "kubectl", "delete", "--raw", "/api/v1/namespaces/"+x.r.Namespace, "-f", "-"); err != nil {
-			return err
+		if _, deleteErr := x.run(options, "kubectl", "delete", "--raw", "/api/v1/namespaces/"+x.r.Namespace, "-f", "-"); deleteErr != nil {
+			return deleteErr
 		}
-		if _, err = x.run(nil, "kubectl", "wait", "--for=delete", "namespace/"+x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
-			return err
+		if _, waitErr := x.run(nil, "kubectl", "wait", "--for=delete", "namespace/"+x.r.Namespace, "--timeout="+x.o.timeout.String()); waitErr != nil {
+			return waitErr
 		}
 		// Confirm absence; API and permission errors are never treated as deletion success.
-		ns, err = x.getNS()
-		if err != nil {
+		if err := x.stage("resource_verify", func() error {
+			remaining, getErr := x.getNS()
+			if getErr != nil {
+				return getErr
+			}
+			if remaining != nil {
+				return errors.New("namespace remains after deletion")
+			}
+			return nil
+		}); err != nil {
 			return err
-		}
-		if ns != nil {
-			return errors.New("namespace remains after deletion")
 		}
 		x.r.Cleanup = "confirmed_absent"
 		return nil

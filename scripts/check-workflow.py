@@ -112,9 +112,17 @@ runpy.run_path(sys.argv[1],run_name='__main__')
         rows = list(csv.DictReader(f))
     assert any(r['stage']=='queue:build' for r in rows)
     assert any(r['stage']=='attempt' and r['result']=='failure' and r['error'] for r in rows)
-    (report/'collected/local/cleanup.json').write_text(json.dumps({'result':'failure','failed_stage':'cleanup','error':'API unavailable','cleanup':'not_attempted'}))
+    timing = lambda stage, second: {'stage':stage, 'started_at_utc':f'2026-01-01T00:00:0{second}Z',
+                                   'ended_at_utc':f'2026-01-01T00:00:0{second+1}Z',
+                                   'duration_seconds':1, 'result':'success'}
+    (report/'collected/local/deploy.json').write_text(json.dumps({'result':'success', 'stage_timings':[
+        timing('deploy', 1), timing('readiness', 2), timing('http_verify', 3), timing('resource_observation', 4)]}))
+    (report/'collected/local/cleanup.json').write_text(json.dumps({'result':'failure','failed_stage':'cleanup','error':'API unavailable','cleanup':'not_attempted',
+                                                                  'stage_timings':[timing('cleanup', 5), timing('resource_verify', 6)]}))
     subprocess.run(['python3','-c',fake_api,str(root/'scripts/report.py')], cwd=report, env=env, check=True)
     summary = json.loads((report/'evidence/summary.json').read_text())
     assert summary['failed_stage']=='cleanup' and summary['error']=='API unavailable'
     assert summary['remaining_namespace_resources'] is None
+    stages = {timing['stage'] for timing in summary['stage_timings']}
+    assert {'deploy', 'readiness', 'http_verify', 'cleanup', 'resource_observation', 'resource_verify'} <= stages
 print('PASS: synchronize notification and 10 current-state/reporting regressions (tool doubles only).')

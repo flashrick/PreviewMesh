@@ -303,6 +303,13 @@ func TestCleanupIsSafeWhenNamespaceIsAlreadyAbsent(t *testing.T) {
 	if strings.Contains(string(calls), "delete") {
 		t.Fatalf("cleanup attempted deletion after absence was confirmed: %s", calls)
 	}
+	counts := map[string]int{}
+	for _, timing := range x.r.StageTimings {
+		counts[timing.Stage]++
+	}
+	if counts["cleanup"] != 2 || counts["resource_verify"] != 2 {
+		t.Fatalf("repeat cleanup timing stages = %#v", counts)
+	}
 }
 
 // TestCleanupDeletesOwnedNamespaceAndConfirmsAbsence covers the successful close path.
@@ -342,6 +349,13 @@ esac
 	if strings.Count(callText, "get namespace") != 2 {
 		t.Fatalf("cleanup should inspect before and after deletion: %s", callText)
 	}
+	counts := map[string]int{}
+	for _, timing := range x.r.StageTimings {
+		counts[timing.Stage]++
+	}
+	if counts["cleanup"] != 1 || counts["resource_verify"] != 2 {
+		t.Fatalf("cleanup timing stages = %#v", counts)
+	}
 	for _, want := range []string{
 		"delete --raw /api/v1/namespaces/pm-r12-pr3 -f -",
 		"wait --for=delete namespace/pm-r12-pr3 --timeout=1s",
@@ -369,6 +383,15 @@ func TestRollbackMustVerifyOldRevision(t *testing.T) {
 			x.r.URL = srv.URL
 			if err := x.deploy(); err == nil {
 				t.Fatal("failed update must stay failed even if rollback succeeds")
+			}
+			observedRuntime := false
+			for _, timing := range x.r.StageTimings {
+				if timing.Stage == "resource_observation" && timing.StartedAtUTC != "" && timing.EndedAtUTC != "" {
+					observedRuntime = true
+				}
+			}
+			if !observedRuntime {
+				t.Fatalf("runtime snapshot timing missing: %#v", x.r.StageTimings)
 			}
 			if valid && (x.r.Rollback != "verified" || x.r.ServedSHA != old) {
 				t.Fatalf("%+v", x.r)
@@ -399,6 +422,18 @@ func TestEvidenceEscapesCSV(t *testing.T) {
 	rows, err := csv.NewReader(f).ReadAll()
 	if err != nil || len(rows) != 2 || len(rows[1]) != 13 || rows[1][11] != "failure" {
 		t.Fatalf("%v %v", rows, err)
+	}
+	start, startErr := time.Parse(time.RFC3339Nano, rows[1][8])
+	end, endErr := time.Parse(time.RFC3339Nano, rows[1][9])
+	if startErr != nil || endErr != nil || end.Before(start) {
+		t.Fatalf("invalid CSV stage timestamps: start=%q end=%q (%v, %v)", rows[1][8], rows[1][9], startErr, endErr)
+	}
+	if len(x.r.StageTimings) != 1 || x.r.StageTimings[0].Stage != "verify" || x.r.StageTimings[0].Result != "failure" {
+		t.Fatalf("stage timing not included in result: %#v", x.r.StageTimings)
+	}
+	payload, err := json.Marshal(x.r)
+	if err != nil || !strings.Contains(string(payload), `"stage_timings":[`) || !strings.Contains(string(payload), rows[1][8]) {
+		t.Fatalf("JSON result missing stage timestamps: %s (%v)", payload, err)
 	}
 }
 

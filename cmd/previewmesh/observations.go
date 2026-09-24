@@ -26,6 +26,18 @@ func (x *runner) observeRuntime() {
 	}
 }
 
+// recordRuntime times the read-only runtime snapshot without changing its readiness result.
+func (x *runner) recordRuntime() error {
+	err := x.stage("resource_observation", func() error {
+		x.observeRuntime()
+		return nil
+	})
+	if err != nil && x.r.FailedStage == "" {
+		x.r.FailedStage = "resource_observation"
+	}
+	return err
+}
+
 // summarizeRuntime reports observed fields; existence alone is not a readiness claim.
 func summarizeRuntime(kind string, data []byte) string {
 	var obj struct {

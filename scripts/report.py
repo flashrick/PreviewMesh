@@ -63,6 +63,12 @@ if not has_lifecycle_evidence:
     rows[-1]['error'] = 'No lifecycle evidence collected; inspect job results and control logs.'
 failed = next((results[name] for name in ['cleanup', 'deploy', 'build']
                if results.get(name, {}).get('result') == 'failure'), {})
+stage_timings = []
+for operation in ['build', 'deploy', 'cleanup']:
+    for timing in results.get(operation, {}).get('stage_timings', []):
+        stage_timings.append({'operation': operation, **timing})
+stage_timings.sort(key=lambda timing: timestamp(timing['started_at_utc'])
+                   if timing.get('started_at_utc') else dt.datetime.min.replace(tzinfo=dt.timezone.utc))
 Path('evidence').mkdir(exist_ok=True)
 with open('evidence/combined.csv', 'w', newline='') as stream:
     writer = csv.DictWriter(stream, fieldnames=columns)
@@ -81,6 +87,7 @@ summary = {
     'rollback': results.get('deploy', {}).get('rollback', 'not_attempted'),
     'cleanup': results.get('cleanup', {}).get('cleanup', 'not_attempted'),
     'remaining_namespace_resources': 0 if results.get('cleanup', {}).get('cleanup')=='confirmed_absent' else None,
+    'stage_timings': stage_timings,
     **results.get('outcome', {}), 'timing_note': metadata_error,
 }
 Path('evidence/summary.json').write_text(json.dumps(summary, indent=2)+'\n')
