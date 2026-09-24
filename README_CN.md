@@ -248,6 +248,86 @@ curl --fail --max-time 10 "http://$PREVIEW_HOST/health"
 
 响应必须包含 PR head 的 SHA。关闭或合并 PR 后，应删除其归属的 Namespace；重复的关闭通知也应安全。
 
+## 端到端演示
+
+现场演示前先完成上面的首次配置步骤 1–7。从 private control checkout 执行命令，并选择一个你可以关闭的 open demo PR。它的 base 和 head 必须都属于已登记的 source 仓库，PR 作者也必须有该仓库的写权限。以下命令会启动完整的 GitHub Actions 工作流；`build`、`local` 和 `report` 三个 Job 会自动运行。演示期间不要对同一个仓库 ID 和 PR 并行启动另一次部署。
+
+### 准备演示
+
+填写 control 仓库、已登记的 source 仓库和一个 open PR 编号。仓库 ID 从 GitHub 查询，然后与 private 登记文件核对：
+
+```bash
+export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
+export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+export REPOSITORY_ID="$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')"
+export PR_NUMBER=123
+export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
+export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
+
+gh auth status
+go run ./cmd/control resolve \
+  --repository-id "$REPOSITORY_ID" \
+  --source-repository "$SOURCE_REPOSITORY" \
+  --pr "$PR_NUMBER"
+gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" \
+  --jq '{state: .state, base: .base.repo.full_name, head: .head.repo.full_name, sha: .head.sha}'
+```
+
+确认 PR 处于 open 状态，`base` 和 `head` 都等于 `SOURCE_REPOSITORY`，且 `resolve` 接受该登记。Runner 和演示用浏览器都必须能通过 DNS 或 hosts 访问预览域名。
+
+### 启动并跟踪工作流
+
+要展示 source 到 control 的通知链路，可以新建 demo PR，或向现有 PR 推送新 commit，然后跟踪 source 仓库中的 `Notify PreviewMesh` 运行及其派发的 control 工作流。若要重复演示且不修改 source，可从 private control 仓库手动派发已登记的 PR。手动派发会运行相同的生命周期，但会跳过 source 通知这一步：
+
+```bash
+gh workflow run preview.yml --repo "$CONTROL_REPOSITORY" --ref main \
+  -f repository_id="$REPOSITORY_ID" \
+  -f source_repository="$SOURCE_REPOSITORY" \
+  -f pr_number="$PR_NUMBER"
+gh run list --repo "$CONTROL_REPOSITORY" --workflow preview.yml --limit 5
+```
+
+从列表复制新运行的 ID，然后等待它完成。如果新运行还没有显示，再执行一次列表命令：
+
+```bash
+export RUN_ID=123456789
+gh run watch "$RUN_ID" --repo "$CONTROL_REPOSITORY" --exit-status
+```
+
+在 Actions 运行页面展示：`build` Job 验证登记和 PR 后发布镜像 digest；`local` Job 在 K3s 部署并验证预览；`report` Job 汇总运行证据。`combined-*` artifact 包含运行摘要和 CSV 证据。如果 source Token 具有所需写权限，source PR 还会显示 PreviewMesh 状态和链接到本次运行的结果评论。
+
+### 核对展示的代码版本
+
+将线上健康响应与 PR 当前 head 比较。这会同时检查健康接口契约和精确的 commit SHA：
+
+```bash
+export EXPECTED_SHA="$(gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+printf '预期 PR head：%s\n' "$EXPECTED_SHA"
+curl --fail --silent --show-error --max-time 10 "http://$PREVIEW_HOST/health" \
+  | EXPECTED_SHA="$EXPECTED_SHA" python3 -c '
+import json, os, sys
+result = json.load(sys.stdin)
+if result.get("status") != "ok" or result.get("commit_sha") != os.environ["EXPECTED_SHA"]:
+    raise SystemExit(f"预览版本与 PR head 不匹配：{result}")
+print(json.dumps(result))
+'
+```
+
+如果应用有用户页面，可在浏览器打开 `http://$PREVIEW_HOST`。健康响应必须包含 `status: ok`，并且 SHA 与上面显示的值相同。
+
+要演示版本更新，先等本次运行结束，再向同一个 PR 推送另一条已审核的 commit，等待 `synchronize` 通知和 control 工作流运行。URL 和 Namespace 保持不变；重复健康检查可以展示新的 PR head SHA。
+
+### 展示自动清理
+
+关闭或合并 demo PR，然后跟踪 `closed` 通知启动的 control 工作流。在该运行执行清理前，保留 Namespace。在 K3s 机器上选择首次配置步骤 5 中的受限 runner kubeconfig，然后确认 Namespace 已不存在：
+
+```bash
+export KUBECONFIG=/absolute/path/previewmesh-runner.yaml
+kubectl get namespace "$PREVIEW_NAMESPACE" --ignore-not-found
+```
+
+没有输出表示 Namespace 已删除。要演示清理的幂等性，可以对已关闭的 PR 再手动派发一次相同工作流；报告应确认 Namespace 已经不存在。
+
 ## 更新 private control 仓库
 
 通过 GitHub 模板创建仓库只会复制文件，不会创建可以自动同步的 fork。为了便于长期更新，创建 private control 仓库时应保留 Git 历史，并把公开仓库作为 `upstream`：

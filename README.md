@@ -248,6 +248,86 @@ curl --fail --max-time 10 "http://$PREVIEW_HOST/health"
 
 The response must contain the SHA of the pull request head. Closing or merging the pull request should remove the owned namespace. Repeated close notifications should remain safe.
 
+## End-to-end demo
+
+Use this walkthrough to present a live preview. Complete setup steps 1–7 first. Run the commands from the private control checkout, and choose an open demo pull request that you are allowed to close. Its base and head must both be in the registered source repository, and its author must have write access. These commands start the complete GitHub Actions workflow; the `build`, `local`, and `report` jobs run automatically. Do not run another deployment for the same repository ID and pull request while the demo is in progress.
+
+### Prepare the demo
+
+Fill in the control repository, registered source repository, and an open pull request number. The repository ID is read from GitHub and then checked against the private registry:
+
+```bash
+export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
+export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+export REPOSITORY_ID="$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')"
+export PR_NUMBER=123
+export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
+export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
+
+gh auth status
+go run ./cmd/control resolve \
+  --repository-id "$REPOSITORY_ID" \
+  --source-repository "$SOURCE_REPOSITORY" \
+  --pr "$PR_NUMBER"
+gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" \
+  --jq '{state: .state, base: .base.repo.full_name, head: .head.repo.full_name, sha: .head.sha}'
+```
+
+Confirm the PR is open, `base` and `head` both equal `SOURCE_REPOSITORY`, and `resolve` accepts the registration. Preview DNS or hosts entries must already work from both the runner and the machine used to open the preview in a browser.
+
+### Start and follow the workflow
+
+To show the source-to-control notification path, open a demo PR or push a new commit to an open one, then follow the `Notify PreviewMesh` source run and its control run. For a repeatable demonstration without changing the source, dispatch the registered pull request from the private control repository. Manual dispatch starts the same lifecycle but skips the source notification step:
+
+```bash
+gh workflow run preview.yml --repo "$CONTROL_REPOSITORY" --ref main \
+  -f repository_id="$REPOSITORY_ID" \
+  -f source_repository="$SOURCE_REPOSITORY" \
+  -f pr_number="$PR_NUMBER"
+gh run list --repo "$CONTROL_REPOSITORY" --workflow preview.yml --limit 5
+```
+
+Copy the new run ID from the list, then follow it until it finishes. If the run has not appeared yet, run the list command again:
+
+```bash
+export RUN_ID=123456789
+gh run watch "$RUN_ID" --repo "$CONTROL_REPOSITORY" --exit-status
+```
+
+In the Actions run, show the `build` job validating the registration and PR before publishing an image digest, the `local` job deploying and verifying the preview on K3s, and the `report` job combining the evidence. The `combined-*` artifact contains the run summary and CSV evidence. If the source token has the required write permissions, the source PR also shows the PreviewMesh status and a result comment linking to the run.
+
+### Verify the revision shown to the audience
+
+Compare the live health response with the current PR head. This checks both the health contract and the exact commit SHA:
+
+```bash
+export EXPECTED_SHA="$(gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+printf 'Expected PR head: %s\n' "$EXPECTED_SHA"
+curl --fail --silent --show-error --max-time 10 "http://$PREVIEW_HOST/health" \
+  | EXPECTED_SHA="$EXPECTED_SHA" python3 -c '
+import json, os, sys
+result = json.load(sys.stdin)
+if result.get("status") != "ok" or result.get("commit_sha") != os.environ["EXPECTED_SHA"]:
+    raise SystemExit(f"Preview does not match the PR head: {result}")
+print(json.dumps(result))
+'
+```
+
+Open `http://$PREVIEW_HOST` in a browser if the application has a user-facing page. The health response must report `status: ok` and the same SHA printed above.
+
+To demonstrate an update, wait for this run to finish, push another reviewed commit to the same pull request, and wait for its `synchronize` notification and control run. The URL and namespace stay the same; repeat the health check to show the new PR head SHA.
+
+### Show automatic cleanup
+
+Close or merge the demo pull request, then follow the control run started by the `closed` notification. Keep the namespace in place until that run handles cleanup. On the K3s machine, select the restricted runner kubeconfig from setup step 5 and confirm the namespace is absent:
+
+```bash
+export KUBECONFIG=/absolute/path/previewmesh-runner.yaml
+kubectl get namespace "$PREVIEW_NAMESPACE" --ignore-not-found
+```
+
+No output means the namespace has been removed. To demonstrate cleanup idempotency, manually dispatch the same workflow once more for the closed pull request; the report should confirm the namespace is already absent.
+
 ## Updating a private control repository
 
 Creating a repository from the GitHub template copies the files but does not create a synchronizable fork. For the easiest long-term updates, preserve the Git history when creating the private control repository and keep the public repository as `upstream`:
