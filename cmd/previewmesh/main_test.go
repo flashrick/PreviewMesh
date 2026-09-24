@@ -120,6 +120,8 @@ case "$1 $2" in
  'get namespace') if [ "$API_FAIL" = 1 ]; then exit 1; fi; printf '%s' "$NAMESPACE_JSON";;
  'rollout status') if [ "$ROLLOUT_FAIL" = 1 ]; then exit 1; fi; exit 0;;
  'wait --for=condition=Ready') if [ "$POD_READY_FAIL" = 1 ]; then exit 1; fi; exit 0;;
+ 'wait --for=jsonpath={.spec.clusterIP}') if [ "$SERVICE_READY_FAIL" = 1 ]; then exit 1; fi; exit 0;;
+ 'wait --for=jsonpath={.status.loadBalancer.ingress}') if [ "$INGRESS_READY_FAIL" = 1 ]; then exit 1; fi; exit 0;;
  'status pm-r12-pr3') printf '{"version":2}';;
  'upgrade --install') exit "$HELM_FAIL";;
 esac
@@ -133,8 +135,8 @@ esac
 	return &runner{o: options{repoID: "12", pr: "3", sha: strings.Repeat("b", 40), source: "owner/demo", port: 8080, timeout: time.Second, httpTimeout: 30 * time.Millisecond, chart: "unused"}, r: result{Namespace: "pm-r12-pr3"}}
 }
 
-// TestReadinessChecksDeploymentAndPods requires both Kubernetes layers before HTTP verification.
-func TestReadinessChecksDeploymentAndPods(t *testing.T) {
+// TestReadinessChecksAllResources requires every routing layer before HTTP verification.
+func TestReadinessChecksAllResources(t *testing.T) {
 	x := fakeTools(t, "", false)
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +155,18 @@ func TestReadinessChecksDeploymentAndPods(t *testing.T) {
 	callText := string(calls)
 	rollout := "rollout status deployment/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
 	pods := "wait --for=condition=Ready pod -l app.kubernetes.io/instance=pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
-	if strings.Index(callText, rollout) < 0 || strings.Index(callText, pods) < 0 || strings.Index(callText, rollout) > strings.Index(callText, pods) {
+	service := "wait --for=jsonpath={.spec.clusterIP} service/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
+	ingress := "wait --for=jsonpath={.status.loadBalancer.ingress} ingress/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
+	checks := []string{rollout, pods, service, ingress}
+	for i, check := range checks {
+		if strings.Index(callText, check) < 0 {
+			t.Fatalf("readiness check missing: %s\ncalls: %s", check, callText)
+		}
+		if i > 0 && strings.Index(callText, checks[i-1]) > strings.Index(callText, check) {
+			t.Fatalf("readiness checks out of order: %s", callText)
+		}
+	}
+	if strings.Index(callText, ingress) < strings.Index(callText, service) {
 		t.Fatalf("readiness checks missing or out of order: %s", callText)
 	}
 	if requests.Load() != 1 {
@@ -168,6 +181,8 @@ func TestReadinessFailureStopsHTTPVerification(t *testing.T) {
 	}{
 		{"deployment", "ROLLOUT_FAIL", "deployment readiness check failed"},
 		{"pod", "POD_READY_FAIL", "pod readiness check failed"},
+		{"service", "SERVICE_READY_FAIL", "service readiness check failed"},
+		{"ingress", "INGRESS_READY_FAIL", "ingress readiness check failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			x := fakeTools(t, "", false)

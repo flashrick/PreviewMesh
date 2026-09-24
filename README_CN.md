@@ -295,6 +295,8 @@ control resolve 只验证登记文件，不访问 GitHub。control inspect 会�
 
 评论还展示构建结果、Deployment 副本数量、Pod 就绪情况及失败原因、Service/Ingress 是否存在、`/health` 最后一次 HTTP 状态码、提交版本验证、回滚和清理结果。运行状态是本次尝试结束时的快照（若进行了回滚，则为回滚之后），未执行或无法获取的检查会明确标记。HTTP 200 不直接等于验证成功，响应还必须包含 `status: ok` 和预期提交 SHA；Service/Ingress 存在也不代表可访问。CLI 通过 `--build-state` 和 `--result-file` 接收这些证据。
 
+部署就绪阶段会先等待 Deployment 和 Pod，然后等待预览 Service 获得 ClusterIP、Traefik Ingress 发布入口，之后才进行 `/health` 验证。Service 或 Ingress 就绪检查失败时，本次尝试会失败，预览不会被标记为 ready。
+
 previewmesh build、deploy、verify 和 cleanup 是工作流使用的底层操作。完整 PR 生命周期应使用工作流，因为它会在部署前后重新检查 PR 状态，并处理过期版本和清理。
 
 ## 项目结构

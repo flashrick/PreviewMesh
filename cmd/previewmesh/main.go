@@ -414,7 +414,7 @@ func healthObserved(ctx context.Context, url, sha string, status *int) (string, 
 	}
 }
 
-// waitReadiness waits for the current Deployment rollout and all matching Pods.
+// waitReadiness waits for the workload, Service address, and Ingress controller status.
 func (x *runner) waitReadiness() error {
 	if _, err := x.run(nil, "kubectl", "rollout", "status", "deployment/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
 		return fmt.Errorf("deployment readiness check failed: %w", err)
@@ -422,6 +422,14 @@ func (x *runner) waitReadiness() error {
 	selector := "app.kubernetes.io/instance=" + x.r.Namespace
 	if _, err := x.run(nil, "kubectl", "wait", "--for=condition=Ready", "pod", "-l", selector, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
 		return fmt.Errorf("pod readiness check failed: %w", err)
+	}
+	// ClusterIP assignment is the readiness signal available for this internal Service.
+	if _, err := x.run(nil, "kubectl", "wait", "--for=jsonpath={.spec.clusterIP}", "service/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
+		return fmt.Errorf("service readiness check failed: %w", err)
+	}
+	// The controller must publish an ingress point before the route is considered ready.
+	if _, err := x.run(nil, "kubectl", "wait", "--for=jsonpath={.status.loadBalancer.ingress}", "ingress/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
+		return fmt.Errorf("ingress readiness check failed: %w", err)
 	}
 	return nil
 }
