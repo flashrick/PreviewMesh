@@ -7,14 +7,16 @@ import (
 
 // reportEvidence contains only the observations intended for PR feedback.
 type reportEvidence struct {
-	Build            string            `json:"-"`
-	Runtime          map[string]string `json:"runtime"`
-	HTTPStatus       int               `json:"http_status"`
-	HTTPVerification string            `json:"http_verification"`
-	ServedSHA        string            `json:"served_sha"`
-	FailedStage      string            `json:"failed_stage"`
-	Rollback         string            `json:"rollback"`
-	Cleanup          string            `json:"cleanup"`
+	Build                string            `json:"-"`
+	Runtime              map[string]string `json:"runtime"`
+	HTTPStatus           int               `json:"http_status"`
+	HTTPVerification     string            `json:"http_verification"`
+	RequestedSHA         string            `json:"requested_sha"`
+	ServedSHA            string            `json:"served_sha"`
+	RevisionVerification string            `json:"revision_verification"`
+	FailedStage          string            `json:"failed_stage"`
+	Rollback             string            `json:"rollback"`
+	Cleanup              string            `json:"cleanup"`
 }
 
 // markdown uses explicit unknowns so missing evidence never looks successful.
@@ -36,7 +38,8 @@ func (e reportEvidence) markdown() string {
 		{"Build", e.Build}, {"Deployment", e.Runtime["deployment"]},
 		{"Pods", e.Runtime["pods"]}, {"Service", e.Runtime["service"]}, {"Ingress", e.Runtime["ingress"]},
 		{"HTTP /health", http}, {"HTTP body and commit verification", e.HTTPVerification},
-		{"Served commit", e.ServedSHA}, {"Failed stage", e.FailedStage},
+		{"Requested commit", e.RequestedSHA}, {"Served commit", e.ServedSHA},
+		{"Revision verification", e.RevisionVerification}, {"Failed stage", e.FailedStage},
 		{"Rollback", e.Rollback}, {"Cleanup", e.Cleanup},
 	}
 	body := "\n| Check | Observed result |\n| --- | --- |\n"

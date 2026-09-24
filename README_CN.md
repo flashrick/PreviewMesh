@@ -145,6 +145,8 @@ Source 仓库根目录必须有能构建 linux/amd64 镜像的 Dockerfile。应�
 
 返回的 commit_sha 必须来自 PREVIEW_COMMIT_SHA 环境变量。PreviewMesh 部署时会注入请求的 source SHA，不要硬编码示例值。
 
+版本验证必须精确匹配：如果 checkout 的 `HEAD` 与 Pull Request SHA 不同，构建会失败；部署结果会记录 `requested_sha` 和 `served_sha`。只有 `/health` 返回请求的 SHA，且工作流确认两者一致时，预览才会被报告为 ready。
+
 ### 5. 配置 K3s 和 Runner
 
 在 private control checkout 中应用受限的 Runner 权限：

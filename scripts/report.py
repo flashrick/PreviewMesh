@@ -72,6 +72,7 @@ summary = {
     'build_job': os.environ.get('BUILD_RESULT', ''), 'local_job': os.environ.get('LOCAL_RESULT', ''),
     'requested_sha': os.environ.get('REQUESTED_SHA', ''),
     'served_sha': results.get('deploy', {}).get('served_sha', ''),
+    'revision_verification': results.get('deploy', {}).get('revision_verification', 'not_attempted'),
     'url': results.get('deploy', {}).get('url', ''),
     'failed_stage': failed.get('failed_stage', ''),
     'error': failed.get('error', ''),

@@ -38,7 +38,11 @@ import json, os, pathlib, sys
 command = sys.argv[1]
 with open('mutations', 'a') as f: f.write(command+'\\n')
 failed = os.environ['SCENARIO'] == 'deploy_failure' and command == 'deploy'
-result = {'result':'failure' if failed else 'success', 'served_sha':'a'*40,
+wrong_revision = os.environ['SCENARIO'] == 'wrong_revision' and command == 'deploy'
+result = {'result':'failure' if failed else 'success', 'requested_sha':'a'*40,
+          'served_sha':'b'*40 if wrong_revision else 'a'*40,
+          'http_verification':'success',
+          'revision_verification':'failure' if wrong_revision else 'success',
           'cleanup':'confirmed_absent' if command == 'cleanup' else 'not_attempted'}
 pathlib.Path(sys.argv[sys.argv.index('--result-file')+1]).write_text(json.dumps(result))
 sys.exit(1 if failed else 0)
@@ -51,6 +55,7 @@ with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
         ('post_closed', 'removed', ['deploy', 'cleanup'], 0),
         ('post_superseded', 'superseded', ['deploy'], 0),
         ('ready', 'ready', ['deploy'], 0),
+        ('wrong_revision', 'failure', ['deploy'], 1),
         ('deploy_failure', 'failure', ['deploy'], 1),
         ('inspect_failure', 'failure', [], 1),
         ('report_failure', 'removed', ['cleanup'], 0),
@@ -111,4 +116,4 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     summary = json.loads((report/'evidence/summary.json').read_text())
     assert summary['failed_stage']=='cleanup' and summary['error']=='API unavailable'
     assert summary['remaining_namespace_resources'] is None
-print('PASS: synchronize notification and 8 current-state/reporting regressions (tool doubles only).')
+print('PASS: synchronize notification and 9 current-state/reporting regressions (tool doubles only).')

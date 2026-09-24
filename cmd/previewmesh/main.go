@@ -48,19 +48,20 @@ type options struct {
 
 // result is the structured outcome shared by the CLI and automation.
 type result struct {
-	Namespace        string            `json:"namespace"`
-	RequestedSHA     string            `json:"requested_sha"`
-	ServedSHA        string            `json:"served_sha"`
-	Image            string            `json:"image"`
-	URL              string            `json:"url"`
-	Result           string            `json:"result"`
-	FailedStage      string            `json:"failed_stage"`
-	Rollback         string            `json:"rollback"`
-	Cleanup          string            `json:"cleanup"`
-	Error            string            `json:"error"`
-	Runtime          map[string]string `json:"runtime,omitempty"`
-	HTTPStatus       int               `json:"http_status,omitempty"`
-	HTTPVerification string            `json:"http_verification,omitempty"`
+	Namespace            string            `json:"namespace"`
+	RequestedSHA         string            `json:"requested_sha"`
+	ServedSHA            string            `json:"served_sha"`
+	Image                string            `json:"image"`
+	URL                  string            `json:"url"`
+	Result               string            `json:"result"`
+	FailedStage          string            `json:"failed_stage"`
+	Rollback             string            `json:"rollback"`
+	Cleanup              string            `json:"cleanup"`
+	Error                string            `json:"error"`
+	Runtime              map[string]string `json:"runtime,omitempty"`
+	HTTPStatus           int               `json:"http_status,omitempty"`
+	HTTPVerification     string            `json:"http_verification,omitempty"`
+	RevisionVerification string            `json:"revision_verification"`
 }
 
 // namespace contains the Kubernetes fields needed for ownership checks.
@@ -356,6 +357,17 @@ func (x *runner) build() error {
 	})
 }
 
+// revisionVerification classifies whether the observed health SHA matches the requested revision.
+func revisionVerification(expected, served string) string {
+	if !shaPattern.MatchString(expected) || !shaPattern.MatchString(served) {
+		return "not_checked"
+	}
+	if expected == served {
+		return "success"
+	}
+	return "failure"
+}
+
 // health polls the preview until it serves the requested commit.
 func health(ctx context.Context, url, sha string) (string, error) {
 	return healthObserved(ctx, url, sha, nil)
@@ -401,7 +413,7 @@ func healthObserved(ctx context.Context, url, sha string, status *int) (string, 
 			if err == nil && shaPattern.MatchString(body.SHA) {
 				served = body.SHA
 			}
-			if resp.StatusCode == 200 && err == nil && body.Status == "ok" && body.SHA == sha {
+			if resp.StatusCode == 200 && err == nil && body.Status == "ok" && revisionVerification(sha, body.SHA) == "success" {
 				return body.SHA, nil
 			}
 			last = "health response did not match expected status and revision"
@@ -440,11 +452,14 @@ func (x *runner) verifyHTTP(sha string) error {
 	defer cancel()
 	x.r.HTTPStatus = 0
 	x.r.HTTPVerification = "failure"
+	x.r.RevisionVerification = "not_checked"
+	x.r.ServedSHA = ""
 	served, err := healthObserved(ctx, x.r.URL, sha, &x.r.HTTPStatus)
+	x.r.ServedSHA = served
+	x.r.RevisionVerification = revisionVerification(sha, served)
 	if err == nil {
 		x.r.HTTPVerification = "success"
 	}
-	x.r.ServedSHA = served
 	return err
 }
 
@@ -640,7 +655,7 @@ func (x *runner) cleanup() error {
 func execute(o options) (result, error) {
 	name, _ := identity(o.repoID, o.pr)
 	// Initialize fields that should be explicit even when a command skips them.
-	x := runner{o: o, r: result{Namespace: name, RequestedSHA: o.sha, Image: o.image, URL: "http://" + o.hostname, Rollback: "not_attempted", Cleanup: "not_attempted"}}
+	x := runner{o: o, r: result{Namespace: name, RequestedSHA: o.sha, Image: o.image, URL: "http://" + o.hostname, Rollback: "not_attempted", Cleanup: "not_attempted", RevisionVerification: "not_attempted"}}
 	var err error
 	switch o.command {
 	case "build":

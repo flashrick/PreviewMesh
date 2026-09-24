@@ -102,6 +102,41 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// TestRevisionVerification keeps an exact source revision distinct from an arbitrary valid SHA.
+func TestRevisionVerification(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	for _, tc := range []struct {
+		name, served, want string
+	}{
+		{"matching", sha, "success"},
+		{"mismatched", strings.Repeat("b", 40), "failure"},
+		{"malformed", "main", "not_checked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := revisionVerification(sha, tc.served); got != tc.want {
+				t.Fatalf("revisionVerification(%q, %q) = %q, want %q", sha, tc.served, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHTTPRevisionMismatchIsRecorded ensures a reachable but stale preview cannot look verified.
+func TestHTTPRevisionMismatchIsRecorded(t *testing.T) {
+	wanted := strings.Repeat("a", 40)
+	served := strings.Repeat("b", 40)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"status":"ok","commit_sha":%q}`, served)
+	}))
+	defer srv.Close()
+	x := runner{o: options{httpTimeout: 20 * time.Millisecond}, r: result{URL: srv.URL}}
+	if err := x.verifyHTTP(wanted); err == nil {
+		t.Fatal("stale revision was accepted")
+	}
+	if x.r.ServedSHA != served || x.r.HTTPVerification != "failure" || x.r.RevisionVerification != "failure" {
+		t.Fatalf("revision evidence = served %q, HTTP %q, revision %q", x.r.ServedSHA, x.r.HTTPVerification, x.r.RevisionVerification)
+	}
+}
+
 // fakeTools exercises orchestration failures without requiring a live cluster.
 func fakeTools(t *testing.T, nsJSON string, helmFail bool) *runner {
 	t.Helper()
@@ -172,8 +207,8 @@ func TestReadinessChecksAllResources(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("HTTP verification requests=%d, want 1", requests.Load())
 	}
-	if x.r.HTTPStatus != http.StatusOK || x.r.HTTPVerification != "success" || x.r.ServedSHA != x.o.sha {
-		t.Fatalf("HTTP evidence = status %d, verification %q, served SHA %q", x.r.HTTPStatus, x.r.HTTPVerification, x.r.ServedSHA)
+	if x.r.HTTPStatus != http.StatusOK || x.r.HTTPVerification != "success" || x.r.ServedSHA != x.o.sha || x.r.RevisionVerification != "success" {
+		t.Fatalf("HTTP evidence = status %d, HTTP verification %q, served SHA %q, revision verification %q", x.r.HTTPStatus, x.r.HTTPVerification, x.r.ServedSHA, x.r.RevisionVerification)
 	}
 }
 

@@ -145,6 +145,8 @@ The source repository must contain a root `Dockerfile` that builds a `linux/amd6
 
 The returned `commit_sha` must come from the `PREVIEW_COMMIT_SHA` environment variable. PreviewMesh injects the requested source SHA during deployment; do not hardcode the example value.
 
+Revision verification is exact: the build rejects a checkout whose `HEAD` differs from the pull-request SHA, and the deployment records both `requested_sha` and `served_sha`. The preview is reported ready only when `/health` returns the requested SHA and the workflow's result check confirms that both values match.
+
 ### 5. Configure K3s and the runner
 
 Apply the restricted runner permissions from the private control checkout:

@@ -42,6 +42,27 @@ inspect() {
   env -u GITHUB_OUTPUT bin/control inspect "${common[@]}" > "$1"
 }
 field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
+assert_verified_revision() {
+  # Do not publish a ready status unless the artifact records the exact requested SHA.
+  python3 - "$1" "$BUILT_SHA" <<'PY'
+import json
+import sys
+
+path, expected = sys.argv[1:]
+with open(path) as stream:
+    result = json.load(stream)
+checks = {
+    'result': 'success',
+    'requested_sha': expected,
+    'served_sha': expected,
+    'http_verification': 'success',
+    'revision_verification': 'success',
+}
+for field, wanted in checks.items():
+    if result.get(field) != wanted:
+        raise SystemExit(f'{field} did not verify the requested revision')
+PY
+}
 cleanup() {
   bin/previewmesh cleanup "${common[@]}" --sha "$ATTEMPT_SHA" --evidence evidence/local.csv --result-file evidence/cleanup.json
   export OUTCOME=removed
@@ -53,6 +74,7 @@ if [ "$(field evidence/before.json state)" = closed ]; then cleanup; exit 0; fi
 if [ "$current_sha" != "$BUILT_SHA" ]; then export OUTCOME=superseded; exit 0; fi
 port=$(field evidence/before.json port)
 bin/previewmesh deploy "${common[@]}" --sha "$BUILT_SHA" --image "$BUILT_IMAGE" --port "$port" --evidence evidence/local.csv --result-file evidence/deploy.json
+assert_verified_revision evidence/deploy.json
 inspect evidence/after.json
 if [ "$(field evidence/after.json state)" = closed ]; then cleanup; exit 0; fi
 if [ "$(field evidence/after.json sha)" != "$BUILT_SHA" ]; then export OUTCOME=superseded; exit 0; fi
