@@ -618,7 +618,7 @@ func (x *runner) verify() error {
 
 // cleanup deletes only an owned namespace and confirms that it is gone.
 func (x *runner) cleanup() error {
-	return x.stage("cleanup", func() error {
+	err := x.stage("cleanup", func() error {
 		ns, err := x.getNS()
 		if err != nil {
 			return err
@@ -649,6 +649,11 @@ func (x *runner) cleanup() error {
 		x.r.Cleanup = "confirmed_absent"
 		return nil
 	})
+	if err != nil && x.r.Cleanup != "confirmed_absent" {
+		// Distinguish an attempted cleanup failure from a command that skipped cleanup.
+		x.r.Cleanup = "failure"
+	}
+	return err
 }
 
 // execute dispatches one validated command and normalizes its result.

@@ -96,13 +96,15 @@ func TestReportRejectsInvalidInput(t *testing.T) {
 func TestCurrentPRPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name, state string
+		merged      bool
 		head        int
 		push        bool
 		ok          bool
 	}{
-		{"write author", "open", 12, true, true}, {"maintainer effective push", "open", 12, true, true},
-		{"read author", "open", 12, false, false}, {"fork", "open", 13, true, false},
-		{"closed former author", "closed", 12, false, true},
+		{"write author", "open", false, 12, true, true}, {"maintainer effective push", "open", false, 12, true, true},
+		{"read author", "open", false, 12, false, false}, {"fork", "open", false, 13, true, false},
+		{"closed former author", "closed", false, 12, false, true},
+		{"merged former author", "open", true, 12, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			permissionCalls := 0
@@ -112,7 +114,7 @@ func TestCurrentPRPolicy(t *testing.T) {
 				case "/repositories/12":
 					fmt.Fprint(w, `{"id":12,"full_name":"owner/demo"}`)
 				case "/repos/owner/demo/pulls/3":
-					fmt.Fprintf(w, `{"number":3,"state":%q,"head":{"sha":%q,"repo":{"id":%d}},"base":{"repo":{"id":12}},"user":{"login":"author"}}`, tc.state, strings.Repeat("a", 40), tc.head)
+					fmt.Fprintf(w, `{"number":3,"state":%q,"merged":%t,"head":{"sha":%q,"repo":{"id":%d}},"base":{"repo":{"id":12}},"user":{"login":"author"}}`, tc.state, tc.merged, strings.Repeat("a", 40), tc.head)
 				case "/repos/owner/demo/collaborators/author/permission":
 					permissionCalls++
 					fmt.Fprintf(w, `{"permission":"maintain","user":{"permissions":{"push":%t}}}`, tc.push)
@@ -126,8 +128,10 @@ func TestCurrentPRPolicy(t *testing.T) {
 			if (err == nil) != tc.ok {
 				t.Fatalf("state=%+v err=%v", s, err)
 			}
-			if tc.state == "closed" && (s.Eligible || permissionCalls != 0) {
-				t.Fatal("cleanup incorrectly requires author access")
+			if tc.state == "closed" || tc.merged {
+				if s.State != "closed" || s.Merged != tc.merged || s.Eligible || permissionCalls != 0 {
+					t.Fatalf("cleanup policy state=%+v permission calls=%d", s, permissionCalls)
+				}
 			}
 		})
 	}

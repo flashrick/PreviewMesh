@@ -274,7 +274,57 @@ func TestCleanupRefusesUnknownOwnershipAndAPIFailure(t *testing.T) {
 			if tc.wantOK && x.r.Cleanup != "confirmed_absent" {
 				t.Fatal("absence not recorded")
 			}
+			if !tc.wantOK && x.r.Cleanup != "failure" {
+				t.Fatalf("cleanup failure was not recorded: %q", x.r.Cleanup)
+			}
 		})
+	}
+}
+
+// TestCleanupDeletesOwnedNamespaceAndConfirmsAbsence covers the successful close path.
+func TestCleanupDeletesOwnedNamespaceAndConfirmsAbsence(t *testing.T) {
+	x := fakeTools(t, ownedNS(strings.Repeat("a", 40)), false)
+	dir := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+	deleted := filepath.Join(dir, "deleted")
+	t.Setenv("DELETED_MARKER", deleted)
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$CALLS"
+case "$1" in
+get)
+  if [ -f "$DELETED_MARKER" ]; then exit 0; fi
+  printf '%s' "$NAMESPACE_JSON"
+  ;;
+delete)
+  : > "$DELETED_MARKER"
+  ;;
+wait)
+  ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if x.r.Cleanup != "confirmed_absent" || x.r.FailedStage != "" {
+		t.Fatalf("cleanup result = %q, failed stage = %q", x.r.Cleanup, x.r.FailedStage)
+	}
+	calls, err := os.ReadFile(os.Getenv("CALLS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callText := string(calls)
+	if strings.Count(callText, "get namespace") != 2 {
+		t.Fatalf("cleanup should inspect before and after deletion: %s", callText)
+	}
+	for _, want := range []string{
+		"delete --raw /api/v1/namespaces/pm-r12-pr3 -f -",
+		"wait --for=delete namespace/pm-r12-pr3 --timeout=1s",
+	} {
+		if !strings.Contains(callText, want) {
+			t.Fatalf("missing cleanup operation %q in %s", want, callText)
+		}
 	}
 }
 

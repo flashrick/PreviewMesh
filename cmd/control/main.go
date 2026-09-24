@@ -30,6 +30,7 @@ type state struct {
 	registration
 	PR       string `json:"pr_number"`
 	State    string `json:"state"`
+	Merged   bool   `json:"merged"`
 	SHA      string `json:"sha"`
 	Eligible bool   `json:"eligible"`
 }
@@ -143,6 +144,7 @@ func inspect(a api, r registration, pr string) (state, error) {
 	var p struct {
 		Number uint64 `json:"number"`
 		State  string `json:"state"`
+		Merged bool   `json:"merged"`
 		Head   ref    `json:"head"`
 		Base   ref    `json:"base"`
 		User   struct {
@@ -156,9 +158,14 @@ func inspect(a api, r registration, pr string) (state, error) {
 		return s, errors.New("invalid PR identity or head revision")
 	}
 	s.State = p.State
+	s.Merged = p.Merged
 	s.SHA = p.Head.SHA
-	// Closed PR cleanup does not depend on the original author's current access.
-	if p.State == "closed" {
+	// GitHub reports merged PRs as closed; neither cleanup path needs author access.
+	if p.Merged {
+		// Normalize the merged state for the workflow's cleanup decision.
+		s.State = "closed"
+	}
+	if s.State == "closed" {
 		return s, nil
 	}
 	if p.State != "open" {
@@ -194,7 +201,7 @@ func outputs(s state) error {
 			return err
 		}
 		defer f.Close()
-		_, err = fmt.Fprintf(f, "repository_id=%s\nsource_repository=%s\nsource_secret=%s\nport=%d\npr_number=%s\nstate=%s\nsha=%s\neligible=%t\n", s.ID, s.Source, s.Secret, s.Port, s.PR, s.State, s.SHA, s.Eligible)
+		_, err = fmt.Fprintf(f, "repository_id=%s\nsource_repository=%s\nsource_secret=%s\nport=%d\npr_number=%s\nstate=%s\nmerged=%t\nsha=%s\neligible=%t\n", s.ID, s.Source, s.Secret, s.Port, s.PR, s.State, s.Merged, s.SHA, s.Eligible)
 		return err
 	}
 	return nil

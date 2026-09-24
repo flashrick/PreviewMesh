@@ -26,9 +26,9 @@ elif command == 'inspect':
     count = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(count + 1))
     if scenario == 'inspect_failure': sys.exit(1)
-    state = 'closed' if scenario in ['pre_closed', 'report_failure'] or (scenario == 'post_closed' and count) else 'open'
+    state = 'closed' if scenario in ['pre_closed', 'merged_closed', 'report_failure'] or (scenario == 'post_closed' and count) else 'open'
     sha = 'b' * 40 if scenario == 'pre_superseded' or (scenario == 'post_superseded' and count) else 'a' * 40
-    print(json.dumps({'state':state, 'sha':sha, 'port':8080}))
+    print(json.dumps({'state':state, 'merged':scenario == 'merged_closed', 'sha':sha, 'port':8080}))
 elif command == 'status':
     pathlib.Path('reported.json').write_text(json.dumps(sys.argv[2:]))
     if scenario == 'report_failure': sys.exit(1)
@@ -51,6 +51,7 @@ with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
     temp = Path(temp)
     for scenario, expected, mutations, exitcode in [
         ('pre_closed', 'removed', ['cleanup'], 0),
+        ('merged_closed', 'removed', ['cleanup'], 0),
         ('pre_superseded', 'superseded', [], 0),
         ('post_closed', 'removed', ['deploy', 'cleanup'], 0),
         ('post_superseded', 'superseded', ['deploy'], 0),
@@ -116,4 +117,4 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     summary = json.loads((report/'evidence/summary.json').read_text())
     assert summary['failed_stage']=='cleanup' and summary['error']=='API unavailable'
     assert summary['remaining_namespace_resources'] is None
-print('PASS: synchronize notification and 9 current-state/reporting regressions (tool doubles only).')
+print('PASS: synchronize notification and 10 current-state/reporting regressions (tool doubles only).')
