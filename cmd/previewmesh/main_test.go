@@ -172,6 +172,9 @@ func TestReadinessChecksAllResources(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("HTTP verification requests=%d, want 1", requests.Load())
 	}
+	if x.r.HTTPStatus != http.StatusOK || x.r.HTTPVerification != "success" || x.r.ServedSHA != x.o.sha {
+		t.Fatalf("HTTP evidence = status %d, verification %q, served SHA %q", x.r.HTTPStatus, x.r.HTTPVerification, x.r.ServedSHA)
+	}
 }
 
 // TestReadinessFailureStopsHTTPVerification keeps an unready preview from being reported as healthy.
