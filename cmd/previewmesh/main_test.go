@@ -118,7 +118,8 @@ func fakeTools(t *testing.T, nsJSON string, helmFail bool) *runner {
 printf '%s\n' "$*" >> "$CALLS"
 case "$1 $2" in
  'get namespace') if [ "$API_FAIL" = 1 ]; then exit 1; fi; printf '%s' "$NAMESPACE_JSON";;
- 'rollout status') exit 0;;
+ 'rollout status') if [ "$ROLLOUT_FAIL" = 1 ]; then exit 1; fi; exit 0;;
+ 'wait --for=condition=Ready') if [ "$POD_READY_FAIL" = 1 ]; then exit 1; fi; exit 0;;
  'status pm-r12-pr3') printf '{"version":2}';;
  'upgrade --install') exit "$HELM_FAIL";;
 esac
@@ -130,6 +131,63 @@ esac
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return &runner{o: options{repoID: "12", pr: "3", sha: strings.Repeat("b", 40), source: "owner/demo", port: 8080, timeout: time.Second, httpTimeout: 30 * time.Millisecond, chart: "unused"}, r: result{Namespace: "pm-r12-pr3"}}
+}
+
+// TestReadinessChecksDeploymentAndPods requires both Kubernetes layers before HTTP verification.
+func TestReadinessChecksDeploymentAndPods(t *testing.T) {
+	x := fakeTools(t, "", false)
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprintf(w, `{"status":"ok","commit_sha":%q}`, x.o.sha)
+	}))
+	defer srv.Close()
+	x.r.URL = srv.URL
+	if err := x.check(x.o.sha); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(os.Getenv("CALLS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callText := string(calls)
+	rollout := "rollout status deployment/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
+	pods := "wait --for=condition=Ready pod -l app.kubernetes.io/instance=pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
+	if strings.Index(callText, rollout) < 0 || strings.Index(callText, pods) < 0 || strings.Index(callText, rollout) > strings.Index(callText, pods) {
+		t.Fatalf("readiness checks missing or out of order: %s", callText)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("HTTP verification requests=%d, want 1", requests.Load())
+	}
+}
+
+// TestReadinessFailureStopsHTTPVerification keeps an unready preview from being reported as healthy.
+func TestReadinessFailureStopsHTTPVerification(t *testing.T) {
+	for _, tc := range []struct {
+		name, variable, want string
+	}{
+		{"deployment", "ROLLOUT_FAIL", "deployment readiness check failed"},
+		{"pod", "POD_READY_FAIL", "pod readiness check failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := fakeTools(t, "", false)
+			t.Setenv(tc.variable, "1")
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				fmt.Fprintf(w, `{"status":"ok","commit_sha":%q}`, x.o.sha)
+			}))
+			defer srv.Close()
+			x.r.URL = srv.URL
+			err := x.check(x.o.sha)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v, want %q", err, tc.want)
+			}
+			if requests.Load() != 0 {
+				t.Fatalf("HTTP verification started after readiness failure: %d requests", requests.Load())
+			}
+		})
+	}
 }
 
 // ownedNS returns the smallest owned namespace payload needed by recovery tests.

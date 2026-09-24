@@ -414,11 +414,20 @@ func healthObserved(ctx context.Context, url, sha string, status *int) (string, 
 	}
 }
 
-// check waits for rollout readiness and then verifies the application response.
-func (x *runner) check(sha string) error {
+// waitReadiness waits for the current Deployment rollout and all matching Pods.
+func (x *runner) waitReadiness() error {
 	if _, err := x.run(nil, "kubectl", "rollout", "status", "deployment/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
-		return err
+		return fmt.Errorf("deployment readiness check failed: %w", err)
 	}
+	selector := "app.kubernetes.io/instance=" + x.r.Namespace
+	if _, err := x.run(nil, "kubectl", "wait", "--for=condition=Ready", "pod", "-l", selector, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
+		return fmt.Errorf("pod readiness check failed: %w", err)
+	}
+	return nil
+}
+
+// verifyHTTP checks the response only after Kubernetes readiness succeeds.
+func (x *runner) verifyHTTP(sha string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), x.o.httpTimeout)
 	defer cancel()
 	x.r.HTTPStatus = 0
@@ -429,6 +438,14 @@ func (x *runner) check(sha string) error {
 	}
 	x.r.ServedSHA = served
 	return err
+}
+
+// check waits for Kubernetes readiness and then verifies the application response.
+func (x *runner) check(sha string) error {
+	if err := x.waitReadiness(); err != nil {
+		return err
+	}
+	return x.verifyHTTP(sha)
 }
 
 // revision returns the current Helm release revision.
@@ -548,7 +565,10 @@ func (x *runner) deploy() error {
 	if err != nil {
 		return x.recover(ns, err)
 	}
-	if err = x.stage("http_verify", func() error { return x.check(x.o.sha) }); err != nil {
+	if err = x.stage("readiness", x.waitReadiness); err != nil {
+		return x.recover(ns, err)
+	}
+	if err = x.stage("http_verify", func() error { return x.verifyHTTP(x.o.sha) }); err != nil {
 		return x.recover(ns, err)
 	}
 	return x.markGood(x.o.sha)
@@ -564,7 +584,10 @@ func (x *runner) verify() error {
 		return errors.New("namespace does not exist")
 	}
 	defer x.observeRuntime()
-	if err = x.stage("http_verify", func() error { return x.check(x.o.sha) }); err != nil {
+	if err = x.stage("readiness", x.waitReadiness); err != nil {
+		return x.recover(ns, err)
+	}
+	if err = x.stage("http_verify", func() error { return x.verifyHTTP(x.o.sha) }); err != nil {
 		return x.recover(ns, err)
 	}
 	return x.markGood(x.o.sha)
