@@ -281,6 +281,30 @@ func TestCleanupRefusesUnknownOwnershipAndAPIFailure(t *testing.T) {
 	}
 }
 
+// TestCleanupIsSafeWhenNamespaceIsAlreadyAbsent repeats cleanup without a live cluster.
+func TestCleanupIsSafeWhenNamespaceIsAlreadyAbsent(t *testing.T) {
+	x := fakeTools(t, "", false)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := x.cleanup(); err != nil {
+			t.Fatalf("cleanup attempt %d: %v", attempt, err)
+		}
+		if x.r.Cleanup != "confirmed_absent" || x.r.FailedStage != "" {
+			t.Fatalf("cleanup attempt %d result = %q, failed stage = %q", attempt, x.r.Cleanup, x.r.FailedStage)
+		}
+	}
+
+	calls, err := os.ReadFile(os.Getenv("CALLS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(calls), "get namespace"); got != 2 {
+		t.Fatalf("cleanup should only recheck the already-absent namespace, got %d reads", got)
+	}
+	if strings.Contains(string(calls), "delete") {
+		t.Fatalf("cleanup attempted deletion after absence was confirmed: %s", calls)
+	}
+}
+
 // TestCleanupDeletesOwnedNamespaceAndConfirmsAbsence covers the successful close path.
 func TestCleanupDeletesOwnedNamespaceAndConfirmsAbsence(t *testing.T) {
 	x := fakeTools(t, ownedNS(strings.Repeat("a", 40)), false)
