@@ -16,3 +16,5 @@ kubeconfig*
 *.key
 *.log
 __pycache__/
+/config/previewmesh-runner.yaml
+/config/.runner-*

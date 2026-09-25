@@ -692,7 +692,8 @@ func (x *runner) cleanup() error {
 func execute(o options) (result, error) {
 	name, _ := identity(o.repoID, o.pr)
 	// Initialize fields that should be explicit even when a command skips them.
-	x := runner{o: o, r: result{Namespace: name, RequestedSHA: o.sha, Image: o.image, URL: "http://" + o.hostname, Rollback: "not_attempted", Cleanup: "not_attempted", RevisionVerification: "not_attempted"}}
+	// Use the host proxy port for both health verification and published links.
+	x := runner{o: o, r: result{Namespace: name, RequestedSHA: o.sha, Image: o.image, URL: "http://" + o.hostname + ":18080", Rollback: "not_attempted", Cleanup: "not_attempted", RevisionVerification: "not_attempted"}}
 	var err error
 	switch o.command {
 	case "build":

@@ -6,7 +6,7 @@ go build -o bin/previewmesh ./cmd/previewmesh
 common=(--repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER")
 bin/control resolve "${common[@]}" > evidence/registration.json
 run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-preview_url="http://pm-r${REPOSITORY_ID}-pr${PR_NUMBER}.preview.test"
+preview_url="http://pm-r${REPOSITORY_ID}-pr${PR_NUMBER}.preview.test:18080"
 export ATTEMPT_SHA="$BUILT_SHA" OUTCOME=failure REPORTING_RESULT=not_attempted
 finish() {
   code=$?

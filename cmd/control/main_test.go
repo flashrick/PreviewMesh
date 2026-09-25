@@ -16,7 +16,7 @@ import (
 func TestReportStatus(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	runURL := "https://github.com/owner/control/actions/runs/1"
-	previewURL := "http://pm-r12-pr3.preview.test"
+	previewURL := "http://pm-r12-pr3.preview.test:18080"
 	for _, tc := range []struct {
 		name, status, description, target string
 		comment, preview                  bool

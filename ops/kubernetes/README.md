@@ -25,22 +25,18 @@ cluster-admin kubeconfig.
 
 ## Runner kubeconfig
 
-Create a kubeconfig outside the repository from the cluster CA data and a
-short-lived ServiceAccount token:
+Follow [setup step 5](../../README.md#5-configure-k3s-and-the-runner) for the
+complete commands to create the runner kubeconfig, protect it from Git, and check
+its permissions. The example stores it in the private control checkout at
+`config/previewmesh-runner.yaml`, with mode `600`, owned by the runner account.
+The generated file contains the cluster address, CA, and a dedicated
+ServiceAccount token; it contains no administrator credentials.
 
-```bash
-sudo k3s kubectl -n previewmesh-system create token previewmesh-runner --duration=24h
-chmod 600 /absolute/path/previewmesh-runner.yaml
-export KUBECONFIG=/absolute/path/previewmesh-runner.yaml
-kubectl auth can-i create namespaces
-kubectl auth can-i delete namespaces
-kubectl auth can-i create secrets --all-namespaces
-kubectl auth can-i create clusterroles
-```
-
-The first three checks should return `yes`; the last should return `no`.
-Renew the token before it expires and restart the runner if its environment
-changes.
+The requested token lifetime is 24 hours, subject to the API server's policy.
+Rerun the generation block before expiry; renewal is not automatic. Configure
+`KUBECONFIG` in the runner service environment, and restart the service when that
+environment changes. An interactive shell's `export` does not update an existing
+service.
 
 The chart does not create namespaces. The trusted local job creates and labels
 one namespace per repository ID and pull-request number before invoking Helm.

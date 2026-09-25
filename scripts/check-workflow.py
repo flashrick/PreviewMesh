@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
             assert '--result-file' not in reported
         assert reported[reported.index('--run-url')+1] == 'https://github.com/owner/control/actions/runs/1'
         target = reported[reported.index('--url')+1]
-        assert target == ('http://pm-r12-pr3.preview.test' if scenario == 'ready' else 'https://github.com/owner/control/actions/runs/1'), (scenario, target)
+        assert target == ('http://pm-r12-pr3.preview.test:18080' if scenario == 'ready' else 'https://github.com/owner/control/actions/runs/1'), (scenario, target)
         assert reported[reported.index('--state')+1] == ('success' if expected in ['ready', 'removed'] else 'failure')
         if scenario == 'report_failure':
             assert outcome['reporting_result'] == 'failure'
