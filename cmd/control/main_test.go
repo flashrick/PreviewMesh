@@ -108,12 +108,14 @@ func TestCurrentPRPolicy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			permissionCalls := 0
+			prReads := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Return only the API responses needed for this policy case.
 				switch r.URL.Path {
 				case "/repositories/12":
 					fmt.Fprint(w, `{"id":12,"full_name":"owner/demo"}`)
 				case "/repos/owner/demo/pulls/3":
+					prReads++
 					fmt.Fprintf(w, `{"number":3,"state":%q,"merged":%t,"head":{"sha":%q,"repo":{"id":%d}},"base":{"repo":{"id":12}},"user":{"login":"author"}}`, tc.state, tc.merged, strings.Repeat("a", 40), tc.head)
 				case "/repos/owner/demo/collaborators/author/permission":
 					permissionCalls++
@@ -124,14 +126,24 @@ func TestCurrentPRPolicy(t *testing.T) {
 				}
 			}))
 			defer srv.Close()
-			s, err := inspect(api{base: srv.URL, token: "test", client: srv.Client()}, registration{ID: "12", Source: "owner/demo"}, "3")
-			if (err == nil) != tc.ok {
-				t.Fatalf("state=%+v err=%v", s, err)
-			}
+			attempts := 1
 			if tc.state == "closed" || tc.merged {
-				if s.State != "closed" || s.Merged != tc.merged || s.Eligible || permissionCalls != 0 {
-					t.Fatalf("cleanup policy state=%+v permission calls=%d", s, permissionCalls)
+				// Duplicate close/merge deliveries must remain eligible for cleanup.
+				attempts = 3
+			}
+			for attempt := 0; attempt < attempts; attempt++ {
+				s, err := inspect(api{base: srv.URL, token: "test", client: srv.Client()}, registration{ID: "12", Source: "owner/demo"}, "3")
+				if (err == nil) != tc.ok {
+					t.Fatalf("state=%+v err=%v", s, err)
 				}
+				if tc.state == "closed" || tc.merged {
+					if s.State != "closed" || s.Merged != tc.merged || s.Eligible || permissionCalls != 0 {
+						t.Fatalf("cleanup policy state=%+v permission calls=%d", s, permissionCalls)
+					}
+				}
+			}
+			if prReads != attempts {
+				t.Fatalf("PR reads=%d, want %d fresh inspections", prReads, attempts)
 			}
 		})
 	}

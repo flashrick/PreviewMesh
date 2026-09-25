@@ -10,6 +10,8 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 sha = 'a' * 40
+# Keep report aggregation local even when the parent shell has GitHub credentials.
+offline_report = "import runpy,sys,urllib.request\ndef offline(*a, **k): raise OSError('offline test')\nurllib.request.urlopen=offline\nrunpy.run_path(sys.argv[1],run_name='__main__')"
 
 # Exercise the workflow's actual shell expression: each control owns its source image.
 workflow = (root / '.github/workflows/preview.yml').read_text()
@@ -174,7 +176,6 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
 
             # Aggregate the CLI's actual artifacts, preserving failure across reporting.
             shutil.copytree(case/'evidence', case/'collected/local')
-            offline_report = "import runpy,sys,urllib.request\ndef offline(*a, **k): raise OSError('offline test')\nurllib.request.urlopen=offline\nrunpy.run_path(sys.argv[1],run_name='__main__')"
             report_env = dict(env, GITHUB_RUN_ATTEMPT='1', GH_TOKEN='test', BUILD_RESULT='success',
                               LOCAL_RESULT='failure', REQUESTED_SHA=sha)
             report_env.pop('GITHUB_STEP_SUMMARY', None)
@@ -209,6 +210,103 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
                 assert repeated_report[repeated_report.index('--run-url')+1] == f'https://github.com/owner/control/actions/runs/{run_id}'
                 assert repeated_report[repeated_report.index('--url')+1] == (target if scenario == 'ready' else f'https://github.com/owner/control/actions/runs/{run_id}')
 
+    # Each dispatch gets a fresh workspace while Kubernetes state survives retries.
+    # Strict tool doubles reject all creation/update commands, including Helm calls.
+    cleanup_infrastructure = r'''#!/usr/bin/env python3
+import json, os, pathlib, sys
+tool, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
+with open('infrastructure.jsonl', 'a') as stream:
+    stream.write(json.dumps([tool, *args]) + '\n')
+state = pathlib.Path(os.environ['CLUSTER_STATE'])
+namespace = 'pm-r12-pr3'
+if tool == 'kubectl':
+    if args == ['get', 'namespace', namespace, '--ignore-not-found', '-o', 'json']:
+        if state.exists(): print(state.read_text())
+        sys.exit(0)
+    if args == ['delete', '--raw', '/api/v1/namespaces/' + namespace, '-f', '-']:
+        options = json.load(sys.stdin)
+        assert options['preconditions']['uid'] == json.loads(state.read_text())['metadata']['uid']
+        state.unlink()
+        sys.exit(0)
+    if args[:3] == ['wait', '--for=delete', 'namespace/' + namespace]:
+        assert not state.exists()
+        sys.exit(0)
+raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
+'''
+    for scenario in ['pre_closed', 'merged_closed']:
+        for initially_present in [True, False]:
+            case = temp / f'repeated-{scenario}-{initially_present}'
+            tools = case / 'tools'
+            tools.mkdir(parents=True)
+            cluster_state = case / 'namespace.json'
+            if initially_present:
+                cluster_state.write_text(json.dumps({'metadata': {'uid': 'cleanup-uid', 'labels': {
+                    'previewmesh.local/managed-by': 'previewmesh',
+                    'previewmesh.local/repository-id': '12', 'previewmesh.local/pr-number': '3'}}}))
+            shutil.copy2(binary, tools / 'previewmesh')
+            for name, content in [('control', control), ('kubectl', cleanup_infrastructure),
+                                  ('helm', cleanup_infrastructure), ('docker', cleanup_infrastructure),
+                                  ('go', '#!/bin/sh\ncp "$MOCK_TOOLS/$(basename "$3")" "$3"\n')]:
+                path = tools / name
+                path.write_text(content)
+                path.chmod(0o700)
+            for attempt in range(3):
+                run = case / str(attempt)
+                run.mkdir()
+                # Also cover delayed builds: closed PR state wins over stale SHA/image.
+                built_sha = '' if attempt == 0 else ('a' if attempt == 1 else 'b') * 40
+                env = dict(os.environ, PATH=str(tools)+os.pathsep+os.environ['PATH'],
+                           MOCK_TOOLS=str(tools), CLUSTER_STATE=str(cluster_state), SCENARIO=scenario,
+                           REPOSITORY_ID='12', SOURCE_REPOSITORY='owner/demo', PR_NUMBER='3',
+                           BUILT_SHA=built_sha, BUILT_IMAGE='' if attempt == 0 else
+                           'ghcr.io/owner/previewmesh-c34-r12@sha256:'+'b'*64,
+                           GITHUB_SERVER_URL='https://github.com', GITHUB_REPOSITORY='owner/control',
+                           GITHUB_RUN_ID=str(attempt+1), GITHUB_RUN_ATTEMPT='1')
+                env.pop('PREVIEWMESH_GHCR_USER', None)
+                env.pop('PREVIEWMESH_GHCR_TOKEN', None)
+                completed = subprocess.run(['bash', str(root/'scripts/local-attempt.sh')],
+                                           cwd=run, env=env, capture_output=True, text=True)
+                assert completed.returncode == 0, (scenario, initially_present, attempt, completed.stdout, completed.stderr)
+                assert not cluster_state.exists()
+                assert int((run/'counter').read_text()) == 1
+                assert not (run/'evidence/deploy.json').exists()
+                result = json.loads((run/'evidence/cleanup.json').read_text())
+                assert result['result'] == 'success' and result['cleanup'] == 'confirmed_absent', result
+                assert not result.get('error') and not result.get('failed_stage'), result
+                outcome = json.loads((run/'evidence/outcome.json').read_text())
+                assert outcome == {'attempt_sha': built_sha or sha, 'outcome': 'removed',
+                                   'reporting_result': 'success'}, outcome
+                calls = [json.loads(line) for line in (run/'infrastructure.jsonl').read_text().splitlines()]
+                expected_operations = ['get', 'delete', 'wait', 'get'] if initially_present and attempt == 0 else ['get']
+                assert [call[:2] for call in calls] == [['kubectl', op] for op in expected_operations], calls
+                reported = json.loads((run/'reported.json').read_text())
+                for flag, expected in {'--state': 'success', '--description': 'Preview removed',
+                                       '--result-file': 'evidence/cleanup.json', '--sha': built_sha or sha,
+                                       '--build-state': 'not attempted' if attempt == 0 else 'success',
+                                       '--url': f'https://github.com/owner/control/actions/runs/{attempt+1}'}.items():
+                    assert reported[reported.index(flag)+1] == expected, (flag, reported)
+                with (run/'evidence/local.csv').open() as stream:
+                    rows = list(csv.DictReader(stream))
+                assert all(row['result'] == 'success' for row in rows), rows
+                stages = [row['stage'] for row in rows]
+                assert stages.count('cleanup') == 1
+                assert stages.count('resource_verify') == (2 if initially_present and attempt == 0 else 1)
+                assert set(stages) == {'cleanup', 'resource_verify'}, stages
+                # Reporting must preserve removal and must never manufacture readiness.
+                shutil.copytree(run/'evidence', run/'collected/local')
+                report_env = dict(env, GH_TOKEN='test', BUILD_RESULT='skipped' if attempt == 0 else 'success',
+                                  LOCAL_RESULT='success', REQUESTED_SHA=built_sha or sha)
+                report_env.pop('GITHUB_STEP_SUMMARY', None)
+                subprocess.run(['python3', '-c', offline_report, str(root/'scripts/report.py')],
+                               cwd=run, env=report_env, check=True)
+                summary = json.loads((run/'evidence/summary.json').read_text())
+                assert summary['outcome'] == 'removed' and summary['cleanup'] == 'confirmed_absent', summary
+                assert summary['remaining_namespace_resources'] == 0, summary
+                assert not summary.get('failed_stage') and not summary.get('error'), summary
+                with (run/'evidence/combined.csv').open() as stream:
+                    combined = list(csv.DictReader(stream))
+                assert not any(row['stage'] == 'workflow_to_ready' for row in combined)
+
     # Timing metadata is available, but it must not hide missing lifecycle evidence.
     report = temp/'report'
     (report/'collected/local').mkdir(parents=True)
@@ -238,4 +336,4 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     assert summary['remaining_namespace_resources'] is None
     stages = {timing['stage'] for timing in summary['stage_timings']}
     assert {'deploy', 'readiness', 'http_verify', 'cleanup', 'resource_observation', 'resource_verify'} <= stages
-print('PASS: notification wiring, 14 current-state/reporting scenarios (including 3 real CLI failure paths), and 4 repeated same-PR/SHA attempts. External infrastructure is doubled.')
+print('PASS: notification wiring, 14 current-state/reporting scenarios (including 3 real CLI failure paths), 4 repeated same-PR/SHA attempts, and 12 real CLI close/merge cleanup attempts. External infrastructure is doubled.')
