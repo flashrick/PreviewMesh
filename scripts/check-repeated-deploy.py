@@ -6,6 +6,8 @@ preview URL. Run from the project root. Evidence contains private runtime
 identities; choose an output directory outside the public repository.
 Repair mode interrupts the preview by deleting each resource in turn. Run only
 when no other deployment or cleanup is modifying the selected preview.
+Duplicate checks require cluster-wide list access for Namespaces, Deployments,
+Services, and Ingresses and a quiet cluster with no unrelated resource churn.
 """
 
 import argparse
@@ -29,12 +31,44 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def check_duplicates(items, ns, repo_id, pr):
+    """Check identity aliases across the cluster, including objects outside ns."""
+    matches = {kind: [] for kind in ('Namespace', 'Deployment', 'Service', 'Ingress')}
+    inventory = []
+    for item in items:
+        kind, metadata = item['kind'], item['metadata']
+        if kind not in matches:
+            continue
+        name = metadata['name']
+        namespace = metadata.get('namespace', '')
+        labels = metadata.get('labels', {})
+        annotations = metadata.get('annotations', {})
+        inventory.append([kind, namespace, name])
+        if kind == 'Namespace':
+            belongs = name == ns or (
+                labels.get('previewmesh.local/repository-id') == str(repo_id)
+                and labels.get('previewmesh.local/pr-number') == str(pr))
+        else:
+            # Count every object in the preview, even if its labels are missing.
+            belongs = (namespace == ns or name == ns
+                       or labels.get('app.kubernetes.io/instance') == ns
+                       or annotations.get('meta.helm.sh/release-name') == ns)
+        if belongs:
+            matches[kind].append([namespace, name])
+    for kind, objects in matches.items():
+        expected = [['' if kind == 'Namespace' else ns, ns]]
+        require(objects == expected, f'Duplicate or missing {kind} for selected preview')
+    return sorted(inventory)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('--namespace', required=True)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--attempts', type=int, default=3)
+    parser.add_argument('--check-duplicates', action='store_true',
+                        help='Check cluster-wide identities and reject added or removed objects')
     parser.add_argument('--repair-missing', action='store_true',
                         help='Delete Service, Deployment, and Ingress in turn and verify repair')
     args = parser.parse_args()
@@ -78,6 +112,19 @@ def main():
     require(baseline['annotations']['previewmesh.local/verified-sha'] == sha,
             'Current release is not the verified revision')
     require(values['port'] == registration['port'], 'Registered port mismatch')
+    inventory_number = 0
+
+    def inventory():
+        nonlocal inventory_number
+        objects = read_json('kubectl', 'get', 'namespace,deployment,service,ingress',
+                            '--all-namespaces', '-o', 'json')
+        # Retain failed observations too, so a duplicate can be investigated.
+        (args.output / f'inventory-{inventory_number}.json').write_text(
+            json.dumps(objects, indent=2) + '\n')
+        inventory_number += 1
+        return check_duplicates(objects['items'], ns, registration['repository_id'], ns[len(prefix):])
+
+    baseline_inventory = inventory() if args.check_duplicates else None
     common = ['--repository-id', registration['repository_id'], '--source-repository', source,
               '--pr', ns[len(prefix):], '--sha', sha, '--port', str(registration['port'])]
     records = []
@@ -123,6 +170,9 @@ def main():
                                   'revision_verification': 'success'}.items():
                 require(result[key] == expected, f'{command}: unexpected {key}')
             observed = snapshot()
+            if args.check_duplicates:
+                # An unlabelled new object anywhere must also fail the check.
+                require(inventory() == baseline_inventory, 'Cluster resource names changed')
             for kind, uid in previous['identities'].items():
                 if kind == missing_kind:
                     require(observed['identities'][kind] != uid, f'{kind} was not recreated')
@@ -133,7 +183,9 @@ def main():
             current_values = read_json('helm', 'get', 'values', ns, '-n', ns, '-o', 'json')
             require(current_values == values, 'Helm values changed')
             records.append({'attempt': attempt, 'command': command,
-                            'missing_resource': missing_kind, **observed})
+                            'missing_resource': missing_kind,
+                            'cluster_inventory_unchanged': True if args.check_duplicates else None,
+                            **observed})
             (args.output / 'observations.json').write_text(json.dumps(records, indent=2) + '\n')
             previous = observed
             action = f'restored {missing_kind}' if missing_kind else 'stable resource UIDs'
