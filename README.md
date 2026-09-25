@@ -63,38 +63,12 @@ In a new terminal or on another machine, repeat this block with the correct loca
 
 ### Check local tools
 
+Run these scripts from a downloaded template or control checkout. They do not install software, change GitHub, or deploy applications; missing tools stop the check.
+
 Run this in Bash to list missing commands and inspect installed versions. Go must be 1.25 or newer, and `gh auth status` must show an authenticated account:
 
 ```bash
-set -e
-missing=0
-for tool in git go python3 bash gh; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf 'OK      %s: %s\n' "$tool" "$(command -v "$tool")"
-  else
-    printf 'MISSING %s\n' "$tool"
-    missing=1
-  fi
-done
-if [ "$missing" -ne 0 ]; then
-  printf 'Install the missing tools, then run this check again.\n' >&2
-  exit 1
-fi
-
-git --version
-go version
-python3 --version
-python3 - <<'PY'
-import re, subprocess, sys
-version = subprocess.check_output(["go", "version"], text=True).strip()
-match = re.search(r"\bgo(\d+)\.(\d+)", version)
-if not match or tuple(map(int, match.groups())) < (1, 25):
-    print(f"Go 1.25+ required; found {version}", file=sys.stderr)
-    raise SystemExit(1)
-print(f"Go requirement satisfied: {match.group(0)}")
-PY
-gh --version
-gh auth status
+scripts/check-environment.sh local
 ```
 
 ### Check live-preview requirements
@@ -102,50 +76,13 @@ gh auth status
 On the K3s operator machine, this checks Helm 3, `kubectl`, cluster access, and the Traefik IngressClass. Use the operator's kubeconfig for these read checks; keep the runner on its restricted kubeconfig from setup step 5. The Helm version output must start with `v3`.
 
 ```bash
-set -e
-missing=0
-for tool in helm kubectl; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf 'OK      %s: %s\n' "$tool" "$(command -v "$tool")"
-  else
-    printf 'MISSING %s\n' "$tool"
-    missing=1
-  fi
-done
-if [ "$missing" -ne 0 ]; then
-  printf 'Install the missing tools, then run this check again.\n' >&2
-  exit 1
-fi
-
-sudo k3s --version
-sudo systemctl is-active k3s
-helm_version="$(helm version --short)"
-printf '%s\n' "$helm_version"
-case "$helm_version" in
-  v3.*) ;;
-  *) printf 'Helm 3 is required.\n' >&2; exit 1 ;;
-esac
-kubectl version --client
-kubectl config current-context
-kubectl cluster-info
-kubectl get nodes
-kubectl get ingressclass traefik
-kubectl -n kube-system rollout status deployment/traefik --timeout=30s
+scripts/check-environment.sh cluster
 ```
 
 The self-hosted runner must have the labels `self-hosted`, `Linux`, `X64`, and `previewmesh`, plus Go, Python, Helm, and `kubectl` on its `PATH`. Check tools under the same account and environment as the runner service because its `PATH` can differ from an interactive shell:
 
 ```bash
-missing=0
-for tool in go python3 helm kubectl; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf 'OK      %s: %s\n' "$tool" "$(command -v "$tool")"
-  else
-    printf 'MISSING %s\n' "$tool"
-    missing=1
-  fi
-done
-test "$missing" -eq 0
+"$CONTROL_DIR/scripts/check-environment.sh" runner
 ```
 
 The normal image build runs on a GitHub-hosted runner, so Docker is only needed locally for optional manual image builds.
@@ -273,71 +210,16 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
-Now create the file. Copy the entire block below: it reads the cluster address and CA, requests a runner ServiceAccount token, and writes a kubeconfig containing only that token as its authentication credential. It does not print the token. Run Python as your normal user so the runner account owns the resulting file:
+Generate a restricted kubeconfig and check that it can create/delete namespaces and create Secrets, while ClusterRole creation is denied. The script stores only the cluster address, CA, and runner token; it does not copy administrator credentials or print the token. Run it as the runner's normal user:
 
 ```bash
-python3 - <<'PYTHON'
-import json
-import os
-from pathlib import Path
-import subprocess
-import tempfile
-
-# Read only cluster connection data; never copy administrator credentials.
-admin = ["sudo", "k3s", "kubectl", "--kubeconfig=/etc/rancher/k3s/k3s.yaml"]
-def capture(*args):
-    return subprocess.check_output([*admin, *args], text=True).strip()
-
-cluster = json.loads(capture("config", "view", "--raw", "--minify", "-o", "json"))["clusters"][0]["cluster"]
-token = capture("-n", "previewmesh-system", "create", "token", "previewmesh-runner", "--duration=24h")
-config = {
-    "apiVersion": "v1",
-    "kind": "Config",
-    "clusters": [{"name": "k3s", "cluster": {
-        "server": cluster["server"],
-        "certificate-authority-data": cluster["certificate-authority-data"],
-    }}],
-    "users": [{"name": "previewmesh-runner", "user": {"token": token}}],
-    "contexts": [{"name": "previewmesh-runner", "context": {
-        "cluster": "k3s", "user": "previewmesh-runner",
-    }}],
-    "current-context": "previewmesh-runner",
-}
-# JSON is valid YAML. Write with mode 600 and replace only after success.
-path = Path(os.environ["PREVIEWMESH_RUNNER_CONFIG"])
-fd, temporary = tempfile.mkstemp(prefix=".runner-", dir=path.parent)
-try:
-    with os.fdopen(fd, "w") as output:
-        json.dump(config, output, indent=2)
-        output.write("\n")
-    os.replace(temporary, path)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-print(f"Created runner kubeconfig: {path}")
-PYTHON
-```
-
-Only continue if the block prints `Created runner kubeconfig`. Then select the generated file and check access:
-
-```bash
-chmod 600 "$PREVIEWMESH_RUNNER_CONFIG"
+python3 scripts/configure-runner.py
 export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
-kubectl auth can-i create namespaces
-kubectl auth can-i delete namespaces
-kubectl auth can-i create secrets --all-namespaces
-# A denied permission is expected and must not abort a shell using set -e.
-if clusterrole_access=$(kubectl auth can-i create clusterroles); then
-  printf 'Runner must not be allowed to create ClusterRoles.\n' >&2
-  exit 1
-else
-  test "$clusterrole_access" = no
-fi
 ```
 
-The first three checks should return `yes`; the final check requires a denied ClusterRole permission and handles its expected nonzero exit status without aborting a shell using `set -e`. Never give the runner the K3s administrator kubeconfig. If the runner is on another machine, the kubeconfig's `server` must use a reachable address covered by the API server certificate instead of a loopback address. See [K3s cluster access](https://docs.k3s.io/cluster-access).
+Continue only after `Created runner kubeconfig` appears. The script writes a temporary file with mode `600` and replaces the configuration only after all permission checks pass; failures preserve the existing file. The output must be an absolute, untracked, Git-ignored path inside the control checkout, and temporary `.runner-*` files must also be ignored. The default path already meets these requirements.
 
-The requested token lifetime is 24 hours; the API server may issue a different lifetime. Before it expires, rerun the Python block to replace the file with a fresh token. This setup does not renew tokens automatically. See [`kubectl create token`](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/).
+The requested token lifetime is 24 hours, subject to API server policy. Rerun `python3 scripts/configure-runner.py` before expiry to renew it; renewal is not automatic. Never give the runner the K3s administrator kubeconfig. For a runner on another machine, the cluster address must be reachable and covered by the API server certificate. See [K3s cluster access](https://docs.k3s.io/cluster-access) and [`kubectl create token`](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/).
 
 In GitHub, open the repository named by `$CONTROL_REPOSITORY`, then go to **Settings → Actions → Runners → New self-hosted runner**. Follow the Linux x64 instructions in a new directory on the K3s machine, and add the `previewmesh` label when prompted. The runner must be registered to this exact control repository because the `local` job is queued there; a runner registered to another private repository cannot accept its job. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. After registration, install the runner as a service and explicitly give it the restricted kubeconfig. Run the following in the runner directory, keeping the project variables set in this shell. If the service is already installed, skip `svc.sh install` and use `sudo ./svc.sh stop` before starting it again.
 
@@ -667,16 +549,13 @@ Updating control does not update the copied `.github/workflows/previewmesh-notif
 
 ## Local verification
 
-After editing or updating the control project, run these checks from its root. They require Go, Python 3, Helm 3, and `actionlint` on `PATH`; install missing tools before starting. These are development checks, so you do not need to repeat them for every preview:
+After editing or updating the control project, run these checks from its root. They require Git, Bash, Go 1.25+, Python 3, Helm 3, and `actionlint` on `PATH`; install missing tools before starting. These are development checks, so you do not need to repeat them for every preview:
 
 ```bash
-go test ./...
-go vet ./...
-python3 scripts/check-workflow.py
-python3 scripts/check-github-secrets.py
-helm lint charts/preview
-actionlint .github/workflows/preview.yml .github/workflows/update-upstream.yml templates/source-notify.yml
+scripts/verify-local.sh
 ```
+
+The script checks tools and versions first, then runs Go tests, `go vet`, workflow/secret/setup script checks, Helm lint, and actionlint. It stops at the first failure.
 
 The Python checks simulate external tools and do not contact GitHub or Kubernetes. None of these commands deploys an application. Passing local checks does not prove that your tokens, package permissions, runner, network route, or application contract are correct.
 
@@ -721,7 +600,7 @@ Start with the failed job's log and the control run summary. A green source noti
 | Registration or PR authorization fails | Compare the repository ID, owner/name, port, and `source_secret` with the committed registry on control `main`. The PR must be within the registered repository and its author must have write access. |
 | Source checkout fails | Check the selected source token's repository access, Contents read permission, approval, and expiry. |
 | No status or PR comment appears | Check the token named by `source_secret`, its Commit statuses and Pull requests write permissions, and reporting errors in the run summary. |
-| Kubernetes returns Unauthorized or cannot load a config | Check `KUBECONFIG` in the runner service environment, file ownership, and token expiry. Rerun step 5's generation block to renew it. |
+| Kubernetes returns Unauthorized or cannot load a config | Check `KUBECONFIG` in the runner service environment, file ownership, and token expiry. Rerun step 5's `configure-runner.py` script to renew it. |
 | Image push or pull fails | For push, check the control workflow's package write access, including access to an existing package. For pull, check the classic `GHCR_READ_TOKEN`, its owner's package read access, and the `ghcr-pull` Secret in the preview namespace. |
 | Readiness or HTTP verification fails | If Deployment, Pod, and Service are ready but Ingress readiness times out, check that Traefik has published an Ingress address. In the WSL setup, the HelmChartConfig must set `providers.kubernetesIngress.ingressEndpoint.ip` to `127.0.0.1`; apply it and wait for the Traefik rollout. Then check DNS/hosts on the runner, the Traefik route, and `/health`: it must return `status: ok` and the expected `PREVIEW_COMMIT_SHA`. |
 | Runner verification passes but the browser cannot open the preview | Check the browser machine's hosts entry and route. For WSL, repeat the Windows localhost check from step 7. |

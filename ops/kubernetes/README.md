@@ -33,7 +33,7 @@ The generated file contains the cluster address, CA, and a dedicated
 ServiceAccount token; it contains no administrator credentials.
 
 The requested token lifetime is 24 hours, subject to the API server's policy.
-Rerun the generation block before expiry; renewal is not automatic. Configure
+Rerun `python3 scripts/configure-runner.py` before expiry; renewal is not automatic. Configure
 `KUBECONFIG` in the runner service environment, and restart the service when that
 environment changes. An interactive shell's `export` does not update an existing
 service.

@@ -63,38 +63,12 @@ export PREVIEWMESH_RUNNER_CONFIG="$CONTROL_DIR/config/previewmesh-runner.yaml"
 
 ### 检查本地工具
 
+以下脚本在已下载的模板或 control checkout 根目录执行；它们不会安装软件、修改 GitHub 或部署应用。缺少工具时会报错停止。
+
 在 Bash 中运行以下命令，查看缺少的命令和已安装版本。Go 必须为 1.25 或更高版本，且 `gh auth status` 应显示已登录账号：
 
 ```bash
-set -e
-missing=0
-for tool in git go python3 bash gh; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf '已安装  %s：%s\n' "$tool" "$(command -v "$tool")"
-  else
-    printf '缺少    %s\n' "$tool"
-    missing=1
-  fi
-done
-if [ "$missing" -ne 0 ]; then
-  printf '请安装缺少的工具后重新运行检查。\n' >&2
-  exit 1
-fi
-
-git --version
-go version
-python3 --version
-python3 - <<'PY'
-import re, subprocess, sys
-version = subprocess.check_output(["go", "version"], text=True).strip()
-match = re.search(r"\bgo(\d+)\.(\d+)", version)
-if not match or tuple(map(int, match.groups())) < (1, 25):
-    print(f"需要 Go 1.25 或更高版本；当前为 {version}", file=sys.stderr)
-    raise SystemExit(1)
-print(f"Go 版本满足要求：{match.group(0)}")
-PY
-gh --version
-gh auth status
+scripts/check-environment.sh local
 ```
 
 ### 检查真实预览环境
@@ -102,50 +76,13 @@ gh auth status
 在 K3s 运维机器上运行以下命令，检查 Helm 3、kubectl、集群连接和 Traefik IngressClass。这里的只读检查使用运维人员的 kubeconfig；Runner 仍应使用首次配置步骤 5 中的受限 kubeconfig。Helm 版本输出应以 `v3` 开头。
 
 ```bash
-set -e
-missing=0
-for tool in helm kubectl; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf '已安装  %s：%s\n' "$tool" "$(command -v "$tool")"
-  else
-    printf '缺少    %s\n' "$tool"
-    missing=1
-  fi
-done
-if [ "$missing" -ne 0 ]; then
-  printf '请安装缺少的工具后重新运行检查。\n' >&2
-  exit 1
-fi
-
-sudo k3s --version
-sudo systemctl is-active k3s
-helm_version="$(helm version --short)"
-printf '%s\n' "$helm_version"
-case "$helm_version" in
-  v3.*) ;;
-  *) printf '需要 Helm 3。\n' >&2; exit 1 ;;
-esac
-kubectl version --client
-kubectl config current-context
-kubectl cluster-info
-kubectl get nodes
-kubectl get ingressclass traefik
-kubectl -n kube-system rollout status deployment/traefik --timeout=30s
+scripts/check-environment.sh cluster
 ```
 
 Self-hosted Runner 必须有 self-hosted、Linux、X64、previewmesh 四个标签，并能在 PATH 中找到 Go、Python、Helm 和 kubectl。Runner 服务的 PATH 可能不同于交互式 Shell，因此请在与 Runner 服务相同的账号和环境中检查：
 
 ```bash
-missing=0
-for tool in go python3 helm kubectl; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf '已安装  %s：%s\n' "$tool" "$(command -v "$tool")"
-  else
-    printf '缺少    %s\n' "$tool"
-    missing=1
-  fi
-done
-test "$missing" -eq 0
+"$CONTROL_DIR/scripts/check-environment.sh" runner
 ```
 
 正常镜像构建运行在 GitHub-hosted Runner；本地 Docker 只用于可选的手动构建。
@@ -273,71 +210,16 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
-接下来创建文件。完整复制下面的代码块：它会读取集群地址和 CA，申请 Runner ServiceAccount Token，并生成仅使用该 Token 认证的 kubeconfig，不会打印 Token。请以普通用户运行 Python，以确保生成文件归 Runner 用户所有：
+生成受限 kubeconfig，并检查创建/删除 Namespace、创建 Secret 的权限，以及创建 ClusterRole 必须被拒绝。脚本只保存集群地址、CA 和 Runner Token，不复制管理员凭据，也不打印 Token。以 Runner 的普通用户运行：
 
 ```bash
-python3 - <<'PYTHON'
-import json
-import os
-from pathlib import Path
-import subprocess
-import tempfile
-
-# Read only cluster connection data; never copy administrator credentials.
-admin = ["sudo", "k3s", "kubectl", "--kubeconfig=/etc/rancher/k3s/k3s.yaml"]
-def capture(*args):
-    return subprocess.check_output([*admin, *args], text=True).strip()
-
-cluster = json.loads(capture("config", "view", "--raw", "--minify", "-o", "json"))["clusters"][0]["cluster"]
-token = capture("-n", "previewmesh-system", "create", "token", "previewmesh-runner", "--duration=24h")
-config = {
-    "apiVersion": "v1",
-    "kind": "Config",
-    "clusters": [{"name": "k3s", "cluster": {
-        "server": cluster["server"],
-        "certificate-authority-data": cluster["certificate-authority-data"],
-    }}],
-    "users": [{"name": "previewmesh-runner", "user": {"token": token}}],
-    "contexts": [{"name": "previewmesh-runner", "context": {
-        "cluster": "k3s", "user": "previewmesh-runner",
-    }}],
-    "current-context": "previewmesh-runner",
-}
-# JSON is valid YAML. Write with mode 600 and replace only after success.
-path = Path(os.environ["PREVIEWMESH_RUNNER_CONFIG"])
-fd, temporary = tempfile.mkstemp(prefix=".runner-", dir=path.parent)
-try:
-    with os.fdopen(fd, "w") as output:
-        json.dump(config, output, indent=2)
-        output.write("\n")
-    os.replace(temporary, path)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-print(f"Created runner kubeconfig: {path}")
-PYTHON
-```
-
-只有看到 `Created runner kubeconfig` 提示后，才继续选择生成的文件并检查权限：
-
-```bash
-chmod 600 "$PREVIEWMESH_RUNNER_CONFIG"
+python3 scripts/configure-runner.py
 export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
-kubectl auth can-i create namespaces
-kubectl auth can-i delete namespaces
-kubectl auth can-i create secrets --all-namespaces
-# A denied permission is expected and must not abort a shell using set -e.
-if clusterrole_access=$(kubectl auth can-i create clusterroles); then
-  printf 'Runner must not be allowed to create ClusterRoles.\n' >&2
-  exit 1
-else
-  test "$clusterrole_access" = no
-fi
 ```
 
-前 3 项应返回 `yes`；最后一项要求创建 ClusterRole 的权限被拒绝，并处理预期的非零退出码，避免前面启用的 `set -e` 让 Shell 退出。不要把 K3s 管理员 kubeconfig 交给 Runner。如果 Runner 位于另一台机器，kubeconfig 中的 `server` 必须使用 Runner 可访问且包含在 API Server 证书中的地址，不能使用回环地址。参见 [K3s 集群访问说明](https://docs.k3s.io/cluster-access)。
+只有看到 `Created runner kubeconfig` 才继续。脚本以 `600` 权限写入临时文件，权限检查全部通过后才替换配置；失败时保留原配置。输出路径必须是 control checkout 中未被 Git 跟踪且已被忽略的绝对路径，临时文件 `.runner-*` 也必须被忽略；默认路径已满足这些要求。
 
-请求的 Token 有效期为 24 小时，但 API Server 实际签发的时长可能不同。到期前重新执行 Python 代码块，用新 Token 替换配置文件；本流程不会自动续期。参见 [`kubectl create token` 文档](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/)。
+请求的 Token 有效期为 24 小时，实际时长由 API Server 决定。到期前重新运行 `python3 scripts/configure-runner.py` 续期；脚本不会自动续期。不要把 K3s 管理员 kubeconfig 交给 Runner。如果 Runner 位于另一台机器，集群地址必须可达且包含在 API Server 证书中。参见 [K3s 集群访问说明](https://docs.k3s.io/cluster-access) 和 [`kubectl create token` 文档](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/)。
 
 在 GitHub 打开 `$CONTROL_REPOSITORY` 指定的仓库，进入 **Settings → Actions → Runners → New self-hosted runner**。按页面上的 Linux x64 说明，在 K3s 机器的独立目录中安装 Runner，并在提示时添加 `previewmesh` 标签。Runner 必须注册到这个 control 仓库，因为 `local` Job 会在这里排队；注册到另一个 private 仓库的 Runner 无法接收这个 Job。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。注册完成后，将 Runner 安装为服务，并明确设置受限 kubeconfig。以下命令在 Runner 目录中执行，当前终端应保留前面的项目变量。如果服务已经安装，跳过 `svc.sh install`，并在再次启动前执行 `sudo ./svc.sh stop`。
 
@@ -667,16 +549,13 @@ gh pr create --repo "$CONTROL_REPOSITORY" --base main --head "$UPDATE_BRANCH"
 
 ## 本地检查
 
-修改或更新 control 项目后，在项目根目录执行下面的检查。需要 Go、Python 3、Helm 3 和 `actionlint`，缺少时先安装。这些是开发检查，不需要每次运行预览时重复执行：
+修改或更新 control 项目后，在项目根目录执行下面的检查。需要 Git、Bash、Go 1.25+、Python 3、Helm 3 和 `actionlint`，缺少时先安装。这些是开发检查，不需要每次运行预览时重复执行：
 
 ```bash
-go test ./...
-go vet ./...
-python3 scripts/check-workflow.py
-python3 scripts/check-github-secrets.py
-helm lint charts/preview
-actionlint .github/workflows/preview.yml .github/workflows/update-upstream.yml templates/source-notify.yml
+scripts/verify-local.sh
 ```
+
+脚本先检查工具和版本，再依次执行 Go 测试、`go vet`、工作流/Secret/配置脚本检查、Helm lint 和 actionlint；任一步失败立即停止。
 
 Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些命令都不会部署应用。检查通过后，仍需运行一次真实预览，确认 Token、镜像权限、Runner、网络和健康接口配置正确。
 
@@ -721,7 +600,7 @@ Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些
 | 登记或 PR 授权失败 | 与 control `main` 上已提交的登记文件核对仓库 ID、owner/name、端口和 `source_secret`。PR 必须来自该仓库内部，作者需要有写权限。 |
 | Source checkout 失败 | 检查 source Token 的仓库访问范围、Contents 读取权限、审批状态和有效期。 |
 | 没有状态或 PR 评论 | 检查 `source_secret` 对应的 Token、Commit statuses 和 Pull requests 写权限，以及运行摘要中的回写错误。 |
-| Kubernetes 返回 Unauthorized 或无法读取配置 | 检查 Runner 服务环境中的 `KUBECONFIG`、文件归属和 Token 有效期。需要续期时，重新执行第 5 步生成配置的代码块。 |
+| Kubernetes 返回 Unauthorized 或无法读取配置 | 检查 Runner 服务环境中的 `KUBECONFIG`、文件归属和 Token 有效期。需要续期时，重新执行第 5 步的 `configure-runner.py` 脚本。 |
 | 镜像推送或拉取失败 | 推送失败时检查 control 工作流对 Package 的写权限，尤其是已存在的 Package；拉取失败时检查 classic `GHCR_READ_TOKEN`、其用户的 Package 读取权限，以及预览 Namespace 中的 `ghcr-pull` Secret。 |
 | 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress 状态中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后检查 Runner 的 DNS/hosts、Traefik 路由和 `/health`。响应必须包含 `status: ok` 和预期的 `PREVIEW_COMMIT_SHA`。 |
 | Runner 验证通过，但浏览器打不开 | 检查浏览器所在机器的 hosts 和网络路径。WSL 环境下，重复第 7 步的 Windows localhost 检查。 |
