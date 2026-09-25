@@ -37,8 +37,8 @@ var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 // Match registered owner/name repository values.
 var sourcePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$`)
 
-// Restrict images to the repository-specific GHCR namespace.
-var imagePattern = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9._-]*/previewmesh-r([1-9][0-9]*)$`)
+// Scope each source image to its control repository so publishing permissions stay isolated.
+var imagePattern = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9._-]*/previewmesh-c[1-9][0-9]*-r([1-9][0-9]*)$`)
 
 // options contains the validated command-line configuration.
 type options struct {
@@ -173,7 +173,7 @@ func parse(args []string) (options, error) {
 		parts := strings.Split(o.image, "@")
 		match := imagePattern.FindStringSubmatch(parts[0])
 		if len(match) != 2 || match[1] != o.repoID {
-			return o, errors.New("image must use ghcr.io/OWNER/previewmesh-r<repository-id>")
+			return o, errors.New("image must use ghcr.io/OWNER/previewmesh-c<control-repository-id>-r<repository-id>")
 		}
 		if o.command == "build" && len(parts) != 1 {
 			return o, errors.New("build image must not contain a tag or digest")

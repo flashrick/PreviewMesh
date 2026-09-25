@@ -326,14 +326,33 @@ export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
 kubectl auth can-i create namespaces
 kubectl auth can-i delete namespaces
 kubectl auth can-i create secrets --all-namespaces
-kubectl auth can-i create clusterroles
+# A denied permission is expected and must not abort a shell using set -e.
+if clusterrole_access=$(kubectl auth can-i create clusterroles); then
+  printf 'Runner must not be allowed to create ClusterRoles.\n' >&2
+  exit 1
+else
+  test "$clusterrole_access" = no
+fi
 ```
 
-The first three checks should return `yes`; creating ClusterRoles should return `no` (with a nonzero exit status, which is expected). Never give the runner the K3s administrator kubeconfig. If the runner is on another machine, the kubeconfig's `server` must use a reachable address covered by the API server certificate instead of a loopback address. See [K3s cluster access](https://docs.k3s.io/cluster-access).
+The first three checks should return `yes`; the final check requires a denied ClusterRole permission and handles its expected nonzero exit status without aborting a shell using `set -e`. Never give the runner the K3s administrator kubeconfig. If the runner is on another machine, the kubeconfig's `server` must use a reachable address covered by the API server certificate instead of a loopback address. See [K3s cluster access](https://docs.k3s.io/cluster-access).
 
 The requested token lifetime is 24 hours; the API server may issue a different lifetime. Before it expires, rerun the Python block to replace the file with a fresh token. This setup does not renew tokens automatically. See [`kubectl create token`](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/).
 
-In GitHub, open the repository named by `$CONTROL_REPOSITORY`, then go to **Settings → Actions → Runners → New self-hosted runner**. Follow the Linux x64 instructions in a new directory on the K3s machine, and add the `previewmesh` label when prompted. The runner must be registered to this exact control repository because the `local` job is queued there; a runner registered to another private repository cannot accept its job. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. After starting the runner service, verify that it appears online with the required labels:
+In GitHub, open the repository named by `$CONTROL_REPOSITORY`, then go to **Settings → Actions → Runners → New self-hosted runner**. Follow the Linux x64 instructions in a new directory on the K3s machine, and add the `previewmesh` label when prompted. The runner must be registered to this exact control repository because the `local` job is queued there; a runner registered to another private repository cannot accept its job. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. After registration, install the runner as a service and explicitly give it the restricted kubeconfig. Run the following in the runner directory, keeping the project variables set in this shell. If the service is already installed, skip `svc.sh install` and use `sudo ./svc.sh stop` before starting it again.
+
+```bash
+# Run in the directory where you configured the GitHub runner.
+sudo ./svc.sh install "$(id -un)"
+RUNNER_SERVICE=$(cat .service)
+sudo mkdir -p "/etc/systemd/system/${RUNNER_SERVICE}.d"
+printf '[Service]\nEnvironment="KUBECONFIG=%s"\n' "$PREVIEWMESH_RUNNER_CONFIG" \
+  | sudo tee "/etc/systemd/system/${RUNNER_SERVICE}.d/previewmesh.conf" >/dev/null
+sudo systemctl daemon-reload
+sudo ./svc.sh start
+```
+
+Verify that the runner appears online with the required labels:
 
 ```bash
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
@@ -412,6 +431,10 @@ gh secret list --repo "$SOURCE_REPOSITORY" --app actions
 
 The control list should contain every configured `source_secret` and `GHCR_READ_TOKEN`; each source list should contain `PREVIEWMESH_DISPATCH_TOKEN`. Repeat the second command for any other registered sources. This confirms the secrets were saved; the first preview run will check whether they have the right access. You can also manage them under **Repository Settings → Secrets and variables → Actions → Repository secrets**.
 
+#### Image package ownership
+
+Each source image is published as `ghcr.io/OWNER/previewmesh-cCONTROL_REPOSITORY_ID-rSOURCE_REPOSITORY_ID`. The workflow takes the control repository ID from GitHub and the source repository ID from the validated registration. Its `GITHUB_TOKEN` creates and publishes the private package for this control repository; `GHCR_READ_TOKEN` lets K3s pull it. No manual package creation is needed.
+
 ### 7. Configure ingress and source notifications
 
 A preview uses a hostname such as `pm-r123456789-pr12.preview.test`, built from the source repository ID and PR number. Both the runner and the browser need to reach Traefik using that hostname. The `.test` name does not resolve automatically; step 8 shows where to add the hosts entry once you know the PR number.
@@ -435,7 +458,7 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get service traefik -w
 ```
 
-The HelmChartConfig keeps Traefik's Service internal and tells Traefik to publish `127.0.0.1` in Ingress status. PreviewMesh uses that status as a readiness signal; requests still reach Traefik through the socket proxy on port `18080`. Wait until `TYPE` shows `ClusterIP` and `CLUSTER-IP` contains an address, then press Ctrl+C to stop watching. Confirm Traefik has finished applying the chart configuration:
+The HelmChartConfig keeps Traefik's Service internal, disables `publishedService` address copying, and tells Traefik to publish `127.0.0.1` in Ingress status. A ClusterIP Service has no external address to copy; leaving `publishedService` enabled would keep Ingress status empty and block readiness. PreviewMesh uses that status as a readiness signal; requests still reach Traefik through the socket proxy on port `18080`. Wait until `TYPE` shows `ClusterIP` and `CLUSTER-IP` contains an address, then press Ctrl+C to stop watching. Confirm Traefik has finished applying the chart configuration:
 
 ```bash
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system rollout status deployment/traefik --timeout=120s

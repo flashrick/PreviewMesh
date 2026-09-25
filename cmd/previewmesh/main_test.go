@@ -49,13 +49,13 @@ func TestHealthPreservesDiagnosticWhenRetryIsCanceled(t *testing.T) {
 // TestArguments accepts canonical identities and rejects unsafe input variants.
 func TestArguments(t *testing.T) {
 	sha := strings.Repeat("a", 40)
-	digest := "ghcr.io/example-owner/previewmesh-r12@sha256:" + strings.Repeat("b", 64)
+	digest := "ghcr.io/example-owner/previewmesh-c34-r12@sha256:" + strings.Repeat("b", 64)
 	good := []string{"deploy", "--repository-id", "12", "--pr", "3", "--source-repository", "owner/demo", "--sha", sha, "--image", digest}
 	if _, err := parse(good); err != nil {
 		t.Fatal(err)
 	}
 	// Each variant violates one identity, immutability, or bounds check.
-	for _, extra := range [][]string{{"--repository-id", "012"}, {"--pr", "0"}, {"--pr", "1;id"}, {"--sha", "main"}, {"--image", "ghcr.io/example-owner/previewmesh-r12:latest"}, {"--image", strings.Replace(digest, "r12", "r13", 1)}, {"--hostname", "evil.test"}, {"--port", "65536"}, {"--timeout", "0"}, {"--pull-secret", "--all"}} {
+	for _, extra := range [][]string{{"--repository-id", "012"}, {"--pr", "0"}, {"--pr", "1;id"}, {"--sha", "main"}, {"--image", "ghcr.io/example-owner/previewmesh-c34-r12:latest"}, {"--image", strings.Replace(digest, "r12", "r13", 1)}, {"--image", strings.Replace(digest, "c34", "c0", 1)}, {"--image", strings.Replace(digest, "c34", "c034", 1)}, {"--image", strings.Replace(digest, "c34-", "", 1)}, {"--hostname", "evil.test"}, {"--port", "65536"}, {"--timeout", "0"}, {"--pull-secret", "--all"}} {
 		args := append(append([]string{}, good...), extra...)
 		if _, err := parse(args); err == nil {
 			t.Errorf("accepted %v", extra)

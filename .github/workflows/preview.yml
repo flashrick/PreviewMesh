@@ -99,7 +99,7 @@ jobs:
           mkdir -p "$DOCKER_CONFIG" evidence
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           printf '%s' "$PUBLISH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          "$RUNNER_TEMP/previewmesh" build --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/previewmesh-r$REPOSITORY_ID" --source-dir "$GITHUB_WORKSPACE/source" --evidence evidence/build.csv --result-file evidence/build.json --timeout 20m
+          "$RUNNER_TEMP/previewmesh" build --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/previewmesh-c${GITHUB_REPOSITORY_ID}-r${REPOSITORY_ID}" --source-dir "$GITHUB_WORKSPACE/source" --evidence evidence/build.csv --result-file evidence/build.json --timeout 20m
           python3 - <<'PY'
           import json, os
           with open('evidence/build.json') as f: result = json.load(f)

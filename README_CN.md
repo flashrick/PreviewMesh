@@ -326,14 +326,33 @@ export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
 kubectl auth can-i create namespaces
 kubectl auth can-i delete namespaces
 kubectl auth can-i create secrets --all-namespaces
-kubectl auth can-i create clusterroles
+# A denied permission is expected and must not abort a shell using set -e.
+if clusterrole_access=$(kubectl auth can-i create clusterroles); then
+  printf 'Runner must not be allowed to create ClusterRoles.\n' >&2
+  exit 1
+else
+  test "$clusterrole_access" = no
+fi
 ```
 
-前 3 项应返回 `yes`；创建 ClusterRole 应返回 `no`（同时返回非零退出码，这是预期结果）。不要把 K3s 管理员 kubeconfig 交给 Runner。如果 Runner 位于另一台机器，kubeconfig 中的 `server` 必须使用 Runner 可访问且包含在 API Server 证书中的地址，不能使用回环地址。参见 [K3s 集群访问说明](https://docs.k3s.io/cluster-access)。
+前 3 项应返回 `yes`；最后一项要求创建 ClusterRole 的权限被拒绝，并处理预期的非零退出码，避免前面启用的 `set -e` 让 Shell 退出。不要把 K3s 管理员 kubeconfig 交给 Runner。如果 Runner 位于另一台机器，kubeconfig 中的 `server` 必须使用 Runner 可访问且包含在 API Server 证书中的地址，不能使用回环地址。参见 [K3s 集群访问说明](https://docs.k3s.io/cluster-access)。
 
 请求的 Token 有效期为 24 小时，但 API Server 实际签发的时长可能不同。到期前重新执行 Python 代码块，用新 Token 替换配置文件；本流程不会自动续期。参见 [`kubectl create token` 文档](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/)。
 
-在 GitHub 打开 `$CONTROL_REPOSITORY` 指定的仓库，进入 **Settings → Actions → Runners → New self-hosted runner**。按页面上的 Linux x64 说明，在 K3s 机器的独立目录中安装 Runner，并在提示时添加 `previewmesh` 标签。Runner 必须注册到这个 control 仓库，因为 `local` Job 会在这里排队；注册到另一个 private 仓库的 Runner 无法接收这个 Job。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。启动 Runner 服务后，检查它已上线且带有所需标签：
+在 GitHub 打开 `$CONTROL_REPOSITORY` 指定的仓库，进入 **Settings → Actions → Runners → New self-hosted runner**。按页面上的 Linux x64 说明，在 K3s 机器的独立目录中安装 Runner，并在提示时添加 `previewmesh` 标签。Runner 必须注册到这个 control 仓库，因为 `local` Job 会在这里排队；注册到另一个 private 仓库的 Runner 无法接收这个 Job。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。注册完成后，将 Runner 安装为服务，并明确设置受限 kubeconfig。以下命令在 Runner 目录中执行，当前终端应保留前面的项目变量。如果服务已经安装，跳过 `svc.sh install`，并在再次启动前执行 `sudo ./svc.sh stop`。
+
+```bash
+# Run in the directory where you configured the GitHub runner.
+sudo ./svc.sh install "$(id -un)"
+RUNNER_SERVICE=$(cat .service)
+sudo mkdir -p "/etc/systemd/system/${RUNNER_SERVICE}.d"
+printf '[Service]\nEnvironment="KUBECONFIG=%s"\n' "$PREVIEWMESH_RUNNER_CONFIG" \
+  | sudo tee "/etc/systemd/system/${RUNNER_SERVICE}.d/previewmesh.conf" >/dev/null
+sudo systemctl daemon-reload
+sudo ./svc.sh start
+```
+
+检查 Runner 已上线且带有所需标签：
 
 ```bash
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
@@ -412,6 +431,10 @@ gh secret list --repo "$SOURCE_REPOSITORY" --app actions
 
 Control 仓库应包含所有登记的 `source_secret` 和 `GHCR_READ_TOKEN`；每个 source 仓库应包含 `PREVIEWMESH_DISPATCH_TOKEN`。如果登记了多个 source，分别执行第二条命令检查。这一步只能确认保存成功，实际访问权限还需要通过首次预览验证。也可以在 **Repository Settings → Secrets and variables → Actions → Repository secrets** 中管理它们。
 
+#### 镜像包归属
+
+每个 source 的镜像发布为 `ghcr.io/OWNER/previewmesh-cCONTROL_REPOSITORY_ID-rSOURCE_REPOSITORY_ID`。工作流从 GitHub 获取当前 control 仓库 ID，从已验证的注册信息获取 source 仓库 ID，使用自身的 `GITHUB_TOKEN` 创建并发布属于当前 control 仓库的私有镜像包。`GHCR_READ_TOKEN` 用于让 K3s 拉取该镜像，无需手动创建 Package。
+
 ### 7. 配置 Ingress 和 source 通知
 
 预览域名由 source 仓库 ID 和 PR 编号组成，例如 `pm-r123456789-pr12.preview.test`。Runner 和浏览器都需要通过这个域名访问 Traefik。`.test` 域名不会自动解析；第 8 步拿到 PR 编号后，再添加对应的 hosts 记录。
@@ -435,7 +458,7 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get service traefik -w
 ```
 
-这个 HelmChartConfig 会让 Traefik 的 Service 保持为集群内部服务，并在 Ingress 状态中发布 `127.0.0.1`。PreviewMesh 用这个状态判断路由是否就绪；实际请求仍通过 socket 代理的 `18080` 端口到达 Traefik。等到 `TYPE` 显示为 `ClusterIP` 且 `CLUSTER-IP` 出现地址后，按 Ctrl+C 结束观察。然后确认 Traefik 已应用 chart 配置：
+这个 HelmChartConfig 会让 Traefik 的 Service 保持为集群内部服务，关闭 `publishedService` 地址同步，并在 Ingress 状态中发布 `127.0.0.1`。ClusterIP Service 没有可同步的外部地址；如果保留 `publishedService`，Ingress 状态会一直为空，导致就绪检查无法通过。PreviewMesh 用这个状态判断路由是否就绪；实际请求仍通过 socket 代理的 `18080` 端口到达 Traefik。等到 `TYPE` 显示为 `ClusterIP` 且 `CLUSTER-IP` 出现地址后，按 Ctrl+C 结束观察。然后确认 Traefik 已应用 chart 配置：
 
 ```bash
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system rollout status deployment/traefik --timeout=120s

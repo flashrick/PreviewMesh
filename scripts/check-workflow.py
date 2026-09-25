@@ -2,12 +2,22 @@
 import csv
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
 sha = 'a' * 40
+
+# Exercise the workflow's actual shell expression: each control owns its source image.
+workflow = (root / '.github/workflows/preview.yml').read_text()
+image_expression = re.search(r'--image "([^"\n]+)"', workflow).group(1)
+for control_id in ['34', '56']:
+    env = dict(os.environ, GITHUB_REPOSITORY_OWNER='Example-Owner',
+               GITHUB_REPOSITORY_ID=control_id, REPOSITORY_ID='12')
+    image = subprocess.check_output(['bash', '-c', 'printf "%s" "' + image_expression + '"'], env=env, text=True)
+    assert image == f'ghcr.io/example-owner/previewmesh-c{control_id}-r12', image
 
 # Keep the source-side relay wired to PR head updates. Without synchronize,
 # an already-open PR would never request a deployment for its next commit.

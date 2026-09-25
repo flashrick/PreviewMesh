@@ -9,6 +9,9 @@ spec:
   valuesContent: |-
     providers:
       kubernetesIngress:
+        # A ClusterIP service has no external address to publish; use the explicit IP below.
+        publishedService:
+          enabled: false
         ingressEndpoint:
           ip: "127.0.0.1"
     service:
