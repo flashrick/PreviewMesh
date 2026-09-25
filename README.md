@@ -45,6 +45,22 @@ Important boundaries:
 
 For local checks, install Git, Go 1.25 or newer, Python 3, Bash, and the GitHub CLI. For real previews, also install K3s with Traefik, Helm 3, and `kubectl` on a Linux or WSL2 machine.
 
+### Set project variables once
+
+Set these paths, repository names, and the source default branch once in the current terminal. Replace the examples with your own values. Later steps reuse them. Setting variables does not create directories, files, or repositories.
+
+```bash
+export PUBLIC_REPOSITORY=flashrick/PreviewMesh
+export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
+export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+export SOURCE_DEFAULT_BRANCH=main
+export CONTROL_DIR="$HOME/workspace/previewmesh-control"
+export SOURCE_DIR="$HOME/workspace/your-application"
+export PREVIEWMESH_RUNNER_CONFIG="$CONTROL_DIR/config/previewmesh-runner.yaml"
+```
+
+In a new terminal or on another machine, repeat this block with the correct local paths. To resume an existing setup, also repeat the repository ID lookup in step 3, the `KUBECONFIG` selection in step 5, and the PR variable block in step 8; you do not need to recreate repositories or redeploy. When changing sources, update the source path, default branch, and repository ID too. When changing PRs, recalculate the namespace and hostname.
+
 ### Check local tools
 
 Run this in Bash to list missing commands and inspect installed versions. Go must be 1.25 or newer, and `gh auth status` must show an authenticated account:
@@ -132,10 +148,9 @@ done
 test "$missing" -eq 0
 ```
 
-With `CONTROL_REPOSITORY` set and an account that can view its runner settings, check that the runner is online and has all four required labels:
+After registering the runner in step 5, with an account that can view its settings, check that the runner is online and has all four required labels:
 
 ```bash
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
   --jq '.runners[] | {name, status, labels: [.labels[].name]}'
 ```
@@ -150,17 +165,15 @@ Complete these steps in order. Commands that change GitHub or K3s are operator a
 
 The safest GitHub flow is **Use this template** on the public PreviewMesh repository, selecting **Private**. A public fork cannot be changed into a private fork.
 
-If you prefer to clone and push manually, replace the control repository placeholder and run this from a parent directory. This example uses HTTPS for Git operations and reuses an existing `gh` login:
+If you prefer to clone and push manually, replace the control repository placeholder and run the commands below. `CONTROL_DIR` must not exist yet or must be empty. This example uses HTTPS for Git operations and reuses an existing `gh` login:
 
 ```bash
-PUBLIC_REPOSITORY=flashrick/PreviewMesh
-CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-
 gh auth status --hostname github.com
 gh auth setup-git --hostname github.com
 gh repo create "$CONTROL_REPOSITORY" --private
-git clone "https://github.com/$PUBLIC_REPOSITORY.git" previewmesh-control
-cd previewmesh-control
+mkdir -p "$(dirname "$CONTROL_DIR")"
+git clone "https://github.com/$PUBLIC_REPOSITORY.git" "$CONTROL_DIR"
+cd "$CONTROL_DIR"
 git remote rename origin upstream
 git remote add origin "https://github.com/$CONTROL_REPOSITORY.git"
 git push -u origin main
@@ -189,8 +202,8 @@ The value must be exactly `true`. Do not create this variable in the public temp
 Before editing the registry, choose the source repository and get its numeric ID from GitHub; do not infer it from the repository URL:
 
 ```bash
-SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
 REPOSITORY_ID=$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')
+export REPOSITORY_ID
 printf '%s\n' "$REPOSITORY_ID"
 ```
 
@@ -253,13 +266,12 @@ Revision verification is exact: the build rejects a checkout whose `HEAD` differ
 
 ### 5. Configure K3s and the runner
 
-Run this step on the K3s server, using the Linux account that will run the GitHub runner. It needs `sudo` access for K3s administration, plus Python 3 and `kubectl`. This example keeps the runner on the same machine as K3s and uses `~/workspace/previewmesh-control` as the private control checkout; change the `cd` path if yours differs.
+Run this step on the K3s server, using the Linux account that will run the GitHub runner. It needs `sudo` access for K3s administration, plus Python 3 and `kubectl`. This example keeps the runner on the same machine as K3s and uses the `CONTROL_DIR` and `PREVIEWMESH_RUNNER_CONFIG` set above.
 
-First choose the local configuration path, exclude credentials from Git, and apply the restricted runner permissions:
+Using the configured path, exclude credentials from Git and apply the restricted runner permissions:
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
-export PREVIEWMESH_RUNNER_CONFIG="$PWD/config/previewmesh-runner.yaml"
+cd "$CONTROL_DIR"
 mkdir -p "$(dirname "$PREVIEWMESH_RUNNER_CONFIG")"
 # Keep credentials and temporary files out of Git, including older checkouts.
 grep -qxF '/config/previewmesh-runner.yaml' .gitignore || printf '\n/config/previewmesh-runner.yaml\n' >> .gitignore
@@ -330,14 +342,7 @@ The requested token lifetime is 24 hours; the API server may issue a different l
 
 Install a Linux x64 GitHub self-hosted runner in a separate directory, register it only with the private control repository, and add the `previewmesh` label. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. The `export` above only affects this shell and its child processes: for a foreground runner, start `./run.sh` from this shell; for a service, set `KUBECONFIG` to the printed absolute file path in the runner service environment and restart the service. The service account must be able to read the file and traverse its parent directories.
 
-In a new terminal, restore the variables before using runner commands:
-
-```bash
-export PREVIEWMESH_RUNNER_CONFIG="$HOME/workspace/previewmesh-control/config/previewmesh-runner.yaml"
-export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
-```
-
-Use your chosen path if you changed it above. See [the Kubernetes runner notes](ops/kubernetes/README.md).
+For a new terminal, follow [the project variable setup](#set-project-variables-once). See [the Kubernetes runner notes](ops/kubernetes/README.md).
 
 ### 6. Configure GitHub Secrets
 
@@ -388,12 +393,10 @@ Paste this value at `Paste GHCR_READ_TOKEN (classic PAT, read:packages only)`. T
 
 #### Upload and check the secrets
 
-Return to the control checkout. Replace `YOUR_GITHUB_OWNER/your-application` with the source you registered in step 3. The account logged into `gh` must be allowed to manage Actions secrets in both repositories. Its login is used to upload secrets; the tokens you paste are the credentials the workflows will use later.
+Return to the control checkout and reuse the repository variables set above. The account logged into `gh` must be allowed to manage Actions secrets in both repositories. Its login is used to upload secrets; the tokens you paste are the credentials the workflows will use later.
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+cd "$CONTROL_DIR"
 gh auth status
 bash scripts/configure-github-secrets.sh "$CONTROL_REPOSITORY" config/repositories.json
 ```
@@ -426,7 +429,7 @@ For K3s inside WSL with a browser on Windows, the included socket proxy forwards
 Run these commands in the WSL control checkout. They use the administrator kubeconfig explicitly because the restricted runner cannot manage Traefik:
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
+cd "$CONTROL_DIR"
 test -x /usr/lib/systemd/systemd-socket-proxyd
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/traefik-helmchartconfig.yaml
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get service traefik -w
@@ -457,17 +460,13 @@ curl --noproxy '*' --silent --show-error --max-time 5 -o /dev/null -w '%{http_co
   -H 'Host: previewmesh-ingress-check.invalid' http://127.0.0.1:18080
 ```
 
-If you previously installed the port 80 version, reinstall both unit files with the command above, then run `sudo systemctl stop previewmesh-ingress.service previewmesh-ingress.socket`, `sudo systemctl daemon-reload`, and `sudo systemctl start previewmesh-ingress.socket` before testing again.
-
 Expect `404`: the request reached Traefik, but the check hostname has no preview route. In Windows PowerShell, run `curl.exe --noproxy "*" -I http://127.0.0.1:18080` and confirm it also reaches Traefik. If the Linux check fails, inspect `sudo journalctl -u previewmesh-ingress.service -n 30 --no-pager`. If only Windows fails, check WSL networking before moving on. Keep `/etc/previewmesh/ingress.env` local. If Traefik's ClusterIP changes, update that file and run `sudo systemctl restart previewmesh-ingress.service`.
 
 #### Add the source notification workflow
 
-Set the paths to your existing checkouts. The destination below is the **source repository**, where your application lives:
+Reuse the checkout paths set above. The destination below is the **source repository**, where your application lives:
 
 ```bash
-export CONTROL_DIR="$HOME/workspace/previewmesh-control"
-export SOURCE_DIR="$HOME/workspace/your-application"
 cd "$SOURCE_DIR"
 git remote -v
 mkdir -p .github/workflows
@@ -487,17 +486,30 @@ The workflow sends a notification when a PR opens, reopens, receives a commit (`
 
 ### 8. Run a preview
 
-Open a PR within the source repository, using two branches from that same repository. The author must have write access. If the notification workflow is installed, opening the PR already starts a preview attempt.
-
-In the control checkout, fill in the repository names and replace `123` with the actual PR number. These variables are needed even when the workflow starts automatically:
+In the source checkout, create a branch from the source repository's default branch. Use the `SOURCE_DEFAULT_BRANCH` set at the start of this guide. If you already have a pushed application branch with the change you want to preview, use it and skip this block.
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+cd "$SOURCE_DIR"
+git status --short
+git fetch origin "$SOURCE_DEFAULT_BRANCH"
+git switch -c preview/demo "origin/$SOURCE_DEFAULT_BRANCH"
+```
+
+If `git status --short` lists uncommitted changes, commit or stash them before switching. Now make the application change you want PreviewMesh to build, then commit and push the changed file. Replace `path/to/changed-file` with its path relative to the source checkout:
+
+```bash
+git add -- path/to/changed-file
+git commit -m "Add preview demo change"
+git push -u origin preview/demo
+```
+
+On GitHub, choose **Pull requests → New pull request**. Set **base** to the source default branch (`main` in this example) and **compare** to `preview/demo`. Check that GitHub shows the same source repository on both sides, then create the PR. Use an account with write access. The PR tells PreviewMesh which application revision to build. Once the step 7 notification workflow is on the source default branch and Actions is enabled, opening it sends the preview request automatically.
+
+In the control checkout, reuse the repository variables from setup and replace `123` with the actual PR number. These variables are needed even when the workflow starts automatically:
+
+```bash
+cd "$CONTROL_DIR"
 export PR_NUMBER=123
-REPOSITORY_ID=$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')
-export REPOSITORY_ID
 export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
 export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
 go run ./cmd/control resolve \
@@ -529,7 +541,7 @@ gh workflow run preview.yml --repo "$CONTROL_REPOSITORY" --ref main \
 gh run list --repo "$CONTROL_REPOSITORY" --workflow preview.yml --limit 5
 ```
 
-Copy the matching run ID from the list, replacing the example below. If it is not listed yet, run the list command again. Check the run page's inputs to make sure you selected the intended source and PR:
+Copy this run's ID from the list, replacing the example below. If it is not listed yet, repeat the list command. Check the source and PR inputs on the run page. Update `RUN_ID` whenever you follow a new run:
 
 ```bash
 export RUN_ID=123456789
@@ -537,7 +549,7 @@ gh run view "$RUN_ID" --repo "$CONTROL_REPOSITORY" --web
 gh run watch "$RUN_ID" --repo "$CONTROL_REPOSITORY" --exit-status
 ```
 
-After the control run succeeds, compare the live response with the PR's current head. Run this on a machine with the hosts entry and access to the preview:
+After the control run succeeds, fetch the current PR head and compare the live response. Run this on a machine that can resolve and reach the preview hostname. Repeat the check after every new commit to refresh `EXPECTED_SHA`:
 
 ```bash
 EXPECTED_SHA=$(gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')
@@ -552,101 +564,44 @@ print(json.dumps(result))
 '
 ```
 
-A passing check prints JSON with `status: ok` and the expected `commit_sha`. You can then open `http://${PREVIEW_HOST}:18080` in your browser if the app has a page. If you pushed another commit while waiting, wait for its run before comparing again.
-
-Close or merge the test PR when you are done. Wait for the resulting control run to finish; it should remove the preview namespace. The cleanup walkthrough below shows how to confirm that.
-
+A passing check prints `status: ok` and the expected `commit_sha`. Open `http://${PREVIEW_HOST}:18080` if the app has a page. Close or merge the PR when finished and wait for the cleanup run; the walkthrough below shows how to confirm removal.
 
 ## End-to-end demo
 
-Use this optional walkthrough when you want to demonstrate creation, updates, and cleanup. Complete setup steps 1 through 7 first; if step 8 already worked, you can reuse that PR and its hosts entries. Run the commands from the private control checkout, and choose an open demo pull request that you are allowed to close. Its base and head must both be in the registered source repository, and its author must have write access. These commands start the complete GitHub Actions workflow; the `build`, `local`, and `report` jobs run automatically. Do not run another deployment for the same repository ID and pull request while the demo is in progress.
+After setup, reuse the PR and hosts entries from step 8 to demonstrate creation, updates, and cleanup. Choose a PR you are allowed to close. Its base and head must both belong to the registered source repository, and its author must have write access. Do not start concurrent deployments for the same PR during the demo.
 
 ### Prepare the demo
 
-Fill in the control repository, registered source repository, and an open pull request number. The repository ID is read from GitHub and then checked against the private registry:
-
-```bash
-cd "$HOME/workspace/previewmesh-control"
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
-REPOSITORY_ID=$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')
-export REPOSITORY_ID
-export PR_NUMBER=123
-export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
-export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
-
-gh auth status
-go run ./cmd/control resolve \
-  --repository-id "$REPOSITORY_ID" \
-  --source-repository "$SOURCE_REPOSITORY" \
-  --pr "$PR_NUMBER"
-gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" \
-  --jq '{state: .state, base: .base.repo.full_name, head: .head.repo.full_name, sha: .head.sha}'
-```
-
-Confirm the PR is open, `base` and `head` both equal `SOURCE_REPOSITORY`, and `resolve` accepts the registration. Preview DNS or hosts entries must already work from both the runner and the machine used to open the preview in a browser.
+Reuse your project and PR variables. If you choose another PR, return to [step 8](#8-run-a-preview) to update its number, namespace, and hostname and check the registration and PR state. In a new terminal, restore the environment using [the project variable setup](#set-project-variables-once). Confirm that both the runner and browser can resolve the preview hostname.
 
 ### Start and follow the workflow
 
-To show the source-to-control notification path, open a demo PR or push a new commit to an open one, then follow the `Notify PreviewMesh` source run and its control run. For a repeatable demonstration without changing the source, dispatch the registered pull request from the private control repository. Manual dispatch starts the same lifecycle but skips the source notification step:
+Open a PR or push a commit to an existing one to trigger **Notify PreviewMesh** in the source repository, followed by the control workflow. To reuse an existing commit, run step 8's manual dispatch commands; this skips the source notification and runs the same preview lifecycle. Follow it with step 8's tracking commands, updating `RUN_ID` to this run before waiting for completion.
 
-```bash
-gh workflow run preview.yml --repo "$CONTROL_REPOSITORY" --ref main \
-  -f repository_id="$REPOSITORY_ID" \
-  -f source_repository="$SOURCE_REPOSITORY" \
-  -f pr_number="$PR_NUMBER"
-gh run list --repo "$CONTROL_REPOSITORY" --workflow preview.yml --limit 5
-```
-
-Copy the matching run ID from the list, replacing `123456789` below. Check its inputs on the Actions page before following it until it finishes. If the run has not appeared yet, run the list command again:
-
-```bash
-export RUN_ID=123456789
-gh run watch "$RUN_ID" --repo "$CONTROL_REPOSITORY" --exit-status
-```
-
-The Actions page shows where time is spent: `build` validates the PR and publishes an image; `local` deploys it to K3s and checks the response; `report` collects the results. Open the run summary if a stage fails. The `combined-*` artifact contains the run summary and CSV evidence. If the source token has the required write permissions, the source PR also shows the PreviewMesh status and a result comment linking to the run.
+On the Actions page, `build` validates the registration and PR and publishes an image, `local` deploys to K3s and checks the response, and `report` combines the results. The `combined-*` artifact contains the summary and CSV evidence. If the source token has the required write permissions, the PR also shows the PreviewMesh status and a result comment linking to the run.
 
 ### Verify the revision shown to the audience
 
-Compare the live health response with the current PR head. This checks both the health contract and the exact commit SHA:
+Repeat the health check in [step 8](#8-run-a-preview) to fetch the current `EXPECTED_SHA` and compare the response. HTTP 200 alone is not enough: `status` must be `ok` and `commit_sha` must match. Once the check passes, open `http://${PREVIEW_HOST}:18080` to show the application page.
 
-```bash
-EXPECTED_SHA=$(gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')
-export EXPECTED_SHA
-printf 'Expected PR head: %s\n' "$EXPECTED_SHA"
-curl --noproxy '*' --fail --silent --show-error --max-time 10 "http://${PREVIEW_HOST}:18080/health" \
-  | EXPECTED_SHA="$EXPECTED_SHA" python3 -c '
-import json, os, sys
-result = json.load(sys.stdin)
-if result.get("status") != "ok" or result.get("commit_sha") != os.environ["EXPECTED_SHA"]:
-    raise SystemExit(f"Preview does not match the PR head: {result}")
-print(json.dumps(result))
-'
-```
-
-Open `http://${PREVIEW_HOST}:18080` in a browser if the application has a user-facing page. The health response must report `status: ok` and the same SHA printed above.
-
-To demonstrate an update, wait for this run to finish, push another reviewed commit to the same pull request, and wait for its `synchronize` notification and control run. The URL and namespace stay the same; repeat the health check to show the new PR head SHA.
+To demonstrate an update, wait for the current run to finish, push another commit to the same PR, wait for its `synchronize` notification and control run, and repeat the check. The URL and namespace stay the same.
 
 ### Show automatic cleanup
 
 Close or merge the demo pull request, then follow the control run started by the `closed` notification. Wait for that cleanup run to finish before checking. Do not delete the namespace manually, since that would hide whether automatic cleanup worked. On the K3s machine, select the restricted runner kubeconfig from setup step 5 and confirm the namespace is absent:
 
 ```bash
-export PREVIEWMESH_RUNNER_CONFIG="$HOME/workspace/previewmesh-control/config/previewmesh-runner.yaml"
-export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
-kubectl get namespace "$PREVIEW_NAMESPACE" --ignore-not-found
+kubectl --kubeconfig "$PREVIEWMESH_RUNNER_CONFIG" get namespace "$PREVIEW_NAMESPACE" --ignore-not-found
 ```
 
-If the command exits successfully with no output, the namespace has been removed. An authentication or connection error does not confirm cleanup. Use your chosen kubeconfig path if it differs from the example. In a new terminal, also restore `PREVIEW_NAMESPACE` from the demo preparation block. To demonstrate cleanup idempotency, manually dispatch the same workflow once more for the closed pull request; the report should confirm the namespace is already absent.
+If the command exits successfully with no output, the namespace has been removed. An authentication or connection error does not confirm cleanup. Use your chosen kubeconfig path if it differs from the example. In a new terminal, also restore `PREVIEW_NAMESPACE` from step 8. To demonstrate cleanup idempotency, manually dispatch the same workflow once more for the closed pull request; the report should confirm the namespace is already absent.
 
 ## Updating a private control repository
 
 Run updates from your private control checkout. Commit or stash any local changes first; the updater requires a clean working tree and a configured Git author. The script reuses the `upstream` remote from step 1, or creates it if it is missing:
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
+cd "$CONTROL_DIR"
 git switch main
 git pull --ff-only origin main
 git status --short
@@ -658,7 +613,7 @@ If `git status --short` lists files, stop and handle those changes before runnin
 scripts/update-upstream.sh --remote upstream --ref main
 ```
 
-When an update is available, the script creates a local commit on an update branch and leaves you on that branch. If it reports that no update is needed, stop here. Otherwise, review the changes, run the local checks below, then push the actual branch and open a PR. Set `CONTROL_REPOSITORY` to your private repository if this is a new terminal:
+When an update is available, the script creates a local commit on an update branch and leaves you on that branch. If it reports that no update is needed, stop here. Otherwise, review the changes, run the local checks below, then push the actual branch and open a PR. In a new terminal, restore [the project variables](#set-project-variables-once) first:
 
 ```bash
 UPDATE_BRANCH=$(git branch --show-current)

@@ -45,6 +45,22 @@ flowchart LR
 
 本地检查需要 Git、Go 1.25 或更高版本、Python 3、Bash 和 GitHub CLI。真实预览还需要 Linux 或 WSL2 机器上的 K3s、Traefik、Helm 3 和 kubectl。
 
+### 一次设置项目变量
+
+下面的路径、仓库名称和默认分支只需在当前终端设置一次。把示例值改成你自己的；`SOURCE_DEFAULT_BRANCH` 是应用仓库的默认分支。后续步骤直接复用这些值。设置变量不会创建目录、文件或仓库。
+
+```bash
+export PUBLIC_REPOSITORY=flashrick/PreviewMesh
+export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
+export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+export SOURCE_DEFAULT_BRANCH=main
+export CONTROL_DIR="$HOME/workspace/previewmesh-control"
+export SOURCE_DIR="$HOME/workspace/your-application"
+export PREVIEWMESH_RUNNER_CONFIG="$CONTROL_DIR/config/previewmesh-runner.yaml"
+```
+
+新开终端或换机器后，先重新执行这段设置，并调整本机路径；已经完成配置时，再执行第 3 步的仓库 ID 查询、第 5 步的 `KUBECONFIG` 选择，以及第 8 步的 PR 变量设置即可恢复操作环境，无需重跑仓库创建或部署。切换 source 时，也要更新它的路径、默认分支和仓库 ID；切换 PR 时，重新计算它的 Namespace 和域名。
+
 ### 检查本地工具
 
 在 Bash 中运行以下命令，查看缺少的命令和已安装版本。Go 必须为 1.25 或更高版本，且 `gh auth status` 应显示已登录账号：
@@ -135,7 +151,6 @@ test "$missing" -eq 0
 设置 `CONTROL_REPOSITORY` 后，使用有权限查看 Runner 设置的账号，检查 Runner 是否在线并带有四个必需标签：
 
 ```bash
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
   --jq '.runners[] | {name, status, labels: [.labels[].name]}'
 ```
@@ -150,17 +165,15 @@ gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
 
 推荐在公开 PreviewMesh 仓库页面点击 Use this template，并选择 Private。Public fork 不能直接改成 private fork。
 
-如果要手动 clone 并推送，请替换 control 仓库占位符，然后在父目录运行。此示例通过 HTTPS 执行 Git 操作，并复用已有的 `gh` 登录：
+如果要手动 clone 并推送，请替换 control 仓库占位符，然后运行以下命令。`CONTROL_DIR` 应是尚未创建或为空的目录。此示例通过 HTTPS 执行 Git 操作，并复用已有的 `gh` 登录：
 
 ```bash
-PUBLIC_REPOSITORY=flashrick/PreviewMesh
-CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-
 gh auth status --hostname github.com
 gh auth setup-git --hostname github.com
 gh repo create "$CONTROL_REPOSITORY" --private
-git clone "https://github.com/$PUBLIC_REPOSITORY.git" previewmesh-control
-cd previewmesh-control
+mkdir -p "$(dirname "$CONTROL_DIR")"
+git clone "https://github.com/$PUBLIC_REPOSITORY.git" "$CONTROL_DIR"
+cd "$CONTROL_DIR"
 git remote rename origin upstream
 git remote add origin "https://github.com/$CONTROL_REPOSITORY.git"
 git push -u origin main
@@ -189,8 +202,8 @@ gh variable set PREVIEWMESH_ENABLED --repo "$CONTROL_REPOSITORY" --body true
 编辑登记文件前，先选定 source 仓库并从 GitHub 查询数字 ID；不要从仓库 URL 推测 ID：
 
 ```bash
-SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
 REPOSITORY_ID=$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')
+export REPOSITORY_ID
 printf '%s\n' "$REPOSITORY_ID"
 ```
 
@@ -253,13 +266,12 @@ Source 仓库根目录必须有能构建 linux/amd64 镜像的 Dockerfile。应�
 
 ### 5. 配置 K3s 和 Runner
 
-在 K3s 服务器上，以将来运行 GitHub Runner 的 Linux 用户执行本步骤。该用户需要通过 `sudo` 管理 K3s，并且已安装 Python 3 和 `kubectl`。本例将 Runner 与 K3s 放在同一台机器上，private control checkout 使用 `~/workspace/previewmesh-control`；如果你的目录不同，请修改 `cd` 路径。
+在 K3s 服务器上，以将来运行 GitHub Runner 的 Linux 用户执行本步骤。该用户需要通过 `sudo` 管理 K3s，并且已安装 Python 3 和 `kubectl`。本例将 Runner 与 K3s 放在同一台机器上，使用前面设置的 `CONTROL_DIR` 和 `PREVIEWMESH_RUNNER_CONFIG`。
 
-先设置本地配置文件路径，将凭据排除在 Git 之外，然后应用受限的 Runner 权限：
+使用已设置的配置路径，将凭据排除在 Git 之外，然后应用受限的 Runner 权限：
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
-export PREVIEWMESH_RUNNER_CONFIG="$PWD/config/previewmesh-runner.yaml"
+cd "$CONTROL_DIR"
 mkdir -p "$(dirname "$PREVIEWMESH_RUNNER_CONFIG")"
 # Keep credentials and temporary files out of Git, including older checkouts.
 grep -qxF '/config/previewmesh-runner.yaml' .gitignore || printf '\n/config/previewmesh-runner.yaml\n' >> .gitignore
@@ -330,14 +342,7 @@ kubectl auth can-i create clusterroles
 
 在独立目录安装 Linux x64 GitHub self-hosted Runner，仅注册到 private control 仓库，并添加 `previewmesh` 标签。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。上面的 `export` 只影响当前终端及其子进程：前台运行时，从这个终端启动 `./run.sh`；作为服务运行时，在 Runner 服务环境中将 `KUBECONFIG` 设为提示中输出的文件绝对路径，然后重启服务。服务用户必须能够读取该文件并访问它的各级父目录。
 
-新开终端后，使用 Runner 命令前重新设置变量：
-
-```bash
-export PREVIEWMESH_RUNNER_CONFIG="$HOME/workspace/previewmesh-control/config/previewmesh-runner.yaml"
-export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
-```
-
-如果前面修改了路径，这里也使用你选定的路径。详见 [Kubernetes Runner 说明](ops/kubernetes/README.md)。
+新终端中的恢复方法见[项目变量设置](#一次设置项目变量)。详见 [Kubernetes Runner 说明](ops/kubernetes/README.md)。
 
 ### 6. 配置 GitHub Secrets
 
@@ -388,12 +393,10 @@ export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
 
 #### 上传并检查 Secrets
 
-回到 control 项目目录，将下面的仓库名称换成你自己的。`SOURCE_REPOSITORY` 应与第 3 步的登记一致。当前 `gh` 登录账号需要有两个仓库的 Actions Secret 管理权限：它负责上传 Secret，你稍后粘贴的 Token 则供工作流运行时使用。
+回到 control 项目目录，复用前面设置的仓库变量。`SOURCE_REPOSITORY` 应与第 3 步的登记一致。当前 `gh` 登录账号需要有两个仓库的 Actions Secret 管理权限：它负责上传 Secret，你稍后粘贴的 Token 则供工作流运行时使用。
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+cd "$CONTROL_DIR"
 gh auth status
 bash scripts/configure-github-secrets.sh "$CONTROL_REPOSITORY" config/repositories.json
 ```
@@ -426,7 +429,7 @@ PreviewMesh 的预览链接和健康检查统一使用主机端口 `18080`。代
 在 WSL 的 control 项目目录中执行。这里显式使用管理员 kubeconfig，因为受限的 Runner 无权修改 Traefik：
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
+cd "$CONTROL_DIR"
 test -x /usr/lib/systemd/systemd-socket-proxyd
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/traefik-helmchartconfig.yaml
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get service traefik -w
@@ -457,17 +460,13 @@ curl --noproxy '*' --silent --show-error --max-time 5 -o /dev/null -w '%{http_co
   -H 'Host: previewmesh-ingress-check.invalid' http://127.0.0.1:18080
 ```
 
-如果之前已经安装了监听 80 端口的版本，先用上面的命令重新安装两个 unit 文件，再依次执行 `sudo systemctl stop previewmesh-ingress.service previewmesh-ingress.socket`、`sudo systemctl daemon-reload` 和 `sudo systemctl start previewmesh-ingress.socket`，然后重新检查。
-
 预期输出是 `404`：请求已经到达 Traefik，但这个检查域名没有对应的预览。在 Windows PowerShell 中执行 `curl.exe --noproxy "*" -I http://127.0.0.1:18080`，确认 Windows 也能访问 Traefik。如果 Linux 检查失败，查看 `sudo journalctl -u previewmesh-ingress.service -n 30 --no-pager`；如果只有 Windows 失败，先检查 WSL 网络设置。`/etc/previewmesh/ingress.env` 只保存在本机。如果 Traefik 的 ClusterIP 改变，修改该文件，再执行 `sudo systemctl restart previewmesh-ingress.service`。
 
 #### 添加 source 通知工作流
 
-填写两个已有项目的本地路径。下面复制的目标是存放应用代码的 **source 仓库**：
+下面复用前面设置的两个项目路径，将模板复制到存放应用代码的 **source 仓库**：
 
 ```bash
-export CONTROL_DIR="$HOME/workspace/previewmesh-control"
-export SOURCE_DIR="$HOME/workspace/your-application"
 cd "$SOURCE_DIR"
 git remote -v
 mkdir -p .github/workflows
@@ -487,17 +486,30 @@ PR 打开、重新打开、收到新提交（`synchronize`）或关闭时，通�
 
 ### 8. 运行预览
 
-在 source 仓库中创建一个 PR，base 和 head 使用同一仓库内的两个分支，PR 作者需要有写权限。如果已经安装通知工作流，创建 PR 就会自动发起一次预览。
-
-回到 control 项目目录，填写仓库名称，并把 `123` 换成实际 PR 编号。即使工作流自动启动，后面的检查也需要这些变量：
+在 source checkout 中，从 source 仓库的默认分支创建一个新分支。这里使用开头已设置的 `SOURCE_DEFAULT_BRANCH`。如果你已经有一个推送到 GitHub、并包含目标应用改动的分支，可以直接使用，跳过下面这段。
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
+cd "$SOURCE_DIR"
+git status --short
+git fetch origin "$SOURCE_DEFAULT_BRANCH"
+git switch -c preview/demo "origin/$SOURCE_DEFAULT_BRANCH"
+```
+
+如果 `git status --short` 列出了尚未提交的改动，请先提交或暂存，再切换分支。然后修改你希望 PreviewMesh 构建的应用文件，再提交并推送。将 `path/to/changed-file` 替换为相对于 source 项目目录的实际文件路径：
+
+```bash
+git add -- path/to/changed-file
+git commit -m "Add preview demo change"
+git push -u origin preview/demo
+```
+
+在 GitHub 选择 **Pull requests → New pull request**。**base** 选 source 默认分支（本例为 `main`），**compare** 选 `preview/demo`。确认左右两侧显示的是同一个 source 仓库，再创建 PR。创建者需要有仓库写权限。PR 会告诉 PreviewMesh 要构建哪个应用版本。第 7 步的通知工作流已进入 source 默认分支且 Actions 已启用后，打开 PR 就会自动发送预览请求。
+
+回到 control 项目目录，复用前面设置的仓库变量，把 `123` 换成实际 PR 编号。即使工作流自动启动，后面的检查也需要这些变量：
+
+```bash
+cd "$CONTROL_DIR"
 export PR_NUMBER=123
-REPOSITORY_ID=$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')
-export REPOSITORY_ID
 export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
 export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
 go run ./cmd/control resolve \
@@ -529,7 +541,7 @@ gh workflow run preview.yml --repo "$CONTROL_REPOSITORY" --ref main \
 gh run list --repo "$CONTROL_REPOSITORY" --workflow preview.yml --limit 5
 ```
 
-从列表中复制对应的运行 ID，替换下面的示例。如果新运行还没出现，再执行一次列表命令。打开运行页面后，核对输入参数中的 source 和 PR 编号，避免跟错运行：
+从列表中复制本次运行的 ID，替换下面的示例。如果新运行还没出现，再执行一次列表命令。核对运行页面上的 source 和 PR 编号；每次跟踪新的运行时，都更新 `RUN_ID`：
 
 ```bash
 export RUN_ID=123456789
@@ -537,7 +549,7 @@ gh run view "$RUN_ID" --repo "$CONTROL_REPOSITORY" --web
 gh run watch "$RUN_ID" --repo "$CONTROL_REPOSITORY" --exit-status
 ```
 
-Control 工作流成功后，将线上健康响应与 PR 当前 head 比较。执行检查的机器需要已经配置域名解析，并且能访问预览：
+Control 工作流成功后，获取 PR 当前 head 并核对线上响应。执行检查的机器需要能够解析和访问预览域名。每次推送新提交后，都重新执行下面的检查，以刷新 `EXPECTED_SHA`：
 
 ```bash
 EXPECTED_SHA=$(gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')
@@ -552,101 +564,44 @@ print(json.dumps(result))
 '
 ```
 
-检查通过会输出 JSON，其中 `status` 为 `ok`，`commit_sha` 与预期一致。如果应用有页面，就可以在浏览器打开 `http://${PREVIEW_HOST}:18080`。如果等待期间又推送了新提交，先等新提交对应的运行完成，再核对版本。
-
-测试结束后关闭或合并 PR，等待随后的 control 工作流完成，它应当删除对应的预览 Namespace。下面的清理演示给出了确认方法。
-
+检查通过会输出 `status: ok` 和预期的 `commit_sha`。如果应用有页面，可以打开 `http://${PREVIEW_HOST}:18080`。测试结束后关闭或合并 PR，等待清理运行完成；下面给出清理确认方法。
 
 ## 端到端演示
 
-如果想完整展示创建、更新和清理，可以使用下面的演示流程。先完成首次配置步骤 1 至 7；如果第 8 步已经成功，可以复用那个 PR 和 hosts 记录。从 private control checkout 执行命令，并选择一个你可以关闭的 open demo PR。它的 base 和 head 必须都属于已登记的 source 仓库，PR 作者也必须有该仓库的写权限。以下命令会启动完整的 GitHub Actions 工作流；`build`、`local` 和 `report` 三个 Job 会自动运行。演示期间不要对同一个仓库 ID 和 PR 并行启动另一次部署。
+完成首次配置后，可以复用第 8 步的 PR 和 hosts 记录，展示创建、更新和清理。选择你有权关闭的 PR；base 和 head 都必须属于已登记的 source 仓库，作者需要有写权限。演示期间不要为同一 PR 并行启动另一次部署。
 
 ### 准备演示
 
-填写 control 仓库、已登记的 source 仓库和一个 open PR 编号。仓库 ID 从 GitHub 查询，然后与 private 登记文件核对：
-
-```bash
-cd "$HOME/workspace/previewmesh-control"
-export CONTROL_REPOSITORY=YOUR_GITHUB_OWNER/previewmesh-control
-export SOURCE_REPOSITORY=YOUR_GITHUB_OWNER/your-application
-REPOSITORY_ID=$(gh api "repos/$SOURCE_REPOSITORY" --jq '.id')
-export REPOSITORY_ID
-export PR_NUMBER=123
-export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
-export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
-
-gh auth status
-go run ./cmd/control resolve \
-  --repository-id "$REPOSITORY_ID" \
-  --source-repository "$SOURCE_REPOSITORY" \
-  --pr "$PR_NUMBER"
-gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" \
-  --jq '{state: .state, base: .base.repo.full_name, head: .head.repo.full_name, sha: .head.sha}'
-```
-
-确认 PR 处于 open 状态，`base` 和 `head` 都等于 `SOURCE_REPOSITORY`，且 `resolve` 接受该登记。Runner 和演示用浏览器都必须能通过 DNS 或 hosts 访问预览域名。
+复用已有的项目变量和 PR 变量。如果换了 PR，回到[第 8 步](#8-运行预览)更新 PR 编号、Namespace 和域名，并检查登记与 PR 状态。如果新开了终端，先按[项目变量设置](#一次设置项目变量)恢复环境。确认 Runner 和浏览器都能解析预览域名。
 
 ### 启动并跟踪工作流
 
-要展示 source 到 control 的通知链路，可以新建 demo PR，或向现有 PR 推送新 commit，然后跟踪 source 仓库中的 `Notify PreviewMesh` 运行及其派发的 control 工作流。若要重复演示且不修改 source，可从 private control 仓库手动派发已登记的 PR。手动派发会运行相同的生命周期，但会跳过 source 通知这一步：
+创建 PR 或向已有 PR 推送新提交，会触发 source 仓库中的 **Notify PreviewMesh**，再触发 control 工作流。如果要复用已有提交，执行第 8 步的手动触发命令；它会跳过 source 通知，运行相同的预览流程。使用第 8 步的跟踪命令，把 `RUN_ID` 更新为本次运行的 ID，再等待完成。
 
-```bash
-gh workflow run preview.yml --repo "$CONTROL_REPOSITORY" --ref main \
-  -f repository_id="$REPOSITORY_ID" \
-  -f source_repository="$SOURCE_REPOSITORY" \
-  -f pr_number="$PR_NUMBER"
-gh run list --repo "$CONTROL_REPOSITORY" --workflow preview.yml --limit 5
-```
-
-从列表复制对应的运行 ID，替换下面的 `123456789`。先在 Actions 页面核对运行的输入参数，再等待它完成。如果新运行还没有显示，再执行一次列表命令：
-
-```bash
-export RUN_ID=123456789
-gh run watch "$RUN_ID" --repo "$CONTROL_REPOSITORY" --exit-status
-```
-
-Actions 页面可以看到进度：`build` 验证登记和 PR，然后发布镜像；`local` 在 K3s 部署并检查响应；`report` 汇总结果。如果某一步失败，先看运行摘要。`combined-*` artifact 包含运行摘要和 CSV 证据。如果 source Token 具有所需写权限，source PR 还会显示 PreviewMesh 状态和链接到本次运行的结果评论。
+Actions 页面中，`build` 验证登记和 PR 并发布镜像，`local` 在 K3s 部署并检查响应，`report` 汇总结果。`combined-*` artifact 包含摘要和 CSV 运行记录。如果 source Token 具有所需写权限，PR 还会显示 PreviewMesh 状态和指向本次运行的结果评论。
 
 ### 核对展示的代码版本
 
-将线上健康响应与 PR 当前 head 比较。这会同时检查健康接口契约和精确的 commit SHA：
+重新执行[第 8 步](#8-运行预览)的健康检查，获取最新 `EXPECTED_SHA` 并核对响应。HTTP 200 还不够，响应中的 `status` 必须为 `ok`，`commit_sha` 必须与预期一致。检查通过后，可以打开 `http://${PREVIEW_HOST}:18080` 展示应用页面。
 
-```bash
-EXPECTED_SHA=$(gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')
-export EXPECTED_SHA
-printf '预期 PR head：%s\n' "$EXPECTED_SHA"
-curl --noproxy '*' --fail --silent --show-error --max-time 10 "http://${PREVIEW_HOST}:18080/health" \
-  | EXPECTED_SHA="$EXPECTED_SHA" python3 -c '
-import json, os, sys
-result = json.load(sys.stdin)
-if result.get("status") != "ok" or result.get("commit_sha") != os.environ["EXPECTED_SHA"]:
-    raise SystemExit(f"预览版本与 PR head 不匹配：{result}")
-print(json.dumps(result))
-'
-```
-
-如果应用有用户页面，可在浏览器打开 `http://${PREVIEW_HOST}:18080`。健康响应必须包含 `status: ok`，并且 SHA 与上面显示的值相同。
-
-要演示版本更新，先等本次运行结束，再向同一个 PR 推送另一条已审核的 commit，等待 `synchronize` 通知和 control 工作流运行。URL 和 Namespace 保持不变；重复健康检查可以展示新的 PR head SHA。
+要演示版本更新，先等当前运行结束，再向同一个 PR 推送新提交，等待 `synchronize` 通知和 control 工作流完成，然后重新检查。URL 和 Namespace 保持不变。
 
 ### 展示自动清理
 
 关闭或合并 demo PR，然后跟踪 `closed` 通知启动的 control 工作流。等清理运行完成后再检查，不要手动删除 Namespace，否则无法确认自动清理是否正常。在 K3s 机器上选择首次配置步骤 5 中的受限 runner kubeconfig，然后确认 Namespace 已不存在：
 
 ```bash
-export PREVIEWMESH_RUNNER_CONFIG="$HOME/workspace/previewmesh-control/config/previewmesh-runner.yaml"
-export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
-kubectl get namespace "$PREVIEW_NAMESPACE" --ignore-not-found
+kubectl --kubeconfig "$PREVIEWMESH_RUNNER_CONFIG" get namespace "$PREVIEW_NAMESPACE" --ignore-not-found
 ```
 
-命令成功退出且没有输出，才表示 Namespace 已删除。认证失败或连接错误不能作为清理成功的依据。如果使用了不同的 kubeconfig 路径，这里也要修改；如果新开了终端，还需要从演示准备步骤恢复 `PREVIEW_NAMESPACE`。要演示清理的幂等性，可以对已关闭的 PR 再手动派发一次相同工作流；报告应确认 Namespace 已经不存在。
+命令成功退出且没有输出，才表示 Namespace 已删除。认证失败或连接错误不能作为清理成功的依据。如果使用了不同的 kubeconfig 路径，这里也要修改；如果新开了终端，还需要从第 8 步恢复 `PREVIEW_NAMESPACE`。要演示清理的幂等性，可以对已关闭的 PR 再手动派发一次相同工作流；报告应确认 Namespace 已经不存在。
 
 ## 更新 private control 仓库
 
 在 private control 项目目录中执行更新。先提交本地改动，或用 `git stash` 收起它们；更新脚本要求工作区干净，并且 Git 已配置提交者身份。脚本会复用第 1 步的 `upstream`，如果没有这个 remote，就自动创建：
 
 ```bash
-cd "$HOME/workspace/previewmesh-control"
+cd "$CONTROL_DIR"
 git switch main
 git pull --ff-only origin main
 git status --short
@@ -658,7 +613,7 @@ git status --short
 scripts/update-upstream.sh --remote upstream --ref main
 ```
 
-有更新时，脚本会在本地更新分支上创建提交，并停留在该分支。如果提示无需更新，就到此结束。否则，检查差异、执行下方的本地检查，再推送实际分支并创建 PR。新开终端时，先将 `CONTROL_REPOSITORY` 设为你的 private 仓库：
+有更新时，脚本会在本地更新分支上创建提交，并停留在该分支。如果提示无需更新，就到此结束。否则，检查差异、执行下方的本地检查，再推送实际分支并创建 PR。新开终端时，先恢复[项目变量](#一次设置项目变量)：
 
 ```bash
 UPDATE_BRANCH=$(git branch --show-current)
