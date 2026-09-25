@@ -1,5 +1,5 @@
-# Keep the packaged Traefik Service internal. The WSL systemd proxy owns the
-# host-facing port 18080 and forwards to Traefik's ClusterIP.
+# Keep Traefik internal; the WSL systemd proxy owns the host-facing port 18080.
+# Publish loopback in each Ingress status so PreviewMesh can detect readiness.
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -7,6 +7,10 @@ metadata:
   namespace: kube-system
 spec:
   valuesContent: |-
+    providers:
+      kubernetesIngress:
+        ingressEndpoint:
+          ip: "127.0.0.1"
     service:
       spec:
         type: ClusterIP

@@ -148,13 +148,6 @@ done
 test "$missing" -eq 0
 ```
 
-设置 `CONTROL_REPOSITORY` 后，使用有权限查看 Runner 设置的账号，检查 Runner 是否在线并带有四个必需标签：
-
-```bash
-gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
-  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
-```
-
 正常镜像构建运行在 GitHub-hosted Runner；本地 Docker 只用于可选的手动构建。
 
 ## 首次配置
@@ -340,7 +333,14 @@ kubectl auth can-i create clusterroles
 
 请求的 Token 有效期为 24 小时，但 API Server 实际签发的时长可能不同。到期前重新执行 Python 代码块，用新 Token 替换配置文件；本流程不会自动续期。参见 [`kubectl create token` 文档](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/)。
 
-在独立目录安装 Linux x64 GitHub self-hosted Runner，仅注册到 private control 仓库，并添加 `previewmesh` 标签。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。上面的 `export` 只影响当前终端及其子进程：前台运行时，从这个终端启动 `./run.sh`；作为服务运行时，在 Runner 服务环境中将 `KUBECONFIG` 设为提示中输出的文件绝对路径，然后重启服务。服务用户必须能够读取该文件并访问它的各级父目录。
+在 GitHub 打开 `$CONTROL_REPOSITORY` 指定的仓库，进入 **Settings → Actions → Runners → New self-hosted runner**。按页面上的 Linux x64 说明，在 K3s 机器的独立目录中安装 Runner，并在提示时添加 `previewmesh` 标签。Runner 必须注册到这个 control 仓库，因为 `local` Job 会在这里排队；注册到另一个 private 仓库的 Runner 无法接收这个 Job。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。启动 Runner 服务后，检查它已上线且带有所需标签：
+
+```bash
+gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
+  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
+```
+
+输出中应能看到 Runner 的 `status: online`，以及 `self-hosted`、`Linux`、`X64`、`previewmesh` 四个标签。上面的 `export` 只影响当前终端及其子进程：前台运行时，从这个终端启动 `./run.sh`；作为服务运行时，在 Runner 服务环境中将 `KUBECONFIG` 设为提示中输出的文件绝对路径，然后重启服务。服务用户必须能够读取该文件并访问它的各级父目录。
 
 新终端中的恢复方法见[项目变量设置](#一次设置项目变量)。详见 [Kubernetes Runner 说明](ops/kubernetes/README.md)。
 
@@ -435,7 +435,13 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get service traefik -w
 ```
 
-等到 `TYPE` 显示为 `ClusterIP`，且 `CLUSTER-IP` 出现地址后，按 Ctrl+C 结束观察。再次读取地址，并创建本地代理配置文件：
+这个 HelmChartConfig 会让 Traefik 的 Service 保持为集群内部服务，并在 Ingress 状态中发布 `127.0.0.1`。PreviewMesh 用这个状态判断路由是否就绪；实际请求仍通过 socket 代理的 `18080` 端口到达 Traefik。等到 `TYPE` 显示为 `ClusterIP` 且 `CLUSTER-IP` 出现地址后，按 Ctrl+C 结束观察。然后确认 Traefik 已应用 chart 配置：
+
+```bash
+sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system rollout status deployment/traefik --timeout=120s
+```
+
+再次读取地址，并创建本地代理配置文件：
 
 ```bash
 sudo install -d -m 0755 /etc/previewmesh
@@ -663,7 +669,7 @@ Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些
 
 运行记录会保存各 CLI 阶段的 UTC 开始和结束时间、耗时及结果，写入阶段 CSV 和结果 JSON，并汇总到 `summary.json`。`resource_observation` 记录运行状态快照的耗时，`resource_verify` 记录清理时检查 Namespace 归属或是否已删除的耗时。
 
-部署就绪阶段会先等待 Deployment 和 Pod，然后等待预览 Service 获得 ClusterIP、Traefik Ingress 发布入口，之后才进行 `/health` 验证。Service 或 Ingress 就绪检查失败时，本次尝试会失败，预览不会被标记为 ready。
+部署就绪阶段会先等待 Deployment 和 Pod，然后等待预览 Service 获得 ClusterIP、Traefik 在 Ingress 状态中发布地址，之后才进行 `/health` 验证。在上面的 WSL 配置中，Traefik 发布的是 `127.0.0.1`；它用于判断路由就绪，实际请求通过 `18080` 端口的 socket 代理转发。Service 或 Ingress 就绪检查失败时，本次尝试会失败，预览不会被标记为 ready。
 
 `previewmesh build`、`deploy`、`verify` 和 `cleanup` 是工作流使用的底层操作。完整 PR 生命周期应使用工作流，因为它会在部署前后重新检查 PR 状态，并处理过期版本和清理。
 
@@ -694,7 +700,7 @@ Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些
 | 没有状态或 PR 评论 | 检查 `source_secret` 对应的 Token、Commit statuses 和 Pull requests 写权限，以及运行摘要中的回写错误。 |
 | Kubernetes 返回 Unauthorized 或无法读取配置 | 检查 Runner 服务环境中的 `KUBECONFIG`、文件归属和 Token 有效期。需要续期时，重新执行第 5 步生成配置的代码块。 |
 | 镜像推送或拉取失败 | 推送失败时检查 control 工作流对 Package 的写权限，尤其是已存在的 Package；拉取失败时检查 classic `GHCR_READ_TOKEN`、其用户的 Package 读取权限，以及预览 Namespace 中的 `ghcr-pull` Secret。 |
-| 就绪检查或 HTTP 验证失败 | 先检查 Pod 是否就绪、Service 是否有 ClusterIP、Ingress 是否有地址，再检查 Runner 的 DNS/hosts、Traefik 路由和 `/health`。响应必须包含 `status: ok` 和预期的 `PREVIEW_COMMIT_SHA`。 |
+| 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress 状态中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后检查 Runner 的 DNS/hosts、Traefik 路由和 `/health`。响应必须包含 `status: ok` 和预期的 `PREVIEW_COMMIT_SHA`。 |
 | Runner 验证通过，但浏览器打不开 | 检查浏览器所在机器的 hosts 和网络路径。WSL 环境下，重复第 7 步的 Windows localhost 检查。 |
 | PR 关闭后预览仍存在 | 找到 `closed` 通知并等待对应 control 运行完成。如果通知失败，修复后手动触发这个已关闭 PR，重试清理。 |
 | 更新工作流无法创建 PR | 检查更新章节中的 Actions PR 创建权限，或者自行推送生成的分支并创建 PR。 |

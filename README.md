@@ -148,13 +148,6 @@ done
 test "$missing" -eq 0
 ```
 
-After registering the runner in step 5, with an account that can view its settings, check that the runner is online and has all four required labels:
-
-```bash
-gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
-  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
-```
-
 The normal image build runs on a GitHub-hosted runner, so Docker is only needed locally for optional manual image builds.
 
 ## First setup
@@ -340,7 +333,14 @@ The first three checks should return `yes`; creating ClusterRoles should return 
 
 The requested token lifetime is 24 hours; the API server may issue a different lifetime. Before it expires, rerun the Python block to replace the file with a fresh token. This setup does not renew tokens automatically. See [`kubectl create token`](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_token/).
 
-Install a Linux x64 GitHub self-hosted runner in a separate directory, register it only with the private control repository, and add the `previewmesh` label. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. The `export` above only affects this shell and its child processes: for a foreground runner, start `./run.sh` from this shell; for a service, set `KUBECONFIG` to the printed absolute file path in the runner service environment and restart the service. The service account must be able to read the file and traverse its parent directories.
+In GitHub, open the repository named by `$CONTROL_REPOSITORY`, then go to **Settings → Actions → Runners → New self-hosted runner**. Follow the Linux x64 instructions in a new directory on the K3s machine, and add the `previewmesh` label when prompted. The runner must be registered to this exact control repository because the `local` job is queued there; a runner registered to another private repository cannot accept its job. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. After starting the runner service, verify that it appears online with the required labels:
+
+```bash
+gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
+  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
+```
+
+The runner must show `status: online` and the labels `self-hosted`, `Linux`, `X64`, and `previewmesh`. The `export` above only affects this shell and its child processes: for a foreground runner, start `./run.sh` from this shell; for a service, set `KUBECONFIG` to the printed absolute file path in the runner service environment and restart the service. The service account must be able to read the file and traverse its parent directories.
 
 For a new terminal, follow [the project variable setup](#set-project-variables-once). See [the Kubernetes runner notes](ops/kubernetes/README.md).
 
@@ -435,7 +435,13 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get service traefik -w
 ```
 
-Wait until `TYPE` shows `ClusterIP` and `CLUSTER-IP` contains an address, then press Ctrl+C to stop watching. Read the address again and create the local proxy configuration:
+The HelmChartConfig keeps Traefik's Service internal and tells Traefik to publish `127.0.0.1` in Ingress status. PreviewMesh uses that status as a readiness signal; requests still reach Traefik through the socket proxy on port `18080`. Wait until `TYPE` shows `ClusterIP` and `CLUSTER-IP` contains an address, then press Ctrl+C to stop watching. Confirm Traefik has finished applying the chart configuration:
+
+```bash
+sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system rollout status deployment/traefik --timeout=120s
+```
+
+Read the address again and create the local proxy configuration:
 
 ```bash
 sudo install -d -m 0755 /etc/previewmesh
@@ -663,7 +669,7 @@ Comments include the build result, observed Deployment replica counts, Pod readi
 
 Workflow evidence records each CLI stage's UTC start and end times, duration, and result in the stage CSV and result JSON. Combined evidence carries these timings into `summary.json`; `resource_observation` times runtime snapshots, and `resource_verify` times Namespace ownership or absence checks during cleanup.
 
-The deployment readiness stage waits for the Deployment and Pods, then waits for the preview Service to receive a ClusterIP and for the Traefik Ingress to publish an ingress point before `/health` verification can succeed. A failed Service or Ingress readiness check fails the attempt and prevents the preview from being marked ready.
+The deployment readiness stage waits for the Deployment and Pods, then waits for the preview Service to receive a ClusterIP and for Traefik to publish an address in Ingress status before `/health` verification can succeed. In the WSL setup above, Traefik publishes `127.0.0.1`; this is a readiness signal, while requests use the socket proxy on port `18080`. A failed Service or Ingress readiness check fails the attempt and prevents the preview from being marked ready.
 
 `previewmesh build`, `deploy`, `verify`, and `cleanup` are lower-level operations used by the workflow. Use the workflow for the complete PR lifecycle because it rechecks current PR state before and after deployment and handles superseded revisions and cleanup.
 
@@ -694,7 +700,7 @@ Start with the failed job's log and the control run summary. A green source noti
 | No status or PR comment appears | Check the token named by `source_secret`, its Commit statuses and Pull requests write permissions, and reporting errors in the run summary. |
 | Kubernetes returns Unauthorized or cannot load a config | Check `KUBECONFIG` in the runner service environment, file ownership, and token expiry. Rerun step 5's generation block to renew it. |
 | Image push or pull fails | For push, check the control workflow's package write access, including access to an existing package. For pull, check the classic `GHCR_READ_TOKEN`, its owner's package read access, and the `ghcr-pull` Secret in the preview namespace. |
-| Readiness or HTTP verification fails | Check Pod readiness, the Service ClusterIP, and the Ingress address. Then check DNS/hosts on the runner, the Traefik route, and `/health`: it must return `status: ok` and the expected `PREVIEW_COMMIT_SHA`. |
+| Readiness or HTTP verification fails | If Deployment, Pod, and Service are ready but Ingress readiness times out, check that Traefik has published an Ingress address. In the WSL setup, the HelmChartConfig must set `providers.kubernetesIngress.ingressEndpoint.ip` to `127.0.0.1`; apply it and wait for the Traefik rollout. Then check DNS/hosts on the runner, the Traefik route, and `/health`: it must return `status: ok` and the expected `PREVIEW_COMMIT_SHA`. |
 | Runner verification passes but the browser cannot open the preview | Check the browser machine's hosts entry and route. For WSL, repeat the Windows localhost check from step 7. |
 | Preview remains after closing a PR | Find the `closed` notification and wait for its control run. If dispatch failed, fix it and manually dispatch the closed PR to retry cleanup. |
 | Updater cannot create a PR | Check Actions PR creation permissions in the update section, or push the generated branch and open a PR yourself. |
