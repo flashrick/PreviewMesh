@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Repeat the current deployment of an owned preview against a live cluster.
+"""Repeat deployment or test missing-resource repair on an owned live preview.
 
 Requires Go, Helm 3, kubectl, an authenticated KUBECONFIG, and a reachable
 preview URL. Run from the project root. Evidence contains private runtime
 identities; choose an output directory outside the public repository.
+Repair mode interrupts the preview by deleting each resource in turn. Run only
+when no other deployment or cleanup is modifying the selected preview.
 """
 
 import argparse
@@ -33,8 +35,10 @@ def main():
     parser.add_argument('--namespace', required=True)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--attempts', type=int, default=3)
+    parser.add_argument('--repair-missing', action='store_true',
+                        help='Delete Service, Deployment, and Ingress in turn and verify repair')
     args = parser.parse_args()
-    require(args.attempts >= 2, 'At least two attempts are required')
+    require(args.repair_missing or args.attempts >= 2, 'At least two attempts are required')
     # Refuse to overwrite evidence from another run.
     args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     ns = args.namespace
@@ -50,7 +54,8 @@ def main():
                     f'Expected exactly one {kind} named {ns}')
             identities[kind] = objects[0]['metadata']['uid']
         identities['Namespace'] = namespace['metadata']['uid']
-        return {'identities': identities, 'annotations': namespace['metadata']['annotations']}
+        return {'identities': identities, 'annotations': namespace['metadata']['annotations'],
+                'labels': namespace['metadata'].get('labels', {})}
 
     baseline = snapshot()
     source = baseline['annotations']['previewmesh.local/source-repository']
@@ -58,6 +63,11 @@ def main():
     registration = next(entry for entry in entries if entry['source_repository'] == source)
     prefix = f"pm-r{registration['repository_id']}-pr"
     require(ns.startswith(prefix) and ns[len(prefix):].isdigit(), 'Registry identity mismatch')
+    for key, expected in {'managed-by': 'previewmesh',
+                          'repository-id': str(registration['repository_id']),
+                          'pr-number': ns[len(prefix):]}.items():
+        require(baseline['labels'].get('previewmesh.local/' + key) == expected,
+                f'Namespace ownership mismatch: {key}')
     values = read_json('helm', 'get', 'values', ns, '-n', ns, '-o', 'json')
     # The deploy CLI only preserves these values; reject custom overrides before mutation.
     require(set(values) == {'commitSHA', 'hostname', 'image', 'imagePullSecret', 'port'},
@@ -71,10 +81,18 @@ def main():
     common = ['--repository-id', registration['repository_id'], '--source-repository', source,
               '--pr', ns[len(prefix):], '--sha', sha, '--port', str(registration['port'])]
     records = []
+    scenarios = ['Service', 'Deployment', 'Ingress'] if args.repair_missing else [None] * args.attempts
+    # Check deletion permissions before interrupting a working preview.
+    if args.repair_missing:
+        for kind in scenarios:
+            require(run('kubectl', 'auth', 'can-i', 'delete', kind.lower(), '-n', ns).strip() == 'yes',
+                    f'Cannot delete {kind}')
+    (args.output / 'desired.json').write_text(json.dumps(values, indent=2) + '\n')
     with tempfile.TemporaryDirectory(prefix='previewmesh-repeat-') as temporary:
         binary = str(Path(temporary) / 'previewmesh')
         subprocess.run(['go', 'build', '-o', binary, './cmd/previewmesh'], check=True)
-        for attempt in range(args.attempts + 1):
+        previous = baseline
+        for attempt, missing_kind in enumerate([None, *scenarios]):
             # Verify the existing endpoint before making any deployment request.
             command = 'verify' if attempt == 0 else 'deploy'
             result_path = args.output / f'{attempt}-{command}.json'
@@ -82,21 +100,44 @@ def main():
                             '--evidence', str(args.output / 'stages.csv')]
             if command == 'deploy':
                 command_args += ['--image', values['image'], '--pull-secret', values['imagePullSecret']]
-            subprocess.run(command_args, check=True, stdout=subprocess.DEVNULL)
+            if missing_kind:
+                # Save the healthy state before introducing a single missing resource.
+                (args.output / f'{attempt}-before.json').write_text(json.dumps(previous, indent=2) + '\n')
+                try:
+                    subprocess.run(['kubectl', 'delete', missing_kind.lower(), ns, '-n', ns,
+                                    '--wait=true', '--timeout=60s'], check=True)
+                    absent = run('kubectl', 'get', missing_kind.lower(), ns, '-n', ns,
+                                 '--ignore-not-found', '-o', 'json')
+                    require(not absent.strip(), f'{missing_kind} still exists after deletion')
+                    resources = read_json('kubectl', 'get', 'deployment,service,ingress',
+                                          '-n', ns, '-o', 'json')
+                    (args.output / f'{attempt}-missing.json').write_text(json.dumps(resources, indent=2) + '\n')
+                finally:
+                    # Even a failed absence check must attempt to restore the preview.
+                    subprocess.run(command_args, check=True, stdout=subprocess.DEVNULL)
+            else:
+                subprocess.run(command_args, check=True, stdout=subprocess.DEVNULL)
             result = json.loads(result_path.read_text())
             for key, expected in {'result': 'success', 'requested_sha': sha, 'served_sha': sha,
                                   'http_verification': 'success',
                                   'revision_verification': 'success'}.items():
                 require(result[key] == expected, f'{command}: unexpected {key}')
             observed = snapshot()
-            require(observed['identities'] == baseline['identities'], 'Resource identity changed')
+            for kind, uid in previous['identities'].items():
+                if kind == missing_kind:
+                    require(observed['identities'][kind] != uid, f'{kind} was not recreated')
+                else:
+                    require(observed['identities'][kind] == uid, f'Unexpected {kind} identity change')
             require(observed['annotations']['previewmesh.local/state'] == 'ready', 'Preview not ready')
             require(observed['annotations']['previewmesh.local/verified-sha'] == sha, 'Verified SHA changed')
             current_values = read_json('helm', 'get', 'values', ns, '-n', ns, '-o', 'json')
             require(current_values == values, 'Helm values changed')
-            records.append({'attempt': attempt, 'command': command, **observed})
+            records.append({'attempt': attempt, 'command': command,
+                            'missing_resource': missing_kind, **observed})
             (args.output / 'observations.json').write_text(json.dumps(records, indent=2) + '\n')
-            print(f'{command} {attempt}: verified SHA, stable resource UIDs and values; '
+            previous = observed
+            action = f'restored {missing_kind}' if missing_kind else 'stable resource UIDs'
+            print(f'{command} {attempt}: verified SHA, {action} and values; '
                   f"Helm revision {observed['annotations']['previewmesh.local/verified-revision']}", flush=True)
 
 
