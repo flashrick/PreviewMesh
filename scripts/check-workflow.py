@@ -24,6 +24,9 @@ for control_id in ['34', '56']:
 notification = (root / 'templates/source-notify.yml').read_text()
 assert 'pull_request_target:' in notification
 assert 'types: [opened, synchronize, reopened, closed]' in notification
+# Duplicate notifications share a PR concurrency group, including across commits.
+assert 'group: previewmesh-${{ inputs.repository_id }}-${{ inputs.pr_number }}' in workflow
+assert 'cancel-in-progress: false' in workflow
 
 control = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -106,6 +109,27 @@ with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
         if scenario == 'report_failure':
             assert outcome['reporting_result'] == 'failure'
 
+        if scenario in ['ready', 'deploy_failure']:
+            # Each repeated dispatch has its own run workspace and reporting URL.
+            # Reuse the same PR/SHA, but require fresh inspection on every attempt.
+            for run_id in ['2', '3']:
+                repeat = case / ('run-' + run_id)
+                repeat.mkdir()
+                repeated_env = dict(env, GITHUB_RUN_ID=run_id)
+                completed = subprocess.run(['bash', str(root/'scripts/local-attempt.sh')],
+                                           cwd=repeat, env=repeated_env, capture_output=True, text=True)
+                assert completed.returncode == exitcode, (scenario, run_id, completed.stderr)
+                repeated_outcome = json.loads((repeat/'evidence/outcome.json').read_text())
+                assert repeated_outcome == outcome, (scenario, run_id, repeated_outcome)
+                assert repeated_outcome['attempt_sha'] == sha
+                assert (repeat/'mutations').read_text().splitlines() == ['deploy']
+                assert int((repeat/'counter').read_text()) == (2 if scenario == 'ready' else 1)
+                repeated_report = json.loads((repeat/'reported.json').read_text())
+                assert repeated_report[repeated_report.index('--sha')+1] == sha
+                assert repeated_report[repeated_report.index('--state')+1] == ('success' if scenario == 'ready' else 'failure')
+                assert repeated_report[repeated_report.index('--run-url')+1] == f'https://github.com/owner/control/actions/runs/{run_id}'
+                assert repeated_report[repeated_report.index('--url')+1] == (target if scenario == 'ready' else f'https://github.com/owner/control/actions/runs/{run_id}')
+
     # Timing metadata is available, but it must not hide missing lifecycle evidence.
     report = temp/'report'
     (report/'collected/local').mkdir(parents=True)
@@ -135,4 +159,4 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     assert summary['remaining_namespace_resources'] is None
     stages = {timing['stage'] for timing in summary['stage_timings']}
     assert {'deploy', 'readiness', 'http_verify', 'cleanup', 'resource_observation', 'resource_verify'} <= stages
-print('PASS: synchronize notification and 10 current-state/reporting regressions (tool doubles only).')
+print('PASS: notification wiring, 10 current-state/reporting scenarios, and 4 repeated same-PR/SHA attempts (tool doubles only).')

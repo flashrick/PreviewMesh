@@ -137,6 +137,46 @@ func TestCurrentPRPolicy(t *testing.T) {
 	}
 }
 
+// TestRepeatedNotificationInspection requires fresh state and authorization for every delivery.
+func TestRepeatedNotificationInspection(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	reads := map[string]int{}
+	allow := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads[r.URL.Path]++
+		switch r.URL.Path {
+		case "/repositories/12":
+			fmt.Fprint(w, `{"id":12,"full_name":"owner/demo"}`)
+		case "/repos/owner/demo/pulls/3":
+			fmt.Fprintf(w, `{"number":3,"state":"open","head":{"sha":%q,"repo":{"id":12}},"base":{"repo":{"id":12}},"user":{"login":"author"}}`, sha)
+		case "/repos/owner/demo/collaborators/author/permission":
+			fmt.Fprintf(w, `{"user":{"permissions":{"push":%t}}}`, allow)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	client := api{base: srv.URL, token: "test", client: srv.Client()}
+	reg := registration{ID: "12", Source: "owner/demo"}
+	for attempt := 0; attempt < 3; attempt++ {
+		s, err := inspect(client, reg, "3")
+		if err != nil || s.SHA != sha || s.State != "open" || !s.Eligible || s.PR != "3" || s.registration != reg {
+			t.Fatalf("attempt %d: state=%+v error=%v", attempt, s, err)
+		}
+	}
+	// An unchanged commit must not reuse an earlier authorization decision.
+	allow = false
+	if s, err := inspect(client, reg, "3"); err == nil || s.Eligible {
+		t.Fatalf("repeat accepted revoked permission: state=%+v error=%v", s, err)
+	}
+	for _, path := range []string{"/repositories/12", "/repos/owner/demo/pulls/3", "/repos/owner/demo/collaborators/author/permission"} {
+		if reads[path] != 4 {
+			t.Errorf("%s reads=%d, want 4", path, reads[path])
+		}
+	}
+}
+
 // TestRegistrationRejectsAliases accepts one exact registration and rejects aliases.
 func TestRegistrationRejectsAliases(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "repositories.json")
