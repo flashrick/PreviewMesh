@@ -43,27 +43,31 @@ var imagePattern = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9._-]*/previewmes
 // options contains the validated command-line configuration.
 type options struct {
 	command, repoID, pr, source, sha, image, hostname, chart, sourceDir, evidence, resultFile, pullSecret string
+	namespaceUID                                                                                          string
+	cleanupAttempts                                                                                       int
 	port                                                                                                  int
 	timeout, httpTimeout                                                                                  time.Duration
 }
 
 // result is the structured outcome shared by the CLI and automation.
 type result struct {
-	Namespace            string            `json:"namespace"`
-	RequestedSHA         string            `json:"requested_sha"`
-	ServedSHA            string            `json:"served_sha"`
-	Image                string            `json:"image"`
-	URL                  string            `json:"url"`
-	Result               string            `json:"result"`
-	FailedStage          string            `json:"failed_stage"`
-	Rollback             string            `json:"rollback"`
-	Cleanup              string            `json:"cleanup"`
-	Error                string            `json:"error"`
-	Runtime              map[string]string `json:"runtime,omitempty"`
-	HTTPStatus           int               `json:"http_status,omitempty"`
-	HTTPVerification     string            `json:"http_verification,omitempty"`
-	RevisionVerification string            `json:"revision_verification"`
-	StageTimings         []stageTiming     `json:"stage_timings,omitempty"`
+	Namespace            string             `json:"namespace"`
+	RequestedSHA         string             `json:"requested_sha"`
+	ServedSHA            string             `json:"served_sha"`
+	Image                string             `json:"image"`
+	URL                  string             `json:"url"`
+	Result               string             `json:"result"`
+	FailedStage          string             `json:"failed_stage"`
+	Rollback             string             `json:"rollback"`
+	Cleanup              string             `json:"cleanup"`
+	Error                string             `json:"error"`
+	Runtime              map[string]string  `json:"runtime,omitempty"`
+	HTTPStatus           int                `json:"http_status,omitempty"`
+	HTTPVerification     string             `json:"http_verification,omitempty"`
+	RevisionVerification string             `json:"revision_verification"`
+	Recovery             *cleanupRecovery   `json:"cleanup_recovery,omitempty"`
+	Inspection           *cleanupInspection `json:"cleanup_inspection,omitempty"`
+	StageTimings         []stageTiming      `json:"stage_timings,omitempty"`
 }
 
 // stageTiming records one operation interval in UTC for later evaluation.
@@ -77,8 +81,12 @@ type stageTiming struct {
 
 // namespace contains the Kubernetes fields needed for ownership checks.
 type namespace struct {
+	Spec struct {
+		Finalizers []string `json:"finalizers"`
+	} `json:"spec"`
 	Metadata struct {
 		UID               string            `json:"uid"`
+		Finalizers        []string          `json:"finalizers"`
 		Labels            map[string]string `json:"labels"`
 		Annotations       map[string]string `json:"annotations"`
 		DeletionTimestamp *string           `json:"deletionTimestamp"`
@@ -114,11 +122,11 @@ func identity(repoID, pr string) (string, error) {
 func parse(args []string) (options, error) {
 	var o options
 	if len(args) == 0 {
-		return o, errors.New("usage: previewmesh build|deploy|verify|cleanup [flags]")
+		return o, errors.New("usage: previewmesh build|deploy|verify|cleanup|cleanup-retry|cleanup-inspect [flags]")
 	}
 	o.command = args[0]
 	// Use the command name for clearer flag errors and help output.
-	if o.command != "build" && o.command != "deploy" && o.command != "verify" && o.command != "cleanup" {
+	if o.command != "build" && o.command != "deploy" && o.command != "verify" && o.command != "cleanup" && o.command != "cleanup-retry" && o.command != "cleanup-inspect" {
 		return o, errors.New("unknown command")
 	}
 	f := flag.NewFlagSet(o.command, flag.ContinueOnError)
@@ -133,6 +141,8 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.evidence, "evidence", "", "per-job CSV path")
 	f.StringVar(&o.resultFile, "result-file", "", "JSON result path")
 	f.StringVar(&o.pullSecret, "pull-secret", "ghcr-pull", "existing image pull secret; empty for public image")
+	f.StringVar(&o.namespaceUID, "namespace-uid", "", "original Namespace UID required for cleanup-retry")
+	f.IntVar(&o.cleanupAttempts, "cleanup-attempts", 3, "bounded cleanup-retry attempts (1-10)")
 	f.IntVar(&o.port, "port", 8080, "registered application HTTP port")
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "timeout per external operation")
 	f.DurationVar(&o.httpTimeout, "http-timeout", time.Minute, "HTTP verification deadline")
@@ -165,7 +175,13 @@ func parse(args []string) (options, error) {
 	if o.hostname != name+".preview.test" {
 		return o, errors.New("hostname must match preview identity")
 	}
-	if o.command != "cleanup" && !shaPattern.MatchString(o.sha) {
+	if o.cleanupAttempts < 1 || o.cleanupAttempts > 10 {
+		return o, errors.New("cleanup-attempts must be between 1 and 10")
+	}
+	if o.command == "cleanup-retry" && strings.TrimSpace(o.namespaceUID) == "" {
+		return o, errors.New("cleanup-retry requires the original namespace-uid")
+	}
+	if o.command != "cleanup" && o.command != "cleanup-retry" && o.command != "cleanup-inspect" && !shaPattern.MatchString(o.sha) {
 		return o, errors.New("sha must be 40 lowercase hexadecimal characters")
 	}
 	if o.command == "build" || o.command == "deploy" {
@@ -657,6 +673,9 @@ func (x *runner) cleanup() error {
 		if ns.Metadata.UID == "" {
 			return errors.New("namespace UID is missing")
 		}
+		if x.o.namespaceUID != "" && ns.Metadata.UID != x.o.namespaceUID {
+			return errors.New("namespace UID mismatch")
+		}
 		// Bind deletion to this UID so a recreated namespace cannot be removed.
 		options, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": map[string]string{"uid": ns.Metadata.UID}})
 		if _, deleteErr := x.run(options, "kubectl", "delete", "--raw", "/api/v1/namespaces/"+x.r.Namespace, "-f", "-"); deleteErr != nil {
@@ -704,6 +723,10 @@ func execute(o options) (result, error) {
 		err = x.verify()
 	case "cleanup":
 		err = x.cleanup()
+	case "cleanup-retry":
+		err = x.retryCleanup()
+	case "cleanup-inspect":
+		err = x.stage("cleanup_inspect", x.inspectCleanup)
 	}
 	// Return a structured failure while preserving the stage-specific details.
 	x.r.Result = "success"

@@ -575,6 +575,29 @@ The deployment readiness stage waits for the Deployment and Pods, then waits for
 
 `previewmesh build`, `deploy`, `verify`, and `cleanup` are lower-level operations used by the workflow. Use the workflow for the complete PR lifecycle because it rechecks current PR state before and after deployment and handles superseded revisions and cleanup.
 
+For interrupted cleanup, build the CLI with `go build -o /tmp/previewmesh ./cmd/previewmesh`. Use the same kubeconfig and registered identity as the workflow, and serialize recovery with all deployments for that PR. Confirm the PR should remain closed before retrying; these lower-level commands do not check GitHub state.
+
+```bash
+# Inspect without changing resources; save the original Namespace UID before cleanup.
+/tmp/previewmesh cleanup-inspect \
+  --repository-id "$REPOSITORY_ID" --pr "$PR_NUMBER" \
+  --source-repository "$SOURCE_REPOSITORY" \
+  --result-file /tmp/cleanup-before.json
+
+# Use the original UID from cleanup_inspection.namespace_uid or saved pre-cleanup evidence.
+/tmp/previewmesh cleanup-retry \
+  --repository-id "$REPOSITORY_ID" --pr "$PR_NUMBER" \
+  --source-repository "$SOURCE_REPOSITORY" \
+  --namespace-uid "$ORIGINAL_NAMESPACE_UID" \
+  --cleanup-attempts 3 --timeout 30s \
+  --result-file /tmp/cleanup-recovery.json
+```
+
+`cleanup-retry` performs 1–10 attempts (default 3), rechecks ownership each time, and sends a UID-bound deletion request. Keep the original UID when rerunning it after interruption; do not substitute a replacement Namespace's UID. It never removes finalizers or creates resources. Each external call has its own `--timeout`; this is not a total command deadline. Failed attempts are retained in `cleanup_recovery.attempts`, even when a later attempt succeeds. Success requires confirmed Namespace absence; API errors and exhausted retries return a nonzero exit status. A failed final inspection also returns nonzero.
+
+`cleanup-inspect` discovers all listable namespaced resource types and inventories the target Namespace without label filtering, including Helm history, unlabeled objects, deletion timestamps, and finalizers. JSON contains resource metadata only. `cleanup_inspection.state` is `remaining`, `confirmed_absent`, or `incomplete`; successful inspection with `remaining` means the inventory completed, not that cleanup succeeded. Forbidden lists, discovery failures, and a Namespace changing during inspection produce an incomplete report and nonzero exit status. Restricted runner credentials may lack access to some discovered types; completed lists are preserved alongside errors. Inspection covers the target Namespace only. Cluster-scoped storage, other Namespaces, registry images, and external resources require independent inspection. Retain result JSON and optional `--evidence` CSV securely before temporary files are lost.
+
+
 ## Project layout
 
 | Path | Purpose |
