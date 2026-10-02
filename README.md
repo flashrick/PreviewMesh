@@ -256,9 +256,11 @@ sudo systemctl daemon-reload
 sudo ./svc.sh start
 ```
 
-Verify that the runner appears online with the required labels:
+Return to the terminal where you configured the project variables in the private control checkout. Run the following there to verify that the runner appears online with the required labels. If that terminal has been closed, first restore the variables using [the project variable setup](#set-project-variables-once); changing directories alone does not restore them.
 
 ```bash
+# In the original control-repository terminal, confirm the target repository.
+printf 'CONTROL_REPOSITORY=%s\n' "$CONTROL_REPOSITORY"
 # List the Control repository's registered Runner and its labels.
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
   --jq '.runners[] | {name, status, labels: [.labels[].name]}'
@@ -282,18 +284,22 @@ The setup script uploads tokens; it does not create them. If you registered one 
 
 #### Create the source token
 
+Purpose: lets the Control workflow read Source code and PR information, and post status updates and preview links to the Source PR. Save it in the Control repository under the registered secret name, such as `SOURCE_APP`.
+
 Open the [fine-grained token creation page](https://github.com/settings/personal-access-tokens/new), or go to your personal **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
 
 1. Set **Token name** to a descriptive label, such as `previewmesh-source`. This label is for your own reference; it does not have to match the Actions secret name.
 2. Choose an **Expiration** date.
 3. Set **Resource owner** to the owner of your source repository.
-4. Under **Repository access**, choose **Only select repositories**, then select your application repository.
+4. Under **Repository access**, choose **Only select repositories**, then select the **Source repository** named by `SOURCE_REPOSITORY` (the repository containing your application code). Do not select the Control repository here.
 5. Under **Repository permissions**, set **Contents: Read-only**, **Pull requests: Read and write**, and **Commit statuses: Read and write**. Keep **Metadata: Read-only**, which GitHub normally adds automatically.
 6. Click **Generate token** and copy the generated value into a password manager so you can paste it when the script asks for it. Do not put it in `config/repositories.json`.
 
 For an entry with `source_secret: SOURCE_APP`, paste this value at `Paste SOURCE_APP for OWNER/APPLICATION`. If you chose another secret name, the prompt uses that name. Repeat for each registered source. See [GitHub's token creation guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 
 #### Create the dispatch token
+
+Purpose: lets the Source notification workflow trigger the Control workflow when a PR changes. Save it in each Source repository as `PREVIEWMESH_DISPATCH_TOKEN`.
 
 Open the [fine-grained token creation page](https://github.com/settings/personal-access-tokens/new) again.
 
@@ -306,6 +312,8 @@ Open the [fine-grained token creation page](https://github.com/settings/personal
 Paste this value at `Paste PREVIEWMESH_DISPATCH_TOKEN (control Actions write only)`. The script saves the same dispatch token in every registered source repository so each can request a control run.
 
 #### Create the GHCR read token
+
+Purpose: lets K3s download private preview images from GHCR to run the application. Save it in the Control repository as `GHCR_READ_TOKEN`.
 
 Open the [classic token creation page](https://github.com/settings/tokens/new), or go to **Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)**.
 

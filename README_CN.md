@@ -256,9 +256,11 @@ sudo systemctl daemon-reload
 sudo ./svc.sh start
 ```
 
-检查 Runner 已上线且带有所需标签：
+回到刚才在 private control 仓库中设置项目变量的那个终端，在那里执行下面的命令，检查 Runner 是否上线并带有所需标签。如果那个终端已经关闭，先按[项目变量设置](#一次设置项目变量)重新设置变量；仅切换目录不会恢复这些变量。
 
 ```bash
+# 在刚才的 Control 仓库终端中，确认目标仓库名称。
+printf 'CONTROL_REPOSITORY=%s\n' "$CONTROL_REPOSITORY"
 # 列出 private control 仓库中的 Runner 及其标签。
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
   --jq '.runners[] | {name, status, labels: [.labels[].name]}'
@@ -282,18 +284,22 @@ gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
 
 #### 创建 source Token
 
+用途：让 Control 工作流读取 Source 仓库的代码和 PR 信息，并向 Source PR 回写状态和预览链接。保存在 Control 仓库，Secret 名称使用登记的名称，例如 `SOURCE_APP`。
+
 打开 [fine-grained Token 创建页面](https://github.com/settings/personal-access-tokens/new)，也可以从个人账号的 **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token** 进入。
 
 1. **Token name** 填写方便识别的名称，例如 `previewmesh-source`。这个名称只是给你自己看的，不必与 Actions Secret 名称一致。
 2. 在 **Expiration** 中选择有效期。
 3. **Resource owner** 选择 source 仓库的所有者。
-4. **Repository access** 选择 **Only select repositories**，然后选中你的应用仓库。
+4. **Repository access** 选择 **Only select repositories**，然后选中 `SOURCE_REPOSITORY` 指定的 **Source 仓库（存放应用代码的仓库）**。这里不要选择 Control 仓库。
 5. 在 **Repository permissions** 中设置 **Contents: Read-only**、**Pull requests: Read and write** 和 **Commit statuses: Read and write**。保留 **Metadata: Read-only**，GitHub 通常会自动添加它。
 6. 点击 **Generate token**，将生成的值复制到密码管理器中，稍后粘贴给脚本。不要把它写进 `config/repositories.json`。
 
 如果登记文件中填写的是 `source_secret: SOURCE_APP`，就在脚本提示 `Paste SOURCE_APP for OWNER/APPLICATION` 时粘贴这个值。如果使用了其他 Secret 名称，提示也会使用对应名称。每个已登记的 source 仓库分别创建一个 Token。参见 [GitHub Token 创建指南](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)。
 
 #### 创建 dispatch Token
+
+用途：让 Source 仓库的通知工作流在 PR 变化时触发 Control 工作流。保存在每个 Source 仓库，Secret 名称为 `PREVIEWMESH_DISPATCH_TOKEN`。
 
 再次打开 [fine-grained Token 创建页面](https://github.com/settings/personal-access-tokens/new)。
 
@@ -306,6 +312,8 @@ gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
 在脚本提示 `Paste PREVIEWMESH_DISPATCH_TOKEN (control Actions write only)` 时粘贴这个值。脚本会把同一个 dispatch Token 保存到每个已登记的 source 仓库，让它们能够触发 control 工作流。
 
 #### 创建 GHCR 读取 Token
+
+用途：让 K3s 从 GHCR 下载私有预览镜像来运行应用。保存在 Control 仓库，Secret 名称为 `GHCR_READ_TOKEN`。
 
 打开 [classic Token 创建页面](https://github.com/settings/tokens/new)，也可以从 **Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)** 进入。
 
