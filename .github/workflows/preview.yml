@@ -16,6 +16,9 @@ on:
         type: string
 permissions:
   contents: read
+env:
+  # Set by the installer in the private control repository, never by PR inputs.
+  PREVIEWMESH_DOMAIN_SUFFIX: ${{ vars.PREVIEWMESH_DOMAIN_SUFFIX || 'preview.test' }}
 # The public repository ships this workflow as a template. A private control
 # repository must explicitly enable it before any deployment job can run.
 # All accepted identities are canonical before any source build or local mutation.

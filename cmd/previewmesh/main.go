@@ -44,6 +44,7 @@ var imagePattern = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9._-]*/previewmes
 type options struct {
 	command, repoID, pr, source, sha, image, hostname, chart, sourceDir, evidence, resultFile, pullSecret string
 	namespaceUID                                                                                          string
+	domainSuffix                                                                                          string
 	cleanupAttempts                                                                                       int
 	port                                                                                                  int
 	timeout, httpTimeout                                                                                  time.Duration
@@ -136,6 +137,12 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.sha, "sha", "", "full source commit SHA")
 	f.StringVar(&o.image, "image", "", "GHCR repository for build; digest reference for deploy")
 	f.StringVar(&o.hostname, "hostname", "", "expected preview hostname")
+	// Only trusted control configuration chooses the suffix; PR metadata cannot override it.
+	suffix := os.Getenv("PREVIEWMESH_DOMAIN_SUFFIX")
+	if suffix == "" {
+		suffix = "preview.test"
+	}
+	f.StringVar(&o.domainSuffix, "domain-suffix", suffix, "trusted preview DNS suffix (default: PREVIEWMESH_DOMAIN_SUFFIX or preview.test)")
 	f.StringVar(&o.chart, "chart", "charts/preview", "trusted control chart")
 	f.StringVar(&o.sourceDir, "source-dir", ".", "clean checked-out source directory")
 	f.StringVar(&o.evidence, "evidence", "", "per-job CSV path")
@@ -168,11 +175,22 @@ func parse(args []string) (options, error) {
 	if o.port < 1 || o.port > 65535 {
 		return o, errors.New("port must be between 1 and 65535")
 	}
+	// Reject URL syntax, wildcard labels and overlong DNS names before external effects.
+	labelPattern := regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	for _, label := range strings.Split(o.domainSuffix, ".") {
+		if len(label) > 63 || !labelPattern.MatchString(label) {
+			return o, errors.New("domain-suffix must contain valid lowercase DNS labels")
+		}
+	}
+	expectedHostname := name + "." + o.domainSuffix
+	if len(expectedHostname) > 253 {
+		return o, errors.New("preview hostname exceeds DNS length limit")
+	}
 	if o.hostname == "" {
 		// Derive the hostname from the same identity used for the namespace.
-		o.hostname = name + ".preview.test"
+		o.hostname = expectedHostname
 	}
-	if o.hostname != name+".preview.test" {
+	if o.hostname != expectedHostname {
 		return o, errors.New("hostname must match preview identity")
 	}
 	if o.cleanupAttempts < 1 || o.cleanupAttempts > 10 {

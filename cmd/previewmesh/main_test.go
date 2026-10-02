@@ -497,3 +497,38 @@ esac
 		t.Fatalf("missing UID precondition: %s", b)
 	}
 }
+
+// TestTrustedDomain keeps preview identity checks when installation changes DNS.
+func TestTrustedDomain(t *testing.T) {
+	t.Setenv("PREVIEWMESH_DOMAIN_SUFFIX", "")
+	args := []string{"verify", "--repository-id", "12", "--pr", "3", "--source-repository", "owner/app", "--sha", strings.Repeat("a", 40)}
+	baseline, err := parse(args)
+	if err != nil || baseline.hostname != "pm-r12-pr3.preview.test" {
+		t.Fatalf("legacy default: %+v, %v", baseline, err)
+	}
+	t.Setenv("PREVIEWMESH_DOMAIN_SUFFIX", "192.168.1.20.sslip.io")
+	installed, err := parse(args)
+	if err != nil || installed.hostname != "pm-r12-pr3.192.168.1.20.sslip.io" {
+		t.Fatalf("configured suffix: %+v, %v", installed, err)
+	}
+	override, err := parse(append(append([]string{}, args...), "--domain-suffix", "preview.example.com"))
+	if err != nil || override.hostname != "pm-r12-pr3.preview.example.com" {
+		t.Fatalf("explicit override: %+v, %v", override, err)
+	}
+	// The suffix never allows a caller to replace the repository/PR prefix.
+	for _, flags := range [][]string{
+		{"--hostname", "pm-r99-pr3.192.168.1.20.sslip.io"},
+		{"--domain-suffix", "https://example.com"},
+		{"--domain-suffix", "example.com:80"},
+		{"--domain-suffix", "*.example.com"},
+		{"--domain-suffix", "Example.com"},
+		{"--domain-suffix", "example..com"},
+		{"--domain-suffix", ""},
+		{"--domain-suffix", strings.Repeat("a", 64) + ".com"},
+		{"--domain-suffix", strings.Repeat(strings.Repeat("a", 60)+".", 4) + "example.com"},
+	} {
+		if _, err := parse(append(append([]string{}, args...), flags...)); err == nil {
+			t.Fatalf("accepted invalid DNS flags: %v", flags)
+		}
+	}
+}

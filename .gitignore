@@ -18,3 +18,5 @@ kubeconfig*
 __pycache__/
 /config/previewmesh-runner.yaml
 /config/.runner-*
+/config/setup.local.ini
+/config/setup.local.*.ini

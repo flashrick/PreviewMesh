@@ -57,6 +57,7 @@ failed = os.environ['SCENARIO'] in ['deploy_failure', 'rollback_verified'] and c
 wrong_revision = os.environ['SCENARIO'] == 'wrong_revision' and command == 'deploy'
 result = {'result':'failure' if failed else 'success', 'requested_sha':'a'*40,
           'served_sha':'b'*40 if wrong_revision or os.environ['SCENARIO'] == 'rollback_verified' else 'a'*40,
+          'url':'http://pm-r12-pr3.' + os.environ.get('PREVIEWMESH_DOMAIN_SUFFIX', 'preview.test') + ':18080',
           'http_verification':'success',
           'revision_verification':'failure' if wrong_revision else 'success',
           'rollback':'verified' if os.environ['SCENARIO'] == 'rollback_verified' else 'not_attempted',
@@ -76,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix='previewmesh-workflow-test-') as temp:
         ('post_closed', 'removed', ['deploy', 'cleanup'], 0),
         ('post_superseded', 'superseded', ['deploy'], 0),
         ('ready', 'ready', ['deploy'], 0),
+        ('custom_domain', 'ready', ['deploy'], 0),
         ('wrong_revision', 'failure', ['deploy'], 1),
         ('deploy_failure', 'failure', ['deploy'], 1),
         ('rollback_verified', 'failure', ['deploy'], 1),
@@ -135,6 +137,7 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
                    BUILT_SHA=sha, BUILT_IMAGE='ghcr.io/owner/previewmesh-c34-r12@sha256:'+'b'*64, GITHUB_SERVER_URL='https://github.com',
                    GITHUB_REPOSITORY='owner/control', GITHUB_RUN_ID='1')
         # Never pass real registry credentials to an infrastructure double.
+        env['PREVIEWMESH_DOMAIN_SUFFIX'] = '192.168.1.20.sslip.io' if scenario == 'custom_domain' else 'preview.test'
         env.pop('PREVIEWMESH_GHCR_USER', None)
         env.pop('PREVIEWMESH_GHCR_TOKEN', None)
         completed = subprocess.run(['bash', str(root/'scripts/local-attempt.sh')], cwd=case, env=env, capture_output=True, text=True)
@@ -152,7 +155,7 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
             assert '--result-file' not in reported
         assert reported[reported.index('--run-url')+1] == 'https://github.com/owner/control/actions/runs/1'
         target = reported[reported.index('--url')+1]
-        assert target == ('http://pm-r12-pr3.preview.test:18080' if scenario == 'ready' else 'https://github.com/owner/control/actions/runs/1'), (scenario, target)
+        assert target == ('http://pm-r12-pr3.' + env['PREVIEWMESH_DOMAIN_SUFFIX'] + ':18080' if expected == 'ready' else 'https://github.com/owner/control/actions/runs/1'), (scenario, target)
         assert reported[reported.index('--state')+1] == ('success' if expected in ['ready', 'removed'] else 'failure')
         if scenario == 'report_failure':
             assert outcome['reporting_result'] == 'failure'
@@ -262,6 +265,7 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
                            'ghcr.io/owner/previewmesh-c34-r12@sha256:'+'b'*64,
                            GITHUB_SERVER_URL='https://github.com', GITHUB_REPOSITORY='owner/control',
                            GITHUB_RUN_ID=str(attempt+1), GITHUB_RUN_ATTEMPT='1')
+                env['PREVIEWMESH_DOMAIN_SUFFIX'] = 'preview.test'
                 env.pop('PREVIEWMESH_GHCR_USER', None)
                 env.pop('PREVIEWMESH_GHCR_TOKEN', None)
                 completed = subprocess.run(['bash', str(root/'scripts/local-attempt.sh')],
@@ -336,4 +340,4 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     assert summary['remaining_namespace_resources'] is None
     stages = {timing['stage'] for timing in summary['stage_timings']}
     assert {'deploy', 'readiness', 'http_verify', 'cleanup', 'resource_observation', 'resource_verify'} <= stages
-print('PASS: notification wiring, 14 current-state/reporting scenarios (including 3 real CLI failure paths), 4 repeated same-PR/SHA attempts, and 12 real CLI close/merge cleanup attempts. External infrastructure is doubled.')
+print('PASS: notification wiring, 15 current-state/reporting scenarios (including 3 real CLI failure paths), 4 repeated same-PR/SHA attempts, and 12 real CLI close/merge cleanup attempts. External infrastructure is doubled.')

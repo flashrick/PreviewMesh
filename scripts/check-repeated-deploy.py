@@ -65,6 +65,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('--namespace', required=True)
+    parser.add_argument('--domain-suffix', default=os.environ.get('PREVIEWMESH_DOMAIN_SUFFIX') or 'preview.test')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--attempts', type=int, default=3)
     parser.add_argument('--check-duplicates', action='store_true',
@@ -106,7 +107,7 @@ def main():
     # The deploy CLI only preserves these values; reject custom overrides before mutation.
     require(set(values) == {'commitSHA', 'hostname', 'image', 'imagePullSecret', 'port'},
             'Release has unsupported Helm overrides; refusing to change its configuration')
-    require(values['hostname'] == ns + '.preview.test', 'Unexpected preview hostname')
+    require(values['hostname'] == ns + '.' + args.domain_suffix, 'Unexpected preview hostname')
     sha = values['commitSHA']
     require(baseline['annotations']['previewmesh.local/state'] == 'ready', 'Preview is not ready')
     require(baseline['annotations']['previewmesh.local/verified-sha'] == sha,
@@ -125,7 +126,7 @@ def main():
         return check_duplicates(objects['items'], ns, registration['repository_id'], ns[len(prefix):])
 
     baseline_inventory = inventory() if args.check_duplicates else None
-    common = ['--repository-id', registration['repository_id'], '--source-repository', source,
+    common = ['--domain-suffix', args.domain_suffix, '--repository-id', registration['repository_id'], '--source-repository', source,
               '--pr', ns[len(prefix):], '--sha', sha, '--port', str(registration['port'])]
     records = []
     scenarios = ['Service', 'Deployment', 'Ingress'] if args.repair_missing else [None] * args.attempts

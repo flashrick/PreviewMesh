@@ -6,7 +6,7 @@ go build -o bin/previewmesh ./cmd/previewmesh
 common=(--repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER")
 bin/control resolve "${common[@]}" > evidence/registration.json
 run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-preview_url="http://pm-r${REPOSITORY_ID}-pr${PR_NUMBER}.preview.test:18080"
+preview_url=''
 export ATTEMPT_SHA="$BUILT_SHA" OUTCOME=failure REPORTING_RESULT=not_attempted
 finish() {
   code=$?
@@ -75,6 +75,8 @@ if [ "$current_sha" != "$BUILT_SHA" ]; then export OUTCOME=superseded; exit 0; f
 port=$(field evidence/before.json port)
 bin/previewmesh deploy "${common[@]}" --sha "$BUILT_SHA" --image "$BUILT_IMAGE" --port "$port" --evidence evidence/local.csv --result-file evidence/deploy.json
 assert_verified_revision evidence/deploy.json
+# Use the URL actually verified by the CLI, including the trusted DNS suffix.
+preview_url=$(field evidence/deploy.json url)
 inspect evidence/after.json
 if [ "$(field evidence/after.json state)" = closed ]; then cleanup; exit 0; fi
 if [ "$(field evidence/after.json sha)" != "$BUILT_SHA" ]; then export OUTCOME=superseded; exit 0; fi

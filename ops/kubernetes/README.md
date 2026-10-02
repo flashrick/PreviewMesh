@@ -27,7 +27,7 @@ cluster-admin kubeconfig.
 
 ## Runner kubeconfig
 
-Follow [setup step 5](../../README.md#5-configure-k3s-and-the-runner) for the
+The [guided installer](../../README.md#install) configures automatic renewal. For a manual installation, follow [setup step 5](../install/manual.md#5-configure-k3s-and-the-runner) for the
 complete commands to create the runner kubeconfig, protect it from Git, and check
 its permissions. The example stores it in the private control checkout at
 `config/previewmesh-runner.yaml`, with mode `600`, owned by the runner account.
@@ -35,7 +35,7 @@ The generated file contains the cluster address, CA, and a dedicated
 ServiceAccount token; it contains no administrator credentials.
 
 The requested token lifetime is 24 hours, subject to the API server's policy.
-Rerun `python3 scripts/configure-runner.py` before expiry; renewal is not automatic. Configure
+For manual installations, rerun `python3 scripts/configure-runner.py` before expiry. The guided installer instead installs a root-owned maintenance timer that checks every five minutes and renews based on actual expiry; it drops privileges before replacing the restricted file. Configure
 `KUBECONFIG` in the runner service environment, and restart the service when that
 environment changes. An interactive shell's `export` does not update an existing
 service.
