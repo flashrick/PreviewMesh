@@ -17,20 +17,22 @@ PreviewMesh separates the public template, the private control plane, and the ap
 | Control repository | Your copy, registered source repositories, workflow variables, and Actions secrets | Private |
 | Source repository | Your application, Dockerfile, health endpoint, and notification workflow | Public or private |
 
-The hosted runner builds and publishes an immutable GHCR image. A self-hosted runner on your K3s machine deploys that digest and checks the application through Traefik.
+The source repository notifies the private control repository. The control workflow uses a GitHub-hosted runner to build and publish an immutable GHCR image, then sends a separate job to the self-hosted runner on your K3s machine. That runner deploys the exact image digest and checks the application through Traefik.
 
 ```mermaid
 flowchart LR
-    A[Source PR event] --> B[Source notification workflow]
-    B --> C[Private control workflow]
-    C --> D[Validate trusted registration and PR]
-    D --> E[Build exact SHA on GitHub]
-    E --> F[Publish image digest to GHCR]
-    F --> G[Self-hosted runner deploys to K3s]
-    G --> H[Verify health response and SHA]
-    H --> I[Report status and preview URL]
+    A[PR event in source repository] --> B[Source repo: previewmesh-notify.yml]
+    B -->|workflow_dispatch + PR metadata| C[Private control repo: preview.yml]
+    C --> D[Validate trusted registration and current PR]
+    D --> E[build job on GitHub-hosted runner]
+    E --> F[Checkout exact source commit SHA]
+    F --> G[Build image and push SHA-256 digest to GHCR]
+    G --> H[local job on self-hosted runner]
+    H --> I[Pull digest and deploy to K3s]
+    I --> J[Verify /health and served SHA]
+    J --> K[Commit status, PR comment, and preview URL]
     A2[PR closes] --> B
-    B --> J[Remove owned namespace]
+    C -->|closed PR| L[Remove owned namespace]
 ```
 
 Important boundaries:
@@ -40,6 +42,18 @@ Important boundaries:
 - Fork pull requests are rejected. Open preview pull requests in the registered source repository itself.
 - The source workflow relays metadata only; it does not check out or execute pull request code.
 - The self-hosted runner needs a restricted kubeconfig and should run only for the private control repository on a dedicated development cluster.
+
+### Runtime handoff
+
+`previewmesh-notify.yml` is added manually once to each registered source repository. It is copied from [`templates/source-notify.yml`](templates/source-notify.yml), committed to the source repository's default branch, and runs on GitHub's hosted `ubuntu-latest` runner. The two `jobs.notify.env` values name the destination control repository. The source repository's `PREVIEWMESH_DISPATCH_TOKEN` Secret authorizes the workflow to dispatch `preview.yml` on the control repository's `main` branch. The dispatch carries only the source repository ID, full name, and PR number.
+
+The actual [`preview.yml`](.github/workflows/preview.yml) lifecycle runs in the private control repository. Its `build` job uses a GitHub-hosted runner. It reads the current PR head commit SHA, checks out that exact revision, and runs `previewmesh build` with `--push`. The job grants `packages: write` and logs in to GHCR with the workflow's `GITHUB_TOKEN`; no separate image-publishing job or manually created package is required.
+
+An image digest is a content-based identifier such as `sha256:abc...`, not the source commit SHA. The commit SHA identifies the source Git revision; the image digest identifies the exact container image content. PreviewMesh deploys a reference such as `ghcr.io/OWNER/previewmesh-c123-r456@sha256:...` instead of a mutable tag, so the K3s workload cannot silently switch to a different image.
+
+The `local` job is selected by `runs-on: [self-hosted, Linux, X64, previewmesh]`. You register that runner manually under **Settings → Actions → Runners** in the private control repository, normally on the K3s machine. GitHub passes the build job's `image` output and verified commit SHA to the job. [`scripts/local-attempt.sh`](scripts/local-attempt.sh) passes the full digest reference to `previewmesh deploy`; Kubernetes then pulls that image from GHCR using the namespace's `ghcr-pull` Secret, populated from `GHCR_READ_TOKEN`, and Helm creates or updates the K3s resources.
+
+After deployment, the local job verifies the application's `/health` response and its served commit SHA. `control status` uses the configured source-repository token to call GitHub's commit-status and pull-request-comment APIs. The pending or final `PreviewMesh` status links to the workflow run or preview URL, and the final PR comment includes the run details and an **Open preview** link. The preview URL is still a local/private URL: the PR viewer must have network access and the corresponding hosts/DNS entry.
 
 ## Requirements
 

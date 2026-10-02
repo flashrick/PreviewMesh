@@ -17,20 +17,22 @@ PreviewMesh 将公开模板、私有控制平面和应用源仓库分开：
 | Control 仓库 | 你的副本、源仓库登记、工作流变量和 Actions Secrets | Private |
 | Source 仓库 | 应用、Dockerfile、健康接口和通知工作流 | Public 或 private |
 
-GitHub 托管 Runner 构建并发布不可变的 GHCR 镜像。K3s 机器上的 self-hosted Runner 部署该 digest，并通过 Traefik 检查应用。
+Source 仓库会通知 private control 仓库。Control 工作流先使用 GitHub 托管 Runner 构建并发布不可变的 GHCR 镜像，再把单独的 Job 交给 K3s 机器上的 self-hosted Runner。这个 Runner 部署精确的镜像 digest，并通过 Traefik 检查应用。
 
 ```mermaid
 flowchart LR
-    A[Source PR event] --> B[Source notification workflow]
-    B --> C[Private control workflow]
-    C --> D[验证登记和 PR]
-    D --> E[在 GitHub 构建精确 SHA]
-    E --> F[向 GHCR 发布 digest]
-    F --> G[Self-hosted Runner 部署到 K3s]
-    G --> H[验证健康响应和 SHA]
-    H --> I[回写状态和预览地址]
+    A[Source 仓库 PR 事件] --> B[Source 仓库：previewmesh-notify.yml]
+    B -->|workflow_dispatch + PR 元数据| C[Private control 仓库：preview.yml]
+    C --> D[验证登记信息和当前 PR]
+    D --> E[GitHub 托管 Runner 执行 build Job]
+    E --> F[取出精确的 source commit SHA]
+    F --> G[构建镜像并向 GHCR 推送 SHA-256 digest]
+    G --> H[Self-hosted Runner 执行 local Job]
+    H --> I[拉取 digest 并部署到 K3s]
+    I --> J[验证 /health 和实际 SHA]
+    J --> K[回写 Commit 状态、PR 评论和预览地址]
     A2[PR 关闭] --> B
-    B --> J[删除归属的 Namespace]
+    C -->|PR 已关闭| L[删除归属的 Namespace]
 ```
 
 重要边界：
@@ -40,6 +42,18 @@ flowchart LR
 - Fork PR 会被拒绝。请在已登记的 source 仓库自身创建 PR。
 - Source 工作流只转发元数据，不检出或执行 PR 代码。
 - Self-hosted Runner 需要受限 kubeconfig，并且只应服务于 private control 仓库和专用开发集群。
+
+### 运行时如何交接
+
+`previewmesh-notify.yml` 需要用户在每个已登记的 source 仓库中手动添加一次。它从 [`templates/source-notify.yml`](templates/source-notify.yml) 复制而来，提交到 source 仓库的默认分支，并在 GitHub 托管的 `ubuntu-latest` Runner 上运行。`jobs.notify.env` 下的两个值决定要通知哪个 control 仓库；source 仓库中的 `PREVIEWMESH_DISPATCH_TOKEN` Secret 授权它在 control 仓库的 `main` 分支派发 `preview.yml`。派发时只发送 source 仓库 ID、完整仓库名和 PR 编号。
+
+实际执行生命周期的 [`preview.yml`](.github/workflows/preview.yml) 位于 private control 仓库。它的 `build` Job 使用 GitHub 托管 Runner，读取当前 PR head 的 commit SHA，取出这个精确版本，并用 `previewmesh build --push` 构建镜像。这个 Job 声明了 `packages: write` 权限，并使用工作流自带的 `GITHUB_TOKEN` 登录 GHCR；不需要另设镜像发布 Job，也不需要手动创建 Package。
+
+镜像 digest 是类似 `sha256:abc...` 的内容标识，不是 source commit SHA。Commit SHA 标识 Git 源码版本；镜像 digest 标识确切的容器镜像内容。PreviewMesh 部署的引用类似 `ghcr.io/OWNER/previewmesh-c123-r456@sha256:...`，而不是可能被重新指向其他内容的 tag，因此 K3s 中的工作负载不会悄悄切换到另一份镜像。
+
+`local` Job 通过 `runs-on: [self-hosted, Linux, X64, previewmesh]` 选择 Runner。用户需要在 private control 仓库的 **Settings → Actions → Runners** 中手动注册它，通常注册在 K3s 所在机器上。GitHub 会把 build Job 输出的 `image` 和已确认的 commit SHA 传给这个 Job。[`scripts/local-attempt.sh`](scripts/local-attempt.sh) 再把完整的 digest 引用传给 `previewmesh deploy`；Kubernetes 使用由 `GHCR_READ_TOKEN` 生成的 Namespace 内 `ghcr-pull` Secret 从 GHCR 拉取镜像，之后 Helm 创建或更新 K3s 资源。
+
+部署后，local Job 检查应用的 `/health` 响应和实际提供的 commit SHA。`control status` 使用配置给 source 仓库的 Token 调用 GitHub 的 commit-status 和 PR comment API。等待中的或最终的 `PreviewMesh` 状态会链接到工作流运行页或预览地址，最终 PR 评论还会包含运行详情和 **Open preview** 链接。这个预览地址仍是本地/私有地址；查看 PR 的人必须能访问对应网络，并配置相应的 hosts 或 DNS 记录。
 
 ## 前提条件
 
