@@ -4,7 +4,9 @@ PreviewMesh uses a dedicated ServiceAccount for the self-hosted runner. Apply th
 manifest from the private control checkout:
 
 ```bash
+# Confirm that the K3s node is reachable.
 sudo k3s kubectl get nodes
+# Install or update the restricted RBAC rules for the PreviewMesh runner.
 sudo k3s kubectl apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
@@ -40,4 +42,3 @@ service.
 
 The chart does not create namespaces. The trusted local job creates and labels
 one namespace per repository ID and pull-request number before invoking Helm.
-

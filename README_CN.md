@@ -110,6 +110,7 @@ Self-hosted Runner 必须有 self-hosted、Linux、X64、previewmesh 四个标�
 在公开 PreviewMesh 模板 checkout 中运行下面的脚本。脚本会检查 GitHub 登录状态，将公开模板 clone 到 `CONTROL_DIR`，创建一个 **Private** 目标仓库，把公开模板添加为 `upstream` remote，并将 `main` 推送到新的 control 仓库。如果 GitHub 仓库已经存在，或本地目标目录非空，脚本会停止；它不会删除已有目录。
 
 ```bash
+# 从公开模板创建 private control 仓库。
 scripts/create-control-repository.sh \
   --source "$PUBLIC_REPOSITORY" \
   --repository "$CONTROL_REPOSITORY" \
@@ -165,15 +166,22 @@ nano config/repositories.json
 编译并验证登记：
 
 ```bash
+# 创建保存编译后命令行工具的目录。
 mkdir -p bin
+# 编译登记、PR 检查和 GitHub 状态回写工具。
 go build -o bin/control ./cmd/control
+# 编译镜像、部署、验证和清理工具。
 go build -o bin/previewmesh ./cmd/previewmesh
+# 不访问 GitHub，只检查 source 登记是否匹配。
 ./bin/control resolve \
   --repository-id "$REPOSITORY_ID" \
   --source-repository "$SOURCE_REPOSITORY" \
   --pr 1
+# 暂存 private source 登记配置，准备提交。
 git add config/repositories.json
+# 将 source 登记配置记录为一次 Git 提交。
 git commit -m "Configure preview source repository"
+# 将 private control 配置推送到 main 分支。
 git push origin main
 ```
 
@@ -204,19 +212,25 @@ Source 仓库根目录必须有能构建 linux/amd64 镜像的 Dockerfile。应�
 使用已设置的配置路径，将凭据排除在 Git 之外，然后应用受限的 Runner 权限：
 
 ```bash
+# 进入 private control checkout。
 cd "$CONTROL_DIR"
+# 创建保存被 Git 忽略的 Runner kubeconfig 的目录。
 mkdir -p "$(dirname "$PREVIEWMESH_RUNNER_CONFIG")"
-# Keep credentials and temporary files out of Git, including older checkouts.
+# 确保凭据和临时文件不会进入 Git，包括旧 checkout 中的文件。
 grep -qxF '/config/previewmesh-runner.yaml' .gitignore || printf '\n/config/previewmesh-runner.yaml\n' >> .gitignore
 grep -qxF '/config/.runner-*' .gitignore || printf '\n/config/.runner-*\n' >> .gitignore
+# 使用管理员 kubeconfig 确认 K3s 节点可以访问。
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes
+# 安装或更新 Runner 所需的受限 Kubernetes 权限。
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
 生成受限 kubeconfig，并检查创建/删除 Namespace、创建 Secret 的权限，以及创建 ClusterRole 必须被拒绝。脚本只保存集群地址、CA 和 Runner Token，不复制管理员凭据，也不打印 Token。以 Runner 的普通用户运行：
 
 ```bash
+# 生成或续期受限 Runner kubeconfig，并检查它的权限。
 python3 scripts/configure-runner.py
+# 让当前 Shell 中的 kubectl 使用刚生成的 kubeconfig。
 export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
 ```
 
@@ -227,19 +241,25 @@ export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
 在 GitHub 打开 `$CONTROL_REPOSITORY` 指定的仓库，进入 **Settings → Actions → Runners → New self-hosted runner**。按页面上的 Linux x64 说明，在 K3s 机器的独立目录中安装 Runner，并在提示时添加 `previewmesh` 标签。Runner 必须注册到这个 control 仓库，因为 `local` Job 会在这里排队；注册到另一个 private 仓库的 Runner 无法接收这个 Job。确认 Runner 用户可以使用 Go、Python、Helm 和 `kubectl`。注册完成后，将 Runner 安装为服务，并明确设置受限 kubeconfig。以下命令在 Runner 目录中执行，当前终端应保留前面的项目变量。如果服务已经安装，跳过 `svc.sh install`，并在再次启动前执行 `sudo ./svc.sh stop`。
 
 ```bash
-# Run in the directory where you configured the GitHub runner.
+# 将 GitHub Runner 安装为系统服务。
 sudo ./svc.sh install "$(id -un)"
+# 读取 Runner 安装器创建的 systemd 服务名称。
 RUNNER_SERVICE=$(cat .service)
+# 创建保存 Runner 配置覆盖项的 systemd drop-in 目录。
 sudo mkdir -p "/etc/systemd/system/${RUNNER_SERVICE}.d"
+# 指定 Runner 服务使用受限 kubeconfig。
 printf '[Service]\nEnvironment="KUBECONFIG=%s"\n' "$PREVIEWMESH_RUNNER_CONFIG" \
   | sudo tee "/etc/systemd/system/${RUNNER_SERVICE}.d/previewmesh.conf" >/dev/null
+# 添加 Runner 环境覆盖项后重新加载 systemd。
 sudo systemctl daemon-reload
+# 启动 GitHub Runner 服务。
 sudo ./svc.sh start
 ```
 
 检查 Runner 已上线且带有所需标签：
 
 ```bash
+# 列出 private control 仓库中的 Runner 及其标签。
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
   --jq '.runners[] | {name, status, labels: [.labels[].name]}'
 ```
@@ -300,8 +320,11 @@ gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
 回到 control 项目目录，复用前面设置的仓库变量。`SOURCE_REPOSITORY` 应与第 3 步的登记一致。当前 `gh` 登录账号需要有两个仓库的 Actions Secret 管理权限：它负责上传 Secret，你稍后粘贴的 Token 则供工作流运行时使用。
 
 ```bash
+# 进入 private control checkout。
 cd "$CONTROL_DIR"
+# 确认 GitHub CLI 已登录。
 gh auth status
+# 上传 source、dispatch 和 GHCR Actions Secret。
 bash scripts/configure-github-secrets.sh "$CONTROL_REPOSITORY" config/repositories.json
 ```
 
@@ -310,7 +333,9 @@ bash scripts/configure-github-secrets.sh "$CONTROL_REPOSITORY" config/repositori
 查看保存的名称，不会显示 Token 内容：
 
 ```bash
+# 列出 private control 仓库中的 Secret 名称。
 gh secret list --repo "$CONTROL_REPOSITORY" --app actions
+# 列出 source 仓库中的 dispatch Secret 名称。
 gh secret list --repo "$SOURCE_REPOSITORY" --app actions
 ```
 

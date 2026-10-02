@@ -110,6 +110,7 @@ Complete these steps in order. Commands that change GitHub or K3s are operator a
 Run the helper from the public PreviewMesh template checkout. It checks GitHub authentication, clones the public template into `CONTROL_DIR`, creates the destination repository as **Private**, adds the public template as the `upstream` remote, and pushes `main` to the new control repository. It stops if the GitHub repository already exists or if the local target directory is non-empty; it never removes an existing directory.
 
 ```bash
+# Create a private control repository from the public template.
 scripts/create-control-repository.sh \
   --source "$PUBLIC_REPOSITORY" \
   --repository "$CONTROL_REPOSITORY" \
@@ -165,15 +166,22 @@ Give every source repository a unique `source_secret` name, such as `SOURCE_APP_
 Compile and validate the registration:
 
 ```bash
+# Create a directory for the compiled command-line tools.
 mkdir -p bin
+# Compile the registration, PR inspection, and GitHub reporting tool.
 go build -o bin/control ./cmd/control
+# Compile the image, deployment, verification, and cleanup tool.
 go build -o bin/previewmesh ./cmd/previewmesh
+# Check the source registration without calling GitHub.
 ./bin/control resolve \
   --repository-id "$REPOSITORY_ID" \
   --source-repository "$SOURCE_REPOSITORY" \
   --pr 1
+# Stage the private source registration for the next commit.
 git add config/repositories.json
+# Record the source registration in Git.
 git commit -m "Configure preview source repository"
+# Push the private control configuration to its main branch.
 git push origin main
 ```
 
@@ -204,19 +212,25 @@ Run this step on the K3s server, using the Linux account that will run the GitHu
 Using the configured path, exclude credentials from Git and apply the restricted runner permissions:
 
 ```bash
+# Enter the private control checkout.
 cd "$CONTROL_DIR"
+# Create the directory that will hold the ignored runner kubeconfig.
 mkdir -p "$(dirname "$PREVIEWMESH_RUNNER_CONFIG")"
 # Keep credentials and temporary files out of Git, including older checkouts.
 grep -qxF '/config/previewmesh-runner.yaml' .gitignore || printf '\n/config/previewmesh-runner.yaml\n' >> .gitignore
 grep -qxF '/config/.runner-*' .gitignore || printf '\n/config/.runner-*\n' >> .gitignore
+# Confirm that the K3s node is reachable with the administrator kubeconfig.
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes
+# Install or update the restricted Kubernetes permissions for the Runner.
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
 Generate a restricted kubeconfig and check that it can create/delete namespaces and create Secrets, while ClusterRole creation is denied. The script stores only the cluster address, CA, and runner token; it does not copy administrator credentials or print the token. Run it as the runner's normal user:
 
 ```bash
+# Generate or renew the restricted Runner kubeconfig and verify its permissions.
 python3 scripts/configure-runner.py
+# Use the generated kubeconfig for kubectl commands in this shell.
 export KUBECONFIG="$PREVIEWMESH_RUNNER_CONFIG"
 ```
 
@@ -227,19 +241,25 @@ The requested token lifetime is 24 hours, subject to API server policy. Rerun `p
 In GitHub, open the repository named by `$CONTROL_REPOSITORY`, then go to **Settings → Actions → Runners → New self-hosted runner**. Follow the Linux x64 instructions in a new directory on the K3s machine, and add the `previewmesh` label when prompted. The runner must be registered to this exact control repository because the `local` job is queued there; a runner registered to another private repository cannot accept its job. Ensure Go, Python, Helm, and `kubectl` are available to the runner account. After registration, install the runner as a service and explicitly give it the restricted kubeconfig. Run the following in the runner directory, keeping the project variables set in this shell. If the service is already installed, skip `svc.sh install` and use `sudo ./svc.sh stop` before starting it again.
 
 ```bash
-# Run in the directory where you configured the GitHub runner.
+# Install the GitHub Runner as a system service.
 sudo ./svc.sh install "$(id -un)"
+# Read the systemd service name created by the Runner installer.
 RUNNER_SERVICE=$(cat .service)
+# Create a systemd drop-in directory for the Runner configuration.
 sudo mkdir -p "/etc/systemd/system/${RUNNER_SERVICE}.d"
+# Tell the Runner service to use the restricted kubeconfig.
 printf '[Service]\nEnvironment="KUBECONFIG=%s"\n' "$PREVIEWMESH_RUNNER_CONFIG" \
   | sudo tee "/etc/systemd/system/${RUNNER_SERVICE}.d/previewmesh.conf" >/dev/null
+# Reload systemd after adding the Runner environment override.
 sudo systemctl daemon-reload
+# Start the GitHub Runner service.
 sudo ./svc.sh start
 ```
 
 Verify that the runner appears online with the required labels:
 
 ```bash
+# List the Control repository's registered Runner and its labels.
 gh api "repos/$CONTROL_REPOSITORY/actions/runners" \
   --jq '.runners[] | {name, status, labels: [.labels[].name]}'
 ```
@@ -300,8 +320,11 @@ Paste this value at `Paste GHCR_READ_TOKEN (classic PAT, read:packages only)`. T
 Return to the control checkout and reuse the repository variables set above. The account logged into `gh` must be allowed to manage Actions secrets in both repositories. Its login is used to upload secrets; the tokens you paste are the credentials the workflows will use later.
 
 ```bash
+# Enter the private control checkout.
 cd "$CONTROL_DIR"
+# Confirm that the GitHub CLI is authenticated.
 gh auth status
+# Upload the source, dispatch, and GHCR Actions Secrets.
 bash scripts/configure-github-secrets.sh "$CONTROL_REPOSITORY" config/repositories.json
 ```
 
@@ -310,7 +333,9 @@ The script asks for each source token, then the dispatch token, then the GHCR to
 Check the saved names without displaying their values:
 
 ```bash
+# List the Secrets configured on the private Control repository.
 gh secret list --repo "$CONTROL_REPOSITORY" --app actions
+# List the dispatch Secret configured on the Source repository.
 gh secret list --repo "$SOURCE_REPOSITORY" --app actions
 ```
 
