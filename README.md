@@ -107,29 +107,18 @@ Complete these steps in order. Commands that change GitHub or K3s are operator a
 
 ### 1. Create a private control repository
 
-The safest GitHub flow is **Use this template** on the public PreviewMesh repository, selecting **Private**. A public fork cannot be changed into a private fork.
-
-If you prefer to clone and push manually, replace the control repository placeholder and run the commands below. `CONTROL_DIR` must not exist yet or must be empty. This example uses HTTPS for Git operations and reuses an existing `gh` login:
+Run the helper from the public PreviewMesh template checkout. It checks GitHub authentication, clones the public template into `CONTROL_DIR`, creates the destination repository as **Private**, adds the public template as the `upstream` remote, and pushes `main` to the new control repository. It stops if the GitHub repository already exists or if the local target directory is non-empty; it never removes an existing directory.
 
 ```bash
-gh auth status --hostname github.com
-gh auth setup-git --hostname github.com
-gh repo create "$CONTROL_REPOSITORY" --private
-mkdir -p "$(dirname "$CONTROL_DIR")"
-git clone "https://github.com/$PUBLIC_REPOSITORY.git" "$CONTROL_DIR"
-cd "$CONTROL_DIR"
-git remote rename origin upstream
-git remote add origin "https://github.com/$CONTROL_REPOSITORY.git"
-git push -u origin main
+scripts/create-control-repository.sh \
+  --source "$PUBLIC_REPOSITORY" \
+  --repository "$CONTROL_REPOSITORY" \
+  --directory "$CONTROL_DIR"
 ```
 
-The account used by `gh` must be allowed to create the private control repository. This push includes GitHub Actions workflow files, so `gh auth status` must show the `workflow` scope. If it is missing, add it with `gh auth refresh --scopes workflow`. If `gh` uses a classic PAT, GitHub CLI requires `repo`, `read:org`, and `gist`. See the [GitHub CLI login documentation](https://cli.github.com/manual/gh_auth_login).
+The account used by `gh` must be allowed to create private repositories and push workflow files. Run `gh auth login --hostname github.com` first. If your login lacks permission to push workflows, refresh it with `gh auth refresh --scopes workflow`. See the [GitHub CLI login documentation](https://cli.github.com/manual/gh_auth_login).
 
-`gh auth setup-git` configures Git to use the existing `gh` credentials for HTTPS operations such as `git push`. It updates Git's credential-helper configuration; omit it if Git already has a working GitHub credential helper.
-
-SSH works too. Set `git_protocol` to `ssh` and use `git remote add origin "git@github.com:$CONTROL_REPOSITORY.git"`; confirm an SSH authentication key is already registered to the account. SSH Git operations use that key, so they do not need the API token's `workflow` scope. See the [`gh auth setup-git`](https://cli.github.com/manual/gh_auth_setup-git) and [`gh auth refresh`](https://cli.github.com/manual/gh_auth_refresh) documentation.
-
-The control repository's default branch must be `main`, Actions must be enabled, and no self-hosted runner should be registered with the public template repository.
+After the script finishes, the control repository's default branch must be `main`, Actions must be enabled, and no self-hosted runner should be registered with the public template repository.
 
 ### 2. Enable the private workflow
 

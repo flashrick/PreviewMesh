@@ -107,29 +107,18 @@ Self-hosted Runner 必须有 self-hosted、Linux、X64、previewmesh 四个标�
 
 ### 1. 创建 private control 仓库
 
-推荐在公开 PreviewMesh 仓库页面点击 Use this template，并选择 Private。Public fork 不能直接改成 private fork。
-
-如果要手动 clone 并推送，请替换 control 仓库占位符，然后运行以下命令。`CONTROL_DIR` 应是尚未创建或为空的目录。此示例通过 HTTPS 执行 Git 操作，并复用已有的 `gh` 登录：
+在公开 PreviewMesh 模板 checkout 中运行下面的脚本。脚本会检查 GitHub 登录状态，将公开模板 clone 到 `CONTROL_DIR`，创建一个 **Private** 目标仓库，把公开模板添加为 `upstream` remote，并将 `main` 推送到新的 control 仓库。如果 GitHub 仓库已经存在，或本地目标目录非空，脚本会停止；它不会删除已有目录。
 
 ```bash
-gh auth status --hostname github.com
-gh auth setup-git --hostname github.com
-gh repo create "$CONTROL_REPOSITORY" --private
-mkdir -p "$(dirname "$CONTROL_DIR")"
-git clone "https://github.com/$PUBLIC_REPOSITORY.git" "$CONTROL_DIR"
-cd "$CONTROL_DIR"
-git remote rename origin upstream
-git remote add origin "https://github.com/$CONTROL_REPOSITORY.git"
-git push -u origin main
+scripts/create-control-repository.sh \
+  --source "$PUBLIC_REPOSITORY" \
+  --repository "$CONTROL_REPOSITORY" \
+  --directory "$CONTROL_DIR"
 ```
 
-`gh` 使用的账号必须有权创建 private control 仓库。本次推送会包含 GitHub Actions workflow 文件，因此 `gh auth status` 必须显示 `workflow` scope。若缺少该 scope，运行 `gh auth refresh --scopes workflow` 添加。如果 `gh` 使用 classic PAT，GitHub CLI 要求 `repo`、`read:org` 和 `gist`。详见 [GitHub CLI 登录文档](https://cli.github.com/manual/gh_auth_login)。
+`gh` 使用的账号必须有权创建 private 仓库并推送 workflow 文件。先执行 `gh auth login --hostname github.com`。如果登录权限不足以推送 workflow，运行 `gh auth refresh --scopes workflow`。详见 [GitHub CLI 登录文档](https://cli.github.com/manual/gh_auth_login)。
 
-`gh auth setup-git` 会配置 Git 在 HTTPS 操作（例如 `git push`）时使用现有的 `gh` 凭据，并更新 Git 的 credential helper 配置。如果 Git 已有可用的 GitHub 凭据管理器，可以省略这条命令。
-
-SSH 也可以使用。将 `git_protocol` 设为 `ssh`，并使用 `git remote add origin "git@github.com:$CONTROL_REPOSITORY.git"`；同时确认该账号已登记 SSH authentication key。SSH Git 操作使用这把密钥，不需要 API Token 的 `workflow` scope。详见 [`gh auth setup-git`](https://cli.github.com/manual/gh_auth_setup-git) 和 [`gh auth refresh`](https://cli.github.com/manual/gh_auth_refresh) 文档。
-
-Control 仓库默认分支必须是 main，并且已启用 Actions。不要把 self-hosted Runner 注册到公开模板仓库。
+脚本完成后，Control 仓库默认分支必须是 `main`，Actions 必须启用，并且不要把 self-hosted Runner 注册到公开模板仓库。
 
 ### 2. 启用 private 工作流
 
