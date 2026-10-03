@@ -190,6 +190,23 @@ Comments include the build result, observed Deployment replica counts, Pod readi
 
 Workflow evidence records each CLI stage's UTC start and end times, duration, and result in the stage CSV and result JSON. Combined evidence carries these timings into `summary.json`; `resource_observation` times runtime snapshots, and `resource_verify` times Namespace ownership or absence checks during cleanup.
 
+### Resource measurements
+
+Run the read-only resource collector from a trusted control environment and keep its output outside this checkout:
+
+```bash
+python3 scripts/collect-resources.py \
+  --run-id baseline-001 \
+  --output /tmp/previewmesh-resource-evidence \
+  --samples 13 --interval 10 --max-metric-age 60
+```
+
+Repeat `--namespace` to select particular managed preview namespaces; omit it to include every managed preview. The output directory must be new. The collector does not change workloads and writes `samples.jsonl` and `summary.json`. `--timeout` bounds each Kubernetes request, while `--max-gap` sets the largest gap that can be integrated (by default, twice the sampling interval).
+
+Node CPU is reported in cores and memory in bytes from recent metrics windows, so node totals include system workloads and collection overhead. Preview values require fresh metrics for every expected container and a stable namespace identity. Summary integrals use trapezoids between adjacent available samples only; larger gaps remain uncovered. Repeated recent metrics windows are retained observations, not independent samples.
+
+`helm_release_payload_bytes` counts base64-decoded Kubernetes Secret `data.release` payload bytes held in memory; it is not etcd disk usage. `pvc_requested_bytes` and `pvc_capacity_bytes` describe requested and bound PVC capacity, not filesystem use. Host filesystem use, registry storage, and volume filesystem use are unavailable to this collector.
+
 The deployment readiness stage waits for the Deployment and Pods, then waits for the preview Service to receive a ClusterIP and for Traefik to publish an address in Ingress status before `/health` verification can succeed. In the WSL setup above, Traefik publishes `127.0.0.1`; this is a readiness signal, while requests use the socket proxy on port `18080`. A failed Service or Ingress readiness check fails the attempt and prevents the preview from being marked ready.
 
 `previewmesh build`, `deploy`, `verify`, and `cleanup` are lower-level operations used by the workflow. Use the workflow for the complete PR lifecycle because it rechecks current PR state before and after deployment and handles superseded revisions and cleanup.
