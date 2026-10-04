@@ -2,10 +2,12 @@
 
 [中文说明](README_CN.md)
 
-PreviewMesh creates a temporary preview environment for each eligible pull request. It builds the exact source commit, deploys the image to K3s, verifies the served commit SHA, and removes the preview when the pull request closes.
+PreviewMesh gives eligible pull requests a temporary application URL on a private development network. It builds the exact source commit, deploys the image to K3s, checks that /health serves the requested commit SHA, and removes the preview when the pull request closes.
 
 > [!WARNING]
 > This repository is a public template. Keep the copied control repository private. Never place GitHub tokens, kubeconfigs, real repository registrations, or runtime evidence in this repository. If you copied this directory from a private checkout, create fresh public Git history instead of pushing the old private commits.
+
+Start with [Install](#install). Check the [application requirements](#application-requirements) before connecting a source repository. After installation, use [Query a preview by pull request](#query-a-preview-by-pull-request). For maintenance, see [Updating a private control repository](#updating-a-private-control-repository), [Local verification](#local-verification), and [Troubleshooting](#troubleshooting).
 
 ## How it works
 
@@ -18,6 +20,18 @@ PreviewMesh separates the public template, the private control plane, and the ap
 | Source repository | Your application, Dockerfile, health endpoint, and notification workflow | Public or private |
 
 The source repository notifies the private control repository. The control workflow uses a GitHub-hosted runner to build and publish an immutable GHCR image, then sends a separate job to the self-hosted runner on your K3s machine. That runner deploys the exact image digest and checks the application through Traefik.
+
+Important boundaries:
+
+- The preview workflow is disabled until the private control repository sets `PREVIEWMESH_ENABLED=true`.
+- Only registered repositories are accepted. The numeric repository ID and full owner/name must match GitHub.
+- Fork pull requests are rejected. Open preview pull requests in the registered source repository itself.
+- The pull request author must have write access to the registered source repository.
+- The source workflow relays metadata only; it does not check out or execute pull request code.
+- The self-hosted runner needs a restricted kubeconfig and should run only for the private control repository on a dedicated development cluster.
+
+<details>
+<summary>Workflow and runtime details</summary>
 
 ```mermaid
 flowchart LR
@@ -35,19 +49,11 @@ flowchart LR
     C -->|closed PR| L[Remove owned namespace]
 ```
 
-Important boundaries:
-
-- The preview workflow is disabled until the private control repository sets `PREVIEWMESH_ENABLED=true`.
-- Only registered repositories are accepted. The numeric repository ID and full owner/name must match GitHub.
-- Fork pull requests are rejected. Open preview pull requests in the registered source repository itself.
-- The source workflow relays metadata only; it does not check out or execute pull request code.
-- The self-hosted runner needs a restricted kubeconfig and should run only for the private control repository on a dedicated development cluster.
-
 ### Runtime handoff
 
 `previewmesh-notify.yml` is prepared by `onboard-source` from the source repository's GitHub default branch. Its preview mode only displays the complete diff; `--create-pr` creates a dedicated reviewable PR, which you merge after inspection. The file is copied from [`templates/source-notify.yml`](templates/source-notify.yml) and, once merged, runs on GitHub's hosted `ubuntu-latest` runner. The two `jobs.notify.env` values name the destination control repository. The source repository's `PREVIEWMESH_DISPATCH_TOKEN` Secret authorizes the workflow to dispatch `preview.yml` on the control repository's `main` branch. The dispatch carries only the source repository ID, full name, and PR number.
 
-The actual [`preview.yml`](.github/workflows/preview.yml) lifecycle runs in the private control repository. Its `build` job uses a GitHub-hosted runner. It reads the current PR head commit SHA, checks out that exact revision, and runs `previewmesh build` with `--push`. The job grants `packages: write` and logs in to GHCR with the workflow's `GITHUB_TOKEN`; no separate image-publishing job or manually created package is required.
+The actual [`preview.yml`](.github/workflows/preview.yml) lifecycle runs in the private control repository. Its `build` job uses a GitHub-hosted runner. It reads the current PR head commit SHA, checks out that exact revision, and runs `previewmesh build`; the command calls Docker Buildx with `--push` internally. The job grants `packages: write` and logs in to GHCR with the workflow's `GITHUB_TOKEN`; no separate image-publishing job or manually created package is required.
 
 An image digest is a content-based identifier such as `sha256:abc...`, not the source commit SHA. The commit SHA identifies the source Git revision; the image digest identifies the exact container image content. PreviewMesh deploys a reference such as `ghcr.io/OWNER/previewmesh-c123-r456@sha256:...` instead of a mutable tag, so the K3s workload cannot silently switch to a different image.
 
@@ -55,11 +61,29 @@ The `local` job is selected by `runs-on: [self-hosted, Linux, X64, previewmesh]`
 
 After deployment, the local job verifies the application's `/health` response and its served commit SHA. `control status` uses the configured source-repository token to call GitHub's commit-status and pull-request-comment APIs. The pending or final `PreviewMesh` status links to the workflow run or preview URL, and the final PR comment includes the run details and an **Open preview** link. The preview URL is still local/private; use the [preview access guide](ops/install/access.md) for the configured DNS or hosts path.
 
+The deployment readiness stage waits for the Deployment and Pods, then waits for the preview Service to receive a ClusterIP and for Traefik to publish an address in Ingress status before `/health` verification can succeed. In the WSL setup above, Traefik publishes `127.0.0.1`; this is a readiness signal, while requests use the socket proxy on port `18080`. A failed Service or Ingress readiness check fails the attempt and prevents the preview from being marked ready.
+
+build, deploy, verify, and cleanup are available as lower-level commands. Use the workflow for the complete PR lifecycle because it rechecks current PR state before and after deployment and handles superseded revisions and cleanup.
+
+</details>
+
 ## Install
 
 Use **Ubuntu 22.04 or 24.04 x64**, including those distributions on **WSL2 with systemd**. Run as a normal Linux user with sudo access, on the machine that will run K3s and the GitHub runner. Use a dedicated development cluster and a stable private LAN IPv4 address. WSL users need Windows administrator access for the LAN entry.
 
 Download and extract this repository's ZIP into your Linux home directory, or clone it if Git is installed. Open a terminal in that directory. The public template directory and private control directory must be different. Git and other missing tools can be installed by the installer, so downloading the ZIP does not require a Git installation.
+
+### Application requirements
+
+Each source application must provide a root `Dockerfile` that builds for `linux/amd64`, listens on `0.0.0.0` at the configured application port, runs as UID/GID `65532` without extra capabilities, and returns HTTP 200 from `GET /health`:
+
+The commit_sha field must contain the actual `PREVIEW_COMMIT_SHA` value injected for that run; the text below stands for that value:
+
+```json
+{"status":"ok","commit_sha":"the value of PREVIEW_COMMIT_SHA"}
+```
+
+These requirements are checked by the [application preflight](#run-the-application-preflight). Static checks and the optional local container check do not prove a real cluster deployment. Unless you pass `--config`, `init` and `install` use `~/.config/previewmesh/setup.ini`.
 
 ### 1. Run the configuration wizard
 
@@ -105,7 +129,14 @@ You still complete browser login and create GitHub tokens. The installer shows e
 
 For WSL, approve the Windows administrator prompt to configure LAN forwarding. Windows must consider the connection Private or Domain; the installer does not disable firewall protection or change a Public connection into a trusted one.
 
-If a step fails, the installer prints the stages completed in that run, the stages still requiring completion, and the exact command to continue. Fix the reported problem and repeat the **same command**. Each stage is recorded in `~/.local/share/previewmesh/install-state.json` with configuration, installer-input and dependency summaries plus verifiable artifact details. A stage is reused only after those checks pass: the control checkout stage and source notification stage can be reused when their files and published revision still match; credentials, cluster, runner, network and readiness stages are checked again against live systems. Missing, changed or damaged artifacts, configuration, scripts or dependency versions cause that stage to run again, and the output gives the reason. The last valid state is kept in `install-state.json.bak`; if the state file is unreadable, preserve it, inspect that backup and restore a trusted copy before rerunning. State summaries contain digests and metadata rather than token values. Existing custom workflows and configuration are protected from silent overwriting. Raw tool output is saved in a redacted, owner-only log at `~/.local/share/previewmesh/setup.log`; `--verbose` also shows it in the terminal.
+If a step fails, the installer prints the stages completed in that run, the stages still requiring completion, and the exact command to continue. Fix the reported problem and repeat the **same command**.
+
+<details>
+<summary>Resuming installation and finding logs</summary>
+
+Each stage is recorded in `~/.local/share/previewmesh/install-state.json` with configuration, installer-input and dependency summaries plus verifiable artifact details. A stage is reused only after those checks pass: the control checkout stage and source notification stage can be reused when their files and published revision still match; credentials, cluster, runner, network and readiness stages are checked again against live systems. Missing, changed or damaged artifacts, configuration, scripts or dependency versions cause that stage to run again, and the output gives the reason. The last valid state is kept in `install-state.json.bak`; if the state file is unreadable, preserve it, inspect that backup and restore a trusted copy before rerunning. State summaries contain digests and metadata rather than token values. Existing custom workflows and configuration are protected from silent overwriting. Raw tool output is saved in a redacted, owner-only log at `~/.local/share/previewmesh/setup.log`; `--verbose` also shows it in the terminal.
+
+</details>
 
 ### 3. Create a reviewed source onboarding PR
 
@@ -138,15 +169,20 @@ bash scripts/setup.sh doctor --config /path/to/setup.ini
 
 ### 4. Continue your normal development workflow
 
-Create an ordinary test PR from a branch in the same source repository (do not use a fork), targeting its default branch. Check the complete handoff in order: the source notification Actions run, the control `Preview` workflow run, the source commit SHA and preview URL in the resulting status or comment, and cleanup after closing the test PR. Use the [preview access guide](ops/install/access.md) to retrieve and verify the generated URL from the current configuration, including from a second machine on the same LAN. Installation, the onboarding diff and a passing `doctor` check do not prove that a real preview was deployed; the test PR supplies that evidence.
+Verify a real preview with a test pull request in this order:
 
-Your application needs a root Dockerfile that builds for linux/amd64, listens on `0.0.0.0` at the configured application port, runs as UID/GID 65532 without extra capabilities, and returns HTTP 200 from `GET /health`:
+1. Create an ordinary PR from a branch in the same registered source repository to its default branch. Do not use a fork.
+2. Confirm the source notification Actions run dispatches the control workflow.
+3. Confirm the control Preview build and local jobs complete.
+4. Compare the expected source head SHA with the SHA in the resulting status or comment, then open the generated URL using the [preview access guide](ops/install/access.md), including from a second machine on the same LAN.
+5. Close or merge the test PR and confirm that the control workflow removes the preview.
 
-```json
-{"status":"ok","commit_sha":"the value of PREVIEW_COMMIT_SHA"}
-```
+Installation, the onboarding diff and a passing `doctor` check do not prove that a real preview was deployed; the test PR supplies that evidence.
 
 #### Run the application preflight
+
+<details>
+<summary>Static checks and an optional local container check</summary>
 
 Build the CLI outside the source checkout, then run the preflight against a clean source checkout. The report file must also be outside that checkout: the check includes untracked and ignored files, so redirecting JSON into the source directory would make the checkout dirty during the check.
 
@@ -185,6 +221,8 @@ To opt into a local runtime check, repeat the command with `--container-check`:
 This explicit mode builds and runs the application locally for `linux/amd64`, injects `PREVIEW_COMMIT_SHA`, publishes an ephemeral loopback-only port, and checks `/health`. The container runs as UID/GID `65532:65532` with all capabilities dropped and `no-new-privileges`; it is bounded to 512 MiB, one CPU and 128 processes. `--timeout` defaults to five minutes per external operation and `--http-timeout` to one minute for startup/health; both timeout values are recorded in `container_configuration` and included in the configuration fingerprint. If a static blocker is found first, Docker is not called and `container` is reported as `not_run_static_failed`. The temporary image and container are removed after the check. This validates local startup and health behavior only; it does not validate cluster networking, mounts, ingress, or a real deployment, and it never publishes an image or creates a preview.
 
 `previewmesh build` repeats the static inspection against the exact clean checkout before its Docker build and push. Pass the same `--port PORT` used by preflight (the default is `8080`) so the report matches the registered application port. Static blockers stop the build before publishing; static warnings are included in the build result for review. The build does not run the optional local container check automatically.
+
+</details>
 
 The installer prepares infrastructure; it does not rewrite your application or prove its runtime behavior. The first real PR verifies image permissions, application compatibility and the exact served SHA. After closing or merging that PR, confirm the control workflow removes its preview.
 
@@ -266,15 +304,26 @@ For direct CLI use, the trusted DNS suffix is selected by `--domain-suffix`, the
 
 ### Query a preview by pull request
 
-Use the `previewmesh status` command when you have only the source repository and PR number:
+Build the CLI from the root of the private control checkout. Go 1.25+ must be available on PATH, and gh must have an authenticated session:
 
 ```bash
-previewmesh status --repo OWNER/REPO --pr 123
-previewmesh status --repo OWNER/REPO --pr 123 --json
-previewmesh status --repo OWNER/REPO --pr 123 --max-age 24h
+go version
+gh auth status
+go build -o /tmp/previewmesh ./cmd/previewmesh
+```
+
+Then query a preview by repository and pull request:
+
+```bash
+/tmp/previewmesh status --repo OWNER/REPO --pr 123
+/tmp/previewmesh status --repo OWNER/REPO --pr 123 --json
+/tmp/previewmesh status --repo OWNER/REPO --pr 123 --max-age 24h
 ```
 
 The command is read-only. It uses an authenticated `gh` CLI session (`gh auth login`) to read the PR's current state and head SHA, the `PreviewMesh` commit status for that SHA, and the structured feedback attached to the PR. It does not need the PreviewMesh registry, Kubernetes access, GHCR credentials or deployment credentials. `--max-age` controls how long recorded health evidence remains usable; it defaults to 24 hours. The command reports a historical observation and does not probe the preview URL or perform a live health check.
+
+<details>
+<summary>Status evidence and PR comments</summary>
 
 The result combines build, deployment, readiness, health, cleanup, evidence and available timing information. A `ready` result requires complete structured evidence for the current head SHA: a successful build, deployment and readiness check, HTTP 200 with the expected `status: ok` and commit revision, matching requested and served revisions, and a preview URL that matches the current status. Missing or legacy unstructured feedback is reported as missing, and old evidence is reported as expired; neither case supplies a usable URL. A pending attempt is `running`, while an unsuccessful attempt identifies the failed stage when the evidence provides it and links to the PR or workflow evidence for the next check.
 
@@ -288,7 +337,12 @@ Comments include the build result, observed Deployment replica counts, Pod readi
 
 Workflow evidence records each CLI stage's UTC start and end times, duration, and result in the stage CSV and result JSON. Combined evidence carries these timings into `summary.json`; `resource_observation` times runtime snapshots, and `resource_verify` times Namespace ownership or absence checks during cleanup.
 
+</details>
+
 ### Resource measurements
+
+<details>
+<summary>Collector command and measurement limits</summary>
 
 Run the read-only resource collector from a trusted control environment and keep its output outside this checkout:
 
@@ -305,13 +359,18 @@ Node CPU is reported in cores and memory in bytes from recent metrics windows, s
 
 `helm_release_payload_bytes` counts base64-decoded Kubernetes Secret `data.release` payload bytes held in memory; it is not etcd disk usage. `pvc_requested_bytes` and `pvc_capacity_bytes` describe requested and bound PVC capacity, not filesystem use. Host filesystem use, registry storage, and volume filesystem use are unavailable to this collector.
 
-The deployment readiness stage waits for the Deployment and Pods, then waits for the preview Service to receive a ClusterIP and for Traefik to publish an address in Ingress status before `/health` verification can succeed. In the WSL setup above, Traefik publishes `127.0.0.1`; this is a readiness signal, while requests use the socket proxy on port `18080`. A failed Service or Ingress readiness check fails the attempt and prevents the preview from being marked ready.
+</details>
 
-`previewmesh build`, `deploy`, `verify`, and `cleanup` are lower-level operations used by the workflow. Use the workflow for the complete PR lifecycle because it rechecks current PR state before and after deployment and handles superseded revisions and cleanup.
+### Recover interrupted cleanup
 
-For interrupted cleanup, build the CLI with `go build -o /tmp/previewmesh ./cmd/previewmesh`. Use the same kubeconfig and registered identity as the workflow, and serialize recovery with all deployments for that PR. Confirm the PR should remain closed before retrying; these lower-level commands do not check GitHub state.
+<details>
+<summary>Inspecting and retrying cleanup</summary>
+
+For interrupted cleanup, use the same kubeconfig and registered identity as the workflow, and serialize recovery with all deployments for that PR. Confirm the PR should remain closed before retrying; these lower-level commands do not check GitHub state.
 
 ```bash
+go build -o /tmp/previewmesh ./cmd/previewmesh
+
 # Inspect without changing resources; save the original Namespace UID before cleanup.
 /tmp/previewmesh cleanup-inspect \
   --repository-id "$REPOSITORY_ID" --pr "$PR_NUMBER" \
@@ -331,6 +390,7 @@ For interrupted cleanup, build the CLI with `go build -o /tmp/previewmesh ./cmd/
 
 `cleanup-inspect` discovers all listable namespaced resource types and inventories the target Namespace without label filtering, including Helm history, unlabeled objects, deletion timestamps, and finalizers. JSON contains resource metadata only. `cleanup_inspection.state` is `remaining`, `confirmed_absent`, or `incomplete`; successful inspection with `remaining` means the inventory completed, not that cleanup succeeded. Forbidden lists, discovery failures, and a Namespace changing during inspection produce an incomplete report and nonzero exit status. Restricted runner credentials may lack access to some discovered types; completed lists are preserved alongside errors. Inspection covers the target Namespace only. Cluster-scoped storage, other Namespaces, registry images, and external resources require independent inspection. Retain result JSON and optional `--evidence` CSV securely before temporary files are lost.
 
+</details>
 
 ## Project layout
 
