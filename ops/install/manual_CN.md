@@ -2,9 +2,11 @@
 
 [自动安装入口](../../README_CN.md#安装)
 
+本文是手工流程。自动 `install` 命令可能在本地准备 source 通知文件，但不会提交、推送、创建或合并 source 改动。需要使用引导式接入流程时，执行 `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO`；默认模式只显示完整 diff，`--create-pr` 才会显式进入可审核 PR 流程。下面的手工步骤仍适用于希望自行复制和编辑工作流的情况。
+
 ## 前提条件
 
-本地检查需要 Git、Go 1.25 或更高版本、Python 3、Bash 和 GitHub CLI。真实预览还需要 Linux 或 WSL2 机器上的 K3s、Traefik、Helm 3 和 kubectl。
+本地检查需要 Git、Go 1.25 或更高版本、Python 3、Bash 和 GitHub CLI。真实预览还需要 Linux 或 WSL2 机器上的 K3s、Traefik、Helm 3 和 kubectl。运行 `onboard-source` 时，`gh auth login` 使用的 classic PAT 需要 `repo` 和 `workflow` scope；fine-grained PAT 需要对目标仓库有访问权，并授予 **Contents: Read and write**、**Workflows: Read and write**、**Pull requests: Read and write** 权限，参见 GitHub 的[细粒度个人访问令牌权限说明](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)。
 
 ### 一次设置项目变量
 
@@ -510,4 +512,3 @@ kubectl --kubeconfig "$PREVIEWMESH_RUNNER_CONFIG" get namespace "$PREVIEW_NAMESP
 ```
 
 命令成功退出且没有输出，才表示 Namespace 已删除。认证失败或连接错误不能作为清理成功的依据。如果使用了不同的 kubeconfig 路径，这里也要修改；如果新开了终端，还需要从第 8 步恢复 `PREVIEW_NAMESPACE`。要演示清理的幂等性，可以对已关闭的 PR 再手动派发一次相同工作流；报告应确认 Namespace 已经不存在。
-

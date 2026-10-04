@@ -285,6 +285,56 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(config.SetupError):
             app.systemd_value("KUBECONFIG=a\nExecStart=bad")
 
+    def test_completion_reports_stage_summary_and_source_onboarding_actions(self):
+        app = self.instance()
+        app.c.sources.append(config.Source(
+            "second", "team/second", self.work / "second", 3000,
+            self.work / "secrets/second.token"))
+        app.completed_stages = [(number, f"Stage {number}", f"阶段 {number}")
+                                for number in range(1, 9)]
+        app.source_status = {"owner/app": "pending", "team/second": "merged"}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            app.completion()
+        text = output.getvalue()
+        self.assertIn("Installation complete: all 8 infrastructure/setup stages passed.", text)
+        for number in range(1, 9):
+            self.assertIn(f"Completed [{number}/8]: Stage {number}", text)
+        self.assertIn("owner/app: source onboarding is NOT complete", text)
+        self.assertIn("setup.sh onboard-source", text)
+        self.assertIn("--source owner/app", text)
+        self.assertIn("--create-pr", text)
+        self.assertIn("team/second: notification merged; test PR verification remains.", text)
+
+    def test_failed_install_progress_ignores_stale_checkpoints_and_redacts_secrets(self):
+        app = self.instance()
+        app.state["completed"] = {str(number): 123 for number in range(1, 9)}
+        app.completed_stages = [(1, "Stage 1", "阶段 1"), (2, "Stage 2", "阶段 2")]
+        app.secrets = ["ghp_SYNTHETIC_SECRET"]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            app.installation_progress()
+        text = output.getvalue()
+        self.assertIn("Completed [1/8]: Stage 1", text)
+        self.assertIn("Completed [2/8]: Stage 2", text)
+        self.assertIn("Installation incomplete. Stages still requiring completion: 3, 4, 5, 6, 7, 8.", text)
+        self.assertNotIn("ghp_SYNTHETIC_SECRET", text)
+
+    def test_interrupted_install_prints_progress_summary(self):
+        for interruption in (KeyboardInterrupt, EOFError):
+            with self.subTest(interruption=interruption):
+                app = self.instance()
+                app.completed_stages = [(1, "Stage 1", "阶段 1")]
+                with patch.object(installer, "load_config", return_value=self.c), \
+                     patch.object(installer, "Installer", return_value=app), \
+                     patch.object(app, "install", side_effect=interruption), \
+                     patch.object(installer.sys, "argv", [
+                         str(ROOT / "scripts/setup.py"), "install", "--config", str(self.config_path)
+                     ]), contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                     contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    result = installer.main()
+                self.assertEqual(result, 130)
+                self.assertIn("Installation incomplete", stdout.getvalue())
+                self.assertIn("Stopped; rerun the same command", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,7 +45,7 @@ flowchart LR
 
 ### 运行时如何交接
 
-`previewmesh-notify.yml` 由安装器在每个已登记的 source 本机目录中生成，之后由用户提交。它从 [`templates/source-notify.yml`](templates/source-notify.yml) 复制而来，提交到 source 仓库的默认分支，并在 GitHub 托管的 `ubuntu-latest` Runner 上运行。`jobs.notify.env` 下的两个值决定要通知哪个 control 仓库；source 仓库中的 `PREVIEWMESH_DISPATCH_TOKEN` Secret 授权它在 control 仓库的 `main` 分支派发 `preview.yml`。派发时只发送 source 仓库 ID、完整仓库名和 PR 编号。
+`previewmesh-notify.yml` 由 `onboard-source` 从 source 仓库的 GitHub 默认分支准备。预览模式只显示完整 diff；`--create-pr` 会创建一个专门的可审核 PR，由你检查后合并。合并后，文件从 [`templates/source-notify.yml`](templates/source-notify.yml) 复制而来，并在 GitHub 托管的 `ubuntu-latest` Runner 上运行。`jobs.notify.env` 下的两个值决定要通知哪个 control 仓库；source 仓库中的 `PREVIEWMESH_DISPATCH_TOKEN` Secret 授权它在 control 仓库的 `main` 分支派发 `preview.yml`。派发时只发送 source 仓库 ID、完整仓库名和 PR 编号。
 
 实际执行生命周期的 [`preview.yml`](.github/workflows/preview.yml) 位于 private control 仓库。它的 `build` Job 使用 GitHub 托管 Runner，读取当前 PR head 的 commit SHA，取出这个精确版本，并用 `previewmesh build --push` 构建镜像。这个 Job 声明了 `packages: write` 权限，并使用工作流自带的 `GITHUB_TOKEN` 登录 GHCR；不需要另设镜像发布 Job，也不需要手动创建 Package。
 
@@ -96,17 +96,46 @@ bash scripts/setup.sh init --template
 bash scripts/setup.sh install
 ```
 
-安装器会先解释当前步骤的作用，再准备工具、私有 control 仓库、Secrets、K3s、Runner、凭据自动续期、局域网入口和 source 通知文件。安装配置会发布到 **control**；安装器不会在 **source** 中提交、推送、创建 PR 或合并代码，也不会创建测试预览。
+`install` 命令会先解释当前步骤的作用，再准备工具、私有 control 仓库、Secrets、K3s、Runner、凭据自动续期和局域网入口。结束时会显示八个阶段的完成摘要，并逐个 source 报告通知工作流是否已在 source 默认分支合并，还是仍待接入。它可能在本地准备一份供审核的通知文件，但不会在 **source** 中提交、推送、创建 PR 或合并代码，也不会创建测试预览。需要创建经过审核的 source 接入 PR 时，使用显式的 `onboard-source` 命令。
 
 仍需你完成浏览器登录和 GitHub Token 的创建。安装器会展示每个 Token 的创建页面、应选择的准确仓库及所需权限。缺少 Token 文件时，可以在隐藏输入提示中粘贴，安装器会保存为仅当前用户可读写的文件。组织审批、SSO 和 Token 到期时间由你的 GitHub 账号管理。这些个人 Token 不会自动续期；到期前更新相应文件并重新安装即可。
 
 WSL 安装期间，Windows 会请求管理员权限来配置局域网转发。当前连接需为“专用”或“域”网络；安装器不会关闭防火墙，也不会把“公用”网络自动改为受信任网络。
 
-某一步失败时，根据提示处理问题，再运行**同一条安装命令**。安装器会检查并复用已完成的资源，不会静默覆盖已有自定义工作流或配置。工具的详细输出会脱敏保存到仅当前用户可访问的 `~/.local/share/previewmesh/setup.log`；需要在终端查看时，加上 `--verbose`。
+某一步失败时，安装器会列出本次运行已完成的阶段、仍需完成的阶段和继续执行的准确命令。根据提示处理问题，再运行**同一条安装命令**；安装器会检查并复用已完成的资源，不会静默覆盖已有自定义工作流或配置。工具的详细输出会脱敏保存到仅当前用户可访问的 `~/.local/share/previewmesh/setup.log`；需要在终端查看时，加上 `--verbose`。
 
-### 3. 开始正常开发
+### 3. 创建经过审核的 source 接入 PR
 
-安装器会在各 source 本机目录准备好 `.github/workflows/previewmesh-notify.yml`。由你审核、提交，并将它发布到 source 默认分支；之后像平时一样为应用创建 PR。
+安装结束时，对于仍待接入的 source，安装器会打印下一步命令。针对要接入的 source 仓库执行一次：
+
+```bash
+bash scripts/setup.sh onboard-source \
+  --config /配置文件路径/setup.ini \
+  --source OWNER/REPO
+```
+
+`onboard-source` 只读取 source 仓库的 GitHub 默认分支，并准备一个文件：`.github/workflows/previewmesh-notify.yml`。不加 `--create-pr` 时，它只显示完整 diff，不写本地文件，也不写远程仓库。如果默认分支已经有匹配内容，会报告无需修改。该命令只需要 Python 3 和已登录 GitHub 的 `gh` CLI，以及目标仓库的访问权。classic PAT 需要 `repo` 和 `workflow` scope；fine-grained PAT 需要对目标仓库有访问权，并授予 **Contents: Read and write**、**Workflows: Read and write**、**Pull requests: Read and write** 权限，参见 GitHub 的[细粒度个人访问令牌权限说明](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)。不要求 systemd、K3s 或 source 本地 checkout。
+
+如需让命令创建可审核的 PR，添加 `--create-pr`：
+
+```bash
+bash scripts/setup.sh onboard-source \
+  --config /配置文件路径/setup.ini \
+  --source OWNER/REPO \
+  --create-pr
+```
+
+创建新 PR 时，命令会先显示完整 diff，只有输入准确的 `create` 后才继续。它使用专用的 `previewmesh/onboard-source` 分支。如果已有开放的接入 PR，命令会返回链接并保留该分支和 PR 内容，不检查是否可合并。没有开放 PR 时，如果专用分支内容或基线与当前提案不同，命令会停止并打印人工处理步骤。PR 只提交通知工作流，不读取或提交 source 本地的其他改动，也不会自动合并。已有 PR 的审核和合并冲突处理由你自行完成。
+
+PR 合并后，运行 `doctor`，让它重新检查 source 默认分支上的通知工作流：
+
+```bash
+bash scripts/setup.sh doctor --config /配置文件路径/setup.ini
+```
+
+### 4. 开始正常开发
+
+从同一个 source 仓库内的分支创建一个以默认分支为目标的普通测试 PR（不要使用 fork），按顺序检查完整链路：source 通知 Actions 运行、control 的 `Preview` 工作流运行、结果状态或评论中的 source commit SHA 和预览 URL，以及关闭测试 PR 后的清理结果。再从同一局域网的第二台机器打开预览 URL。安装、接入 diff 和通过 `doctor` 检查都不代表已经部署过真实预览；测试 PR 才能提供这项证据。
 
 应用根目录需要能构建 linux/amd64 镜像的 Dockerfile；应用需监听配置的端口和 `0.0.0.0`，能以 UID/GID 65532 运行且不要求额外 capabilities，并让 `GET /health` 返回 HTTP 200：
 
@@ -172,7 +201,7 @@ gh pr create --base main --head "$UPDATE_BRANCH"
 
 如果 private 仓库是通过 **Use this template** 创建的，它与模板之间没有共同 Git 历史。第一次运行更新器时会创建一个小的历史桥接提交，同时保留当前 private 文件；之后就可以使用普通 Git merge。第一次运行只关联历史，不会把上游当前的文件改动同步到你的项目中。审核桥接 PR 时，手动合入目前需要的改动；上游之后的新提交才能正常合并。每次更新也要检查登记文件之外的自定义内容。
 
-更新 control 不会自动更新 source 仓库中的 `.github/workflows/previewmesh-notify.yml`，也不会替换本机已安装的 WSL/K3s 文件。合并更新后，使用原配置重新运行安装器来更新这些副本；如果发现你修改过的文件，安装器会停止并显示差异。Source 工作流仍需由你审核并提交。
+更新 control 不会自动更新 source 仓库中已经发布的通知工作流，也不会替换本机已安装的 WSL/K3s 文件。合并更新后，使用原配置重新运行 `install` 来刷新本地托管副本；如果发现你修改过的文件，安装器会停止并显示差异。Source 工作流仍需由你审核并提交；需要创建审核 PR 时，使用显式的 `onboard-source --create-pr` 流程。
 
 ## 本地检查
 
@@ -222,7 +251,7 @@ Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些
 
 | 现象 | 接下来检查什么 |
 | --- | --- |
-| 没有 source 通知 | 确认工作流已在 source 默认分支上，且已启用 Actions。Fork PR 会被跳过。对于之前就存在的 PR，推送新提交或按[手动运行说明](ops/install/manual_CN.md#8-运行预览)触发。 |
+| 没有 source 通知 | 确认工作流已在 source 默认分支上，且已启用 Actions；如果缺少，使用 `onboard-source --create-pr`。Fork PR 会被跳过。对于之前就存在的 PR，推送新提交或按[手动运行说明](ops/install/manual_CN.md#8-运行预览)触发。 |
 | 通知返回 403 或 404 | 检查 source 工作流中的 control owner/name、control `main` 上的 `preview.yml`，以及 dispatch Token 选择的仓库、Actions 写权限、审批状态和有效期。 |
 | Control Job 被跳过 | 将 control 仓库的 Actions variable `PREVIEWMESH_ENABLED` 设为准确的 `true`，并选择 `main` 触发。 |
 | `local` 一直排队 | 确认 private 仓库的 Runner 在线，并且有 `self-hosted`、`Linux`、`X64`、`previewmesh` 四个标签。 |

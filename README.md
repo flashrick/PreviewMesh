@@ -45,7 +45,7 @@ Important boundaries:
 
 ### Runtime handoff
 
-`previewmesh-notify.yml` is generated locally by the installer for each registered source repository, then committed by you. It is copied from [`templates/source-notify.yml`](templates/source-notify.yml), committed to the source repository's default branch, and runs on GitHub's hosted `ubuntu-latest` runner. The two `jobs.notify.env` values name the destination control repository. The source repository's `PREVIEWMESH_DISPATCH_TOKEN` Secret authorizes the workflow to dispatch `preview.yml` on the control repository's `main` branch. The dispatch carries only the source repository ID, full name, and PR number.
+`previewmesh-notify.yml` is prepared by `onboard-source` from the source repository's GitHub default branch. Its preview mode only displays the complete diff; `--create-pr` creates a dedicated reviewable PR, which you merge after inspection. The file is copied from [`templates/source-notify.yml`](templates/source-notify.yml) and, once merged, runs on GitHub's hosted `ubuntu-latest` runner. The two `jobs.notify.env` values name the destination control repository. The source repository's `PREVIEWMESH_DISPATCH_TOKEN` Secret authorizes the workflow to dispatch `preview.yml` on the control repository's `main` branch. The dispatch carries only the source repository ID, full name, and PR number.
 
 The actual [`preview.yml`](.github/workflows/preview.yml) lifecycle runs in the private control repository. Its `build` job uses a GitHub-hosted runner. It reads the current PR head commit SHA, checks out that exact revision, and runs `previewmesh build` with `--push`. The job grants `packages: write` and logs in to GHCR with the workflow's `GITHUB_TOKEN`; no separate image-publishing job or manually created package is required.
 
@@ -96,17 +96,46 @@ This copies the [commented template](config/setup.example.ini) to `~/.config/pre
 bash scripts/setup.sh install
 ```
 
-The installer explains each step before preparing tools, the private control repository, Secrets, K3s, the runner, automatic credential renewal, the LAN entry and source notification files. It publishes installation configuration to **control**. It does **not** commit, push, create pull requests or merge changes in **source**, and does not create a test preview.
+The `install` command explains each step before preparing tools, the private control repository, Secrets, K3s, the runner, automatic credential renewal and the LAN entry. It finishes with an eight-stage summary and reports, for each configured source, whether its notification workflow is already on the source default branch or still needs onboarding. It may prepare a local notification file for review, but it does not commit, push, create pull requests or merge changes in **source**, and does not create a test preview. Use the explicit `onboard-source` command for a reviewed source onboarding PR.
 
 You still complete browser login and create GitHub tokens. The installer shows each token's creation link, exact target repository and required permissions. Missing token files can be populated by pasting into a hidden prompt; they are saved with owner-only permissions. Organization approval/SSO and token expiration remain under your GitHub account's control. These personal tokens are not renewed automatically; replace their files and rerun installation before expiration.
 
 For WSL, approve the Windows administrator prompt to configure LAN forwarding. Windows must consider the connection Private or Domain; the installer does not disable firewall protection or change a Public connection into a trusted one.
 
-If a step fails, fix the reported problem and repeat the **same command**. Completed resources are checked and reused. Existing custom workflows and configuration are protected from silent overwriting. Raw tool output is saved in a redacted, owner-only log at `~/.local/share/previewmesh/setup.log`; `--verbose` also shows it in the terminal.
+If a step fails, the installer prints the stages completed in that run, the stages still requiring completion, and the exact command to continue. Fix the reported problem and repeat the **same command**; completed resources are checked and reused. Existing custom workflows and configuration are protected from silent overwriting. Raw tool output is saved in a redacted, owner-only log at `~/.local/share/previewmesh/setup.log`; `--verbose` also shows it in the terminal.
 
-### 3. Continue your normal development workflow
+### 3. Create a reviewed source onboarding PR
 
-The installer prepares `.github/workflows/previewmesh-notify.yml` in each source checkout. Review, commit and publish that file to the source repository's default branch yourself. Then open your application PR as usual.
+For a source that still needs onboarding, use the command printed by the installer. Run it once for the source repository you want to connect:
+
+```bash
+bash scripts/setup.sh onboard-source \
+  --config /path/to/setup.ini \
+  --source OWNER/REPO
+```
+
+`onboard-source` reads the source repository's GitHub default branch and prepares exactly one file, `.github/workflows/previewmesh-notify.yml`. Without `--create-pr`, it displays the complete diff and makes no local or remote changes. If the default branch already contains the matching file, it reports that no change is needed. The command only needs Python 3 and an authenticated `gh` CLI with access to the target repository. A classic PAT for that login needs the `repo` and `workflow` scopes. A fine-grained PAT needs access to the target repository plus **Contents: Read and write**, **Workflows: Read and write**, and **Pull requests: Read and write** permissions; see GitHub's [permissions required for fine-grained personal access tokens](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens). It does not require systemd, K3s or a local source checkout.
+
+To let the command create a reviewable PR, add `--create-pr`:
+
+```bash
+bash scripts/setup.sh onboard-source \
+  --config /path/to/setup.ini \
+  --source OWNER/REPO \
+  --create-pr
+```
+
+For a new PR, the command shows the complete diff first and proceeds only after you enter exactly `create`. It uses the dedicated `previewmesh/onboard-source` branch. If an open onboarding PR already exists, it returns that link and leaves the branch and PR contents unchanged; it does not inspect mergeability. Otherwise, if the dedicated branch already differs from the proposal, it stops and prints manual handling instructions. The PR contains only the notification workflow; local source changes are not read or committed, and the command never merges the PR. Review an existing PR and resolve any merge conflicts there yourself.
+
+After the PR is merged, run `doctor` so it checks the notification workflow again on the source default branch:
+
+```bash
+bash scripts/setup.sh doctor --config /path/to/setup.ini
+```
+
+### 4. Continue your normal development workflow
+
+Create an ordinary test PR from a branch in the same source repository (do not use a fork), targeting its default branch. Check the complete handoff in order: the source notification Actions run, the control `Preview` workflow run, the source commit SHA and preview URL in the resulting status or comment, and cleanup after closing the test PR. Also open the preview URL from a second machine on the same LAN. Installation, the onboarding diff and a passing `doctor` check do not prove that a real preview was deployed; the test PR supplies that evidence.
 
 Your application needs a root Dockerfile that builds for linux/amd64, listens on `0.0.0.0` at the configured application port, runs as UID/GID 65532 without extra capabilities, and returns HTTP 200 from `GET /health`:
 
@@ -172,7 +201,7 @@ New copies also include **Update PreviewMesh from upstream**, which checks weekl
 
 If the private repository was created with **Use this template**, its history is unrelated to the template. The first updater run creates a small history-bridge commit while preserving the current private tree; later updates use normal Git merges. This first run links the histories; it does not copy the current upstream file changes into your checkout. Review the bridge PR and reconcile any changes you need now; subsequent upstream commits can be merged normally. Review your other custom files on every update.
 
-Updating control does not update the copied `.github/workflows/previewmesh-notify.yml` in your source repositories or the WSL/K3s files installed on your machine. After merging updates, rerun the installer with your existing configuration to update those copies. It stops and shows a diff if you have modified a managed file. Review and commit source workflow changes yourself.
+Updating control does not update the notification workflow already published in your source repositories or the WSL/K3s files installed on your machine. After merging updates, rerun `install` with your existing configuration to refresh any local managed copies. It stops and shows a diff if you have modified a managed file. Review and commit source workflow changes yourself, or use the explicit `onboard-source --create-pr` flow when you want a reviewed source PR.
 
 ## Local verification
 
@@ -262,7 +291,7 @@ Start with the failed job's log and the control run summary. A green source noti
 
 | What you see | What to check next |
 | --- | --- |
-| No source notification | Confirm the workflow is on the source default branch and Actions is enabled. Fork PRs are intentionally skipped. For a PR that was already open, push a new commit or use the [manual dispatch reference](ops/install/manual.md#8-run-a-preview). |
+| No source notification | Confirm the workflow is on the source default branch and Actions is enabled; if it is missing, use `onboard-source --create-pr`. Fork PRs are intentionally skipped. For a PR that was already open, push a new commit or use the [manual dispatch reference](ops/install/manual.md#8-run-a-preview). |
 | Notification returns 403 or 404 | Check the control owner/name in the source workflow, `preview.yml` on control `main`, and the dispatch token's control repository selection, Actions write permission, approval, and expiry. |
 | Control jobs are skipped | Set the control repository Actions variable `PREVIEWMESH_ENABLED` to exactly `true` and dispatch `main`. |
 | `local` stays queued | Check that the private repository's runner is online and has all labels: `self-hosted`, `Linux`, `X64`, `previewmesh`. |

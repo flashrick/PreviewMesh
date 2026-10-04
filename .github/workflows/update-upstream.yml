@@ -56,6 +56,7 @@ jobs:
           go vet ./...
           python3 scripts/check-workflow.py
           python3 scripts/check-github-secrets.py
+          python3 scripts/check-onboard-source.py
       - name: Push update branch
         if: steps.update.outputs.updated == 'true'
         env:

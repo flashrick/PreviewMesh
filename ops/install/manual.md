@@ -2,9 +2,11 @@
 
 [Guided installer](../../README.md#install)
 
+This document is the manual path. The guided `install` command may prepare a local source notification file, but it does not commit, push, create or merge source changes. For the guided onboarding flow, run `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO`; its default mode shows the complete diff only, and `--create-pr` is the explicit reviewed-PR mode. The manual steps below remain available when you want to copy and edit the workflow yourself.
+
 ## Requirements
 
-For local checks, install Git, Go 1.25 or newer, Python 3, Bash, and the GitHub CLI. For real previews, also install K3s with Traefik, Helm 3, and `kubectl` on a Linux or WSL2 machine.
+For local checks, install Git, Go 1.25 or newer, Python 3, Bash, and the GitHub CLI. For real previews, also install K3s with Traefik, Helm 3, and `kubectl` on a Linux or WSL2 machine. For `onboard-source`, a classic PAT used by `gh auth login` needs the `repo` and `workflow` scopes. A fine-grained PAT needs access to the target repository plus **Contents: Read and write**, **Workflows: Read and write**, and **Pull requests: Read and write** permissions; see GitHub's [permissions required for fine-grained personal access tokens](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
 
 ### Set project variables once
 
@@ -510,4 +512,3 @@ kubectl --kubeconfig "$PREVIEWMESH_RUNNER_CONFIG" get namespace "$PREVIEW_NAMESP
 ```
 
 If the command exits successfully with no output, the namespace has been removed. An authentication or connection error does not confirm cleanup. Use your chosen kubeconfig path if it differs from the example. In a new terminal, also restore `PREVIEW_NAMESPACE` from step 8. To demonstrate cleanup idempotency, manually dispatch the same workflow once more for the closed pull request; the report should confirm the namespace is already absent.
-

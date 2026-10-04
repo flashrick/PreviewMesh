@@ -11,6 +11,7 @@ python3 scripts/check-workflow.py
 python3 scripts/check-github-secrets.py
 python3 scripts/check-setup.py
 python3 scripts/check-installer.py
+python3 scripts/check-onboard-source.py
 bash -n scripts/setup.sh
 helm lint charts/preview
 actionlint .github/workflows/preview.yml .github/workflows/update-upstream.yml templates/source-notify.yml

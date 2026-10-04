@@ -51,6 +51,8 @@ class Installer:
         self.wsl = "microsoft" in platform.release().lower()
         self.control_id = self.state.get("control_id")
         self.pending = []
+        self.source_status = {}
+        self.completed_stages = []
 
     def say(self, en, zh):
         print(zh if self.zh else en, flush=True)
@@ -110,6 +112,7 @@ class Installer:
         action()
         self.state.setdefault("completed", {})[str(number)] = int(time.time())
         self.save()
+        self.completed_stages.append((number, en, zh))
         self.say("Done.", "完成。")
 
     def preflight(self):
@@ -588,12 +591,49 @@ class Installer:
         expected = template.replace("YOUR_GITHUB_OWNER", owner).replace("YOUR_CONTROL_REPOSITORY", repo)
         for source in self.c.sources:
             self.managed(source.directory / ".github/workflows/previewmesh-notify.yml", expected)
-            self.say(f"{source.repository}: notification file prepared. Commit and publish it through your normal development process.",
-                     f"{source.repository}：通知文件已配置好。请通过正常开发流程自行提交和发布。")
+            self.say(f"{source.repository}: notification file prepared. Use onboard-source to review and open its PR.",
+                     f"{source.repository}：通知文件已配置好。使用 onboard-source 审核并创建接入 PR。")
             if not (source.directory / "Dockerfile").exists():
                 self.say("Application still needs a root Dockerfile.", "应用仍需在根目录提供 Dockerfile。")
         self.say("Applications must listen on 0.0.0.0, run as UID/GID 65532 and return status=ok plus PREVIEW_COMMIT_SHA at GET /health.",
                  "应用需监听 0.0.0.0、支持 UID/GID 65532，并在 GET /health 返回 status=ok 和来自 PREVIEW_COMMIT_SHA 的 commit_sha。")
+
+    def setup_command(self, command, source=None):
+        args = ["bash", str(ROOT / "scripts/setup.sh"), command, "--config", str(self.c.path)]
+        if source:
+            args += ["--source", source]
+        return shlex.join(args)
+
+    def source_verification(self):
+        self.say("After merging, confirm the notification on the default branch with:",
+                 "合并后，用以下命令确认默认分支上的通知工作流：")
+        print(self.setup_command("doctor"))
+        self.say("Then open a same-repository test application PR targeting the source default branch. Check source notification Actions → control Preview workflow → preview URL and matching commit SHA. Close the test PR and confirm cleanup. A second LAN machine should also open the preview URL before closing.",
+                 "然后用源仓库内的分支创建一个指向默认分支的测试应用 PR（不要使用 fork）。依次检查 source 通知 Actions → control Preview 工作流 → 预览 URL 与提交 SHA 一致。关闭测试 PR 后确认清理；关闭前还应从另一台局域网机器访问预览 URL。")
+
+    def completion(self):
+        self.say("Installation complete: all 8 infrastructure/setup stages passed.",
+                 "安装完成：8 个基础环境与配置阶段均已通过。")
+        self.installation_progress()
+        for source in self.c.sources:
+            if self.source_status.get(source.repository) == "merged":
+                self.say(f"{source.repository}: notification merged; test PR verification remains.",
+                         f"{source.repository}：通知已合并；仍需测试 PR 验证。")
+            else:
+                self.say(f"{source.repository}: source onboarding is NOT complete. Review the diff, then create its PR:",
+                         f"{source.repository}：源仓库尚未接入。请先查看 diff，再创建接入 PR：")
+                command = self.setup_command("onboard-source", source.repository)
+                print(command + "\n" + command + " --create-pr")
+        self.source_verification()
+
+    def installation_progress(self):
+        # Only report checks completed in this run, not stale resume checkpoints.
+        for number, en, zh in self.completed_stages:
+            self.say(f"Completed [{number}/8]: {en}", f"已完成 [{number}/8]：{zh}")
+        if len(self.completed_stages) < 8:
+            remaining = ", ".join(str(number) for number in range(len(self.completed_stages) + 1, 9))
+            self.say(f"Installation incomplete. Stages still requiring completion: {remaining}. Source onboarding is not yet verified.",
+                     f"安装尚未完成。仍需完成阶段：{remaining}。源仓库接入尚未验证。")
 
     def enable(self):
         self.run(["gh", "variable", "set", "PREVIEWMESH_DOMAIN_SUFFIX", "--repo", self.c.control, "--body", self.c.suffix])
@@ -665,6 +705,7 @@ class Installer:
                     "Control secrets missing / control 缺少 Secrets。")
         check("Control configuration / Control 配置", github_check)
         self.pending = []
+        self.source_status = {}
         for source in self.c.sources:
             def source_check(source=source):
                 values = self.api(f"repos/{source.repository}/actions/secrets?per_page=100")["secrets"]
@@ -675,6 +716,7 @@ class Installer:
             check(source.repository + " Actions", source_check)
             result = self.run(["gh", "api", f"repos/{source.repository}/contents/.github/workflows/previewmesh-notify.yml"], check=False)
             if result.returncode and "HTTP 404" not in result.stderr:
+                self.source_status[source.repository] = "unknown"
                 failures.append(source.repository + " notification access")
                 self.say("Cannot inspect the published notification; check GitHub access.",
                          "无法检查已发布通知文件，请检查 GitHub 访问权限。")
@@ -686,8 +728,14 @@ class Installer:
                 remote = ""
             if remote != expected:
                 self.pending.append(source.repository)
-                self.say(f"PENDING: {source.repository} notification is not published on its default branch. Publish the generated file yourself.",
-                         f"待处理：{source.repository} 默认分支上尚未发布所需通知文件，请自行提交并发布生成的文件。")
+                self.source_status[source.repository] = "pending"
+                self.say(f"PENDING: {source.repository} notification is not merged on its default branch. Review and create an onboarding PR:",
+                         f"待处理：{source.repository} 默认分支上尚未合并所需通知文件。请审核并创建接入 PR：")
+                print(self.setup_command("onboard-source", source.repository) + " --create-pr")
+            else:
+                self.source_status[source.repository] = "merged"
+                self.say(f"OK: {source.repository} notification matches on the default branch.",
+                         f"通过：{source.repository} 默认分支上的通知工作流符合预期。")
         self.say("No real preview was created or verified. After publishing the notification, use a normal application PR; check the reported SHA and cleanup after closing.",
                  "尚未创建或验证真实预览。通知文件发布后，通过正常应用 PR 检查预览版本和关闭后的清理结果。")
         self.say("A colleague should also check the entry from a second LAN machine; this machine cannot prove remote reachability.",
@@ -723,22 +771,29 @@ class Installer:
                 ("Prepare the local cluster and renewable, restricted deployment access.", "准备本机集群和可自动续期的受限部署权限。", self.cluster),
                 ("Connect the deployment assistant to GitHub.", "将本机部署助手连接到 GitHub。", self.runner),
                 ("Make the preview entry reachable on your LAN.", "配置局域网入口，让同事能访问预览。", self.network),
-                ("Prepare application notification files; leave source Git operations to you.", "生成应用通知文件，后续 source Git 操作由你完成。", self.sources),
+                ("Prepare application notification files for review.", "生成应用通知文件，供后续审核。", self.sources),
                 ("Enable control automation and check infrastructure readiness.", "启用 control 自动化，并检查基础环境是否就绪。", self.enable),
             ]
             for number, (en, zh, action) in enumerate(stages, 1):
                 self.step(number, en, zh, action)
+            self.completion()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Guided PreviewMesh setup / PreviewMesh 安装")
-    parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor"), default="install")
+    parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor", "onboard-source"), default="install")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--verbose", action="store_true", help="Show redacted tool output / 显示脱敏工具输出")
     parser.add_argument("--template", action="store_true", help="init: copy a template instead of the interactive wizard / 仅复制配置模板")
+    parser.add_argument("--source", help="onboard-source: configured OWNER/REPO / 配置中的源仓库")
+    parser.add_argument("--create-pr", action="store_true", help="onboard-source: review diff and confirm PR creation / 审阅 diff 后确认创建 PR")
     args = parser.parse_args()
     if args.template and args.command != "init":
         parser.error("--template requires init / --template 仅用于 init")
+    if (args.source or args.create_pr) and args.command != "onboard-source":
+        parser.error("--source and --create-pr require onboard-source")
+    if args.command == "onboard-source" and not args.source:
+        parser.error("onboard-source requires --source OWNER/REPO")
     installer = None
     try:
         if args.command == "init":
@@ -754,19 +809,29 @@ def main():
             return 0
         config = load_config(args.config, ROOT)
         installer = Installer(config, args.command, args.verbose)
-        getattr(installer, args.command)()
+        if args.command == "onboard-source":
+            from setup_onboard import onboard
+            onboard(installer, ROOT, args.source, args.create_pr)
+        else:
+            getattr(installer, args.command)()
         return 0
     except (SetupError, OSError, ValueError, KeyError, StopIteration) as error:
         # Avoid tracebacks with local values or raw secret-bearing subprocess output.
         message = str(error) if not isinstance(error, (KeyError, StopIteration)) else "Unexpected remote response / 远端返回信息不符合预期。"
         print(installer.redact(message) if installer else message, file=sys.stderr)
         if args.command == "install":
+            if installer:
+                installer.installation_progress()
             print(f"Fix the issue, then rerun the SAME command / 处理问题后重新运行同一命令:\n"
                   f"bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(args.config))}", file=sys.stderr)
             if installer:
                 print(f"Redacted log / 脱敏日志: {installer.log_path}", file=sys.stderr)
+        elif args.command == "onboard-source":
+            print("Review the reported issue and rerun the same command. An existing onboarding branch or PR is preserved. / 请按提示处理后重跑同一命令；已有接入分支或 PR 会保留。", file=sys.stderr)
         return 1
     except (KeyboardInterrupt, EOFError):
+        if args.command == "install" and installer:
+            installer.installation_progress()
         print("\nStopped; rerun the same command to continue / 已停止，重新运行同一命令即可继续。", file=sys.stderr)
         return 130
 
