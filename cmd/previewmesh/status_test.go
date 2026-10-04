@@ -120,6 +120,14 @@ func TestLoadPreviewStatusReady(t *testing.T) {
 	if got.RunURL != runURL || !strings.Contains(got.EvidenceURL, "issuecomment-42") || got.ObservedAt == nil || !got.ObservedAt.Equal(created) {
 		t.Fatalf("links/timing = %+v", got)
 	}
+	for _, want := range []string{"sslip.io", "no hosts edits", "manual DNS/hosts", "ops/install/access.md"} {
+		if !strings.Contains(got.NextAction, want) {
+			t.Errorf("ready access guidance missing %q: %q", want, got.NextAction)
+		}
+	}
+	if strings.Contains(got.NextAction, "hostname mapping") {
+		t.Errorf("ready guidance retains stale hostname mapping wording: %q", got.NextAction)
+	}
 	if len(got.StageTimings) != 2 || got.StageTimings[1].Stage != "readiness" {
 		t.Fatalf("stage timings = %+v", got.StageTimings)
 	}

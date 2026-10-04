@@ -70,7 +70,7 @@ token_file = {self.secrets / 'app.token'}
         source_token = self.secrets / "app.token"
         result, output = self.run_manual_wizard([
             str(self.control_dir), "owner/control", "", "", "192.168.1.20", "",
-            str(dispatch), str(ghcr), str(self.source_dir), "owner/app", "8080",
+            "", str(dispatch), str(ghcr), str(self.source_dir), "owner/app", "8080",
             str(source_token), "", "yes",
         ])
 
@@ -80,8 +80,11 @@ token_file = {self.secrets / 'app.token'}
         value = config.load_config(self.config_path, ROOT)
         self.assertEqual(value.control, "owner/control")
         self.assertEqual(value.lan_ip, "192.168.1.20")
+        self.assertEqual(value.domain_suffix, "auto")
         self.assertEqual(value.sources[0].port, 8080)
         self.assertIn("No application port found", output)
+        self.assertIn("Recommended: auto uses <LAN IPv4>.sslip.io", output)
+        self.assertIn("http://pm-r<repository_id>-pr<PR>.192.168.1.20.sslip.io:18080", output)
         self.assertIn("Review /", output)
 
     def test_multiple_candidates_are_explicitly_selected(self):
@@ -94,7 +97,7 @@ token_file = {self.secrets / 'app.token'}
                 return []
             return ["owner/app-a", "owner/app-b"]
         answers = [
-            str(self.control_dir), "2", "", "", "2", "", str(self.secrets / "dispatch"),
+            str(self.control_dir), "2", "", "", "2", "", "", str(self.secrets / "dispatch"),
             str(self.secrets / "ghcr"), str(self.source_dir), "2", "2", str(self.secrets / "app"),
             "", "yes",
         ]
@@ -115,6 +118,7 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(value.lan_ip, "10.0.0.5")
         self.assertEqual(value.sources[0].repository, "owner/app-b")
         self.assertEqual(value.sources[0].port, 8080)
+        self.assertEqual(value.domain_suffix, "auto")
         self.assertIn("1. owner/control-a", output.getvalue())
         self.assertIn("2. owner/control-b", output.getvalue())
 
@@ -134,7 +138,7 @@ token_file = {self.secrets / 'app.token'}
         original = self.config_text("8081")
         self.config_path.write_text(original)
         before = config.load_config(self.config_path, ROOT)
-        answers = ["yes", *([""] * 13), "yes"]
+        answers = ["yes", *([""] * 14), "yes"]
         output = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(wizard, "discover_repositories", side_effect=lambda directory: []))
@@ -166,7 +170,7 @@ token_file = {self.secrets / 'app.token'}
     def test_final_decline_leaves_no_file_and_q_can_exit_for_retry(self):
         answers = [
             str(self.control_dir), "owner/control", "", "", "192.168.1.20", "",
-            str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
+            "", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "", "no",
         ]
@@ -233,11 +237,16 @@ token_file = {self.secrets / 'app.token'}
             (self.secrets / name).write_text("TOPSECRET_TEST_VALUE")
         result, output = self.run_manual_wizard([
             str(self.control_dir), "owner/control", "", "", "192.168.1.20", "",
-            str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
+            "preview.example.internal", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "", "yes",
         ])
         self.assertTrue(result)
+        value = config.load_config(self.config_path, ROOT)
+        self.assertEqual(value.domain_suffix, "preview.example.internal")
+        self.assertEqual(value.suffix, "preview.example.internal")
+        self.assertIn("Alternative: enter a custom DNS suffix", output)
+        self.assertIn("http://pm-r<repository_id>-pr<PR>.preview.example.internal:18080", output)
         self.assertNotIn("TOPSECRET_TEST_VALUE", output)
         self.assertNotIn("TOPSECRET_TEST_VALUE", self.config_path.read_text())
 

@@ -53,7 +53,7 @@ An image digest is a content-based identifier such as `sha256:abc...`, not the s
 
 The `local` job is selected by `runs-on: [self-hosted, Linux, X64, previewmesh]`. The installer registers and starts that runner on the K3s machine. You can view it under **Settings → Actions → Runners** in the private control repository. GitHub passes the build job's `image` output and verified commit SHA to the job. [`scripts/local-attempt.sh`](scripts/local-attempt.sh) passes the full digest reference to `previewmesh deploy`; Kubernetes then pulls that image from GHCR using the namespace's `ghcr-pull` Secret, populated from `GHCR_READ_TOKEN`, and Helm creates or updates the K3s resources.
 
-After deployment, the local job verifies the application's `/health` response and its served commit SHA. `control status` uses the configured source-repository token to call GitHub's commit-status and pull-request-comment APIs. The pending or final `PreviewMesh` status links to the workflow run or preview URL, and the final PR comment includes the run details and an **Open preview** link. The preview URL is still a local/private URL: the PR viewer must have network access and the corresponding hosts/DNS entry.
+After deployment, the local job verifies the application's `/health` response and its served commit SHA. `control status` uses the configured source-repository token to call GitHub's commit-status and pull-request-comment APIs. The pending or final `PreviewMesh` status links to the workflow run or preview URL, and the final PR comment includes the run details and an **Open preview** link. The preview URL is still local/private; use the [preview access guide](ops/install/access.md) for the configured DNS or hosts path.
 
 ## Install
 
@@ -78,9 +78,12 @@ The wizard collects ordinary settings and token file paths separately. Never pas
 | Source sections | Each application's GitHub repository, local checkout and actual HTTP listening port |
 | Token file paths | Separate files outside Git for source, dispatch and GHCR tokens; never paste token values into the configuration |
 | LAN IP | The Ubuntu server's stable LAN IPv4, or the **Windows host's** LAN IPv4 when using WSL |
+| Domain suffix | `auto` recommends `<LAN_IP>.sslip.io`; a lowercase private DNS suffix is the manual alternative |
 | Language | `auto`, `en` or `zh-CN` |
 
 Before saving, it prints a non-sensitive summary of the repositories, directories, LAN address, ports and token file paths. Review it and confirm the save. Enter `q` at any prompt to leave without writing a configuration. If a configuration already exists, the wizard asks whether to load it for review before replacing it.
+
+The wizard defaults to `domain_suffix = auto`, which uses the selected LAN address with `sslip.io`. To use a private DNS zone or a hosts-file fallback, choose a lowercase manual suffix and follow the [preview access guide](ops/install/access.md). The wizard and installer never print token contents.
 
 If you need the commented file without running the wizard, use the explicit template mode:
 
@@ -96,7 +99,7 @@ This copies the [commented template](config/setup.example.ini) to `~/.config/pre
 bash scripts/setup.sh install
 ```
 
-The `install` command explains each step before preparing tools, the private control repository, Secrets, K3s, the runner, automatic credential renewal and the LAN entry. It finishes with an eight-stage summary and reports, for each configured source, whether its notification workflow is already on the source default branch or still needs onboarding. It may prepare a local notification file for review, but it does not commit, push, create pull requests or merge changes in **source**, and does not create a test preview. Use the explicit `onboard-source` command for a reviewed source onboarding PR.
+The `install` command explains each step before preparing tools, the private control repository, Secrets, K3s, the runner, automatic credential renewal and the LAN entry. It finishes with an eight-stage summary, the selected preview access method, and a report for each configured source showing whether its notification workflow is already on the source default branch or still needs onboarding. It may prepare a local notification file for review, but it does not commit, push, create pull requests or merge changes in **source**, and does not create a test preview. Use the explicit `onboard-source` command for a reviewed source onboarding PR. Continue from the [preview access guide](ops/install/access.md) when the installation completes.
 
 You still complete browser login and create GitHub tokens. The installer shows each token's creation link, exact target repository and required permissions. Missing token files can be populated by pasting into a hidden prompt; they are saved with owner-only permissions. Organization approval/SSO and token expiration remain under your GitHub account's control. These personal tokens are not renewed automatically; replace their files and rerun installation before expiration.
 
@@ -135,7 +138,7 @@ bash scripts/setup.sh doctor --config /path/to/setup.ini
 
 ### 4. Continue your normal development workflow
 
-Create an ordinary test PR from a branch in the same source repository (do not use a fork), targeting its default branch. Check the complete handoff in order: the source notification Actions run, the control `Preview` workflow run, the source commit SHA and preview URL in the resulting status or comment, and cleanup after closing the test PR. Also open the preview URL from a second machine on the same LAN. Installation, the onboarding diff and a passing `doctor` check do not prove that a real preview was deployed; the test PR supplies that evidence.
+Create an ordinary test PR from a branch in the same source repository (do not use a fork), targeting its default branch. Check the complete handoff in order: the source notification Actions run, the control `Preview` workflow run, the source commit SHA and preview URL in the resulting status or comment, and cleanup after closing the test PR. Use the [preview access guide](ops/install/access.md) to retrieve and verify the generated URL from the current configuration, including from a second machine on the same LAN. Installation, the onboarding diff and a passing `doctor` check do not prove that a real preview was deployed; the test PR supplies that evidence.
 
 Your application needs a root Dockerfile that builds for linux/amd64, listens on `0.0.0.0` at the configured application port, runs as UID/GID 65532 without extra capabilities, and returns HTTP 200 from `GET /health`:
 
@@ -185,7 +188,7 @@ This explicit mode builds and runs the application locally for `linux/amd64`, in
 
 The installer prepares infrastructure; it does not rewrite your application or prove its runtime behavior. The first real PR verifies image permissions, application compatibility and the exact served SHA. After closing or merging that PR, confirm the control workflow removes its preview.
 
-Preview links look like `http://pm-r123-pr4.192.168.1.20.sslip.io:18080`. [sslip.io](https://nip.io/) resolves the embedded private IP, so colleagues on the LAN do not need per-preview hosts entries. This relies on external DNS; if your network blocks private-IP DNS answers, installation stops with an explanation instead of silently changing the networking approach. A private IP does not make the preview publicly reachable. Ask a colleague to test from a second LAN machine too.
+The [preview access guide](ops/install/access.md) is the canonical path from installation completion to an opened URL. The recommended `domain_suffix = auto` uses `<LAN_IP>.sslip.io`, so each generated URL resolves without a per-preview hosts entry when the DNS check succeeds. A lowercase manual suffix supports managed wildcard DNS or an explicit hosts-file fallback; the guide explains the probe entry, per-PR entries, port `18080`, and `/health` verification. If the LAN address or suffix changes, rerun installation and redeploy open PRs because existing URLs do not migrate automatically.
 
 ### Check or resume
 
@@ -202,7 +205,7 @@ The runner's short-lived Kubernetes credential is renewed by a root-owned mainte
 
 Use `doctor` to distinguish infrastructure readiness from a source notification still awaiting publication. A successful infrastructure check is not a successful preview deployment. Existing manual installations can retain their registered sources and secret names; update old control code before adopting this installer.
 
-For manual operations and the former detailed setup steps, see the [manual installation reference](ops/install/manual.md). The manual workflow retains the legacy `preview.test` default.
+For manual operations and the detailed setup steps, see the [manual installation reference](ops/install/manual.md). Both paths use the [preview access guide](ops/install/access.md) for the domain, port and verification rules.
 
 ## Updating a private control repository
 
@@ -257,7 +260,7 @@ The Python checks simulate external tools and do not contact GitHub or Kubernete
 
 ## CLI notes
 
-The trusted DNS suffix is selected by the `--domain-suffix` flag, then `PREVIEWMESH_DOMAIN_SUFFIX`, then the legacy default `preview.test`. The installer saves the variable in control. An explicit `--hostname` must still match the repository/PR identity and selected suffix.
+For direct CLI use, the trusted DNS suffix is selected by `--domain-suffix`, then `PREVIEWMESH_DOMAIN_SUFFIX`, then the legacy `preview.test` default. The installer recommends `domain_suffix = auto`, which resolves to `<LAN_IP>.sslip.io`; a lowercase manual suffix is also supported. The legacy direct-CLI default still requires matching DNS or hosts entries and is not the installer recommendation. An explicit `--hostname` must still match the repository/PR identity and selected suffix. See the [preview access guide](ops/install/access.md) for URL generation and hosts/DNS verification.
 
 `control resolve` validates a registration without calling GitHub. `control inspect` rechecks the current PR, fork status, and author permission. `control status` writes the `PreviewMesh` commit status.
 
@@ -356,8 +359,8 @@ Start with the failed job's log and the control run summary. A green source noti
 | No status or PR comment appears | Check the token named by `source_secret`, its Commit statuses and Pull requests write permissions, and reporting errors in the run summary. |
 | Kubernetes returns Unauthorized or cannot load a config | Check `KUBECONFIG` in the runner service environment, file ownership, and token expiry. Run `setup.sh doctor` and inspect `previewmesh-maintenance.service`; manual installations can renew using the [manual runner steps](ops/install/manual.md#5-configure-k3s-and-the-runner). |
 | Image push or pull fails | For push, check the control workflow's package write access, including access to an existing package. For pull, check the classic `GHCR_READ_TOKEN`, its owner's package read access, and the `ghcr-pull` Secret in the preview namespace. |
-| Readiness or HTTP verification fails | If Deployment, Pod, and Service are ready but Ingress readiness times out, check that Traefik has published an Ingress address. In the WSL setup, the HelmChartConfig must set `providers.kubernetesIngress.ingressEndpoint.ip` to `127.0.0.1`; apply it and wait for the Traefik rollout. Then check DNS/hosts on the runner, the Traefik route, and `/health`: it must return `status: ok` and the expected `PREVIEW_COMMIT_SHA`. |
-| Runner verification passes but the browser cannot open the preview | Check the browser machine's hosts entry and route. For WSL, run `setup.sh doctor` and test the configured LAN IP from Windows. |
+| Readiness or HTTP verification fails | If Deployment, Pod, and Service are ready but Ingress readiness times out, check that Traefik has published an Ingress address. In the WSL setup, the HelmChartConfig must set `providers.kubernetesIngress.ingressEndpoint.ip` to `127.0.0.1`; apply it and wait for the Traefik rollout. Then follow the [preview access guide](ops/install/access.md) for the configured DNS/hosts probe, generated URL and `/health` check. |
+| Runner verification passes but the browser cannot open the preview | Follow the [preview access guide](ops/install/access.md) from the browser machine, then run `setup.sh doctor`. If `lan_ip` or the suffix changed, reinstall and redeploy open PRs; old URLs do not migrate. |
 | Preview remains after closing a PR | Find the `closed` notification and wait for its control run. If dispatch failed, fix it and manually dispatch the closed PR to retry cleanup. |
 | Updater cannot create a PR | Check Actions PR creation permissions in the update section, or push the generated branch and open a PR yourself. |
 

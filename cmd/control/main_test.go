@@ -61,6 +61,16 @@ func TestReportStatus(t *testing.T) {
 					if strings.Contains(body, "[Open preview]") != tc.preview || strings.Contains(body, previewURL) != tc.preview {
 						t.Errorf("incorrect preview link: %s", body)
 					}
+					if tc.preview {
+						for _, want := range []string{"Recommended sslip.io addresses need no hosts edits", "manual suffixes require client DNS/hosts configuration", "Preview access guide"} {
+							if !strings.Contains(body, want) {
+								t.Errorf("missing access guidance %q in comment %q", want, body)
+							}
+						}
+						if strings.Contains(body, "hostname mapping") {
+							t.Errorf("stale hostname mapping guidance in comment %q", body)
+						}
+					}
 					w.WriteHeader(tc.commentCode)
 				default:
 					t.Errorf("unexpected path: %s", req.URL.Path)

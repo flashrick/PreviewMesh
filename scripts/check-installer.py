@@ -40,11 +40,25 @@ class InstallerTests(unittest.TestCase):
             return installer.Installer(self.c, "check")
 
     def test_config_defaults_and_multiple_sources(self):
+        self.assertEqual(self.c.domain_suffix, "auto")
         self.assertEqual(self.c.suffix, "192.168.1.20.sslip.io")
+        custom_path = self.work / "custom.ini"
+        custom_path.write_text(self.text.replace("domain_suffix = auto", "domain_suffix = preview.example.internal"))
+        custom = config.load_config(custom_path, ROOT)
+        self.assertEqual(custom.domain_suffix, "preview.example.internal")
+        self.assertEqual(custom.suffix, "preview.example.internal")
         self.config_path.write_text(self.text + "\n[source:two]\nrepository=team/second\ndirectory=second\nport=3000\ntoken_file=secrets/two.token\n")
         value = config.load_config(self.config_path, ROOT)
         self.assertEqual(len(value.sources), 2)
         self.assertEqual(value.sources[1].directory, self.work / "second")
+
+    def test_domain_suffix_rejects_ambiguous_or_unsafe_values(self):
+        self.assertEqual(config.validate_domain_suffix("auto"), "auto")
+        for suffix in ("", "Preview.example.internal", "https://example.internal",
+                       "example..internal", "-example.internal", "example-.internal",
+                       "a" * 200):
+            with self.subTest(suffix=suffix), self.assertRaises(config.SetupError):
+                config.validate_domain_suffix(suffix)
 
     def test_invalid_inputs_before_side_effects(self):
         changes = [
@@ -182,9 +196,53 @@ class InstallerTests(unittest.TestCase):
 
     def test_dns_failure_has_no_hosts_fallback(self):
         app = self.instance()
-        with patch.object(installer.socket, "getaddrinfo", side_effect=OSError("blocked")), self.assertRaises(config.SetupError):
+        with patch.object(installer.socket, "getaddrinfo", side_effect=OSError("blocked")), self.assertRaises(config.SetupError) as error:
             app.check_dns()
+        message = str(error.exception)
+        self.assertIn("previewmesh-check.192.168.1.20.sslip.io", message)
+        self.assertIn("hosts", message)
+        self.assertIn("access.md", message)
         self.assertFalse(app.state_path.exists())
+
+    def test_custom_suffix_dns_probe_requires_configured_lan_ip(self):
+        app = self.instance()
+        app.c.domain_suffix = "preview.example.internal"
+        queries = []
+
+        def resolve(name, port, family, socktype):
+            queries.append((name, port, family, socktype))
+            return [(family, socktype, 6, "", (app.c.lan_ip, port))]
+
+        with patch.object(installer.socket, "getaddrinfo", side_effect=resolve):
+            app.check_dns()
+        self.assertEqual(queries, [(
+            "previewmesh-check.preview.example.internal", 18080,
+            installer.socket.AF_INET, installer.socket.SOCK_STREAM,
+        )])
+
+        def resolve_wrong_ip(name, port, family, socktype):
+            return [(family, socktype, 6, "", ("192.168.1.21", port))]
+
+        with patch.object(installer.socket, "getaddrinfo", side_effect=resolve_wrong_ip), self.assertRaises(config.SetupError):
+            app.check_dns()
+
+    def test_resume_enable_publishes_current_domain_suffix(self):
+        app = self.instance()
+        app.c.domain_suffix = "preview.example.internal"
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        app.run = run
+        app.api = lambda *args, **kwargs: {"enabled": True}
+        app.doctor = lambda: None
+        app.enable()
+        self.assertIn(["gh", "variable", "set", "PREVIEWMESH_DOMAIN_SUFFIX",
+                       "--repo", "owner/control", "--body", "preview.example.internal"], calls)
+        self.assertIn(["gh", "variable", "set", "PREVIEWMESH_ENABLED",
+                       "--repo", "owner/control", "--body", "true"], calls)
 
     def test_renewal_timing_and_atomic_failure(self):
         self.assertFalse(maintenance.needs_renewal(10000, 1000, now=2000))
@@ -304,6 +362,18 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("--source owner/app", text)
         self.assertIn("--create-pr", text)
         self.assertIn("team/second: notification merged; test PR verification remains.", text)
+        self.assertIn("Preview URL format: http://pm-r<repository_id>-pr<PR>.192.168.1.20.sslip.io:18080", text)
+        self.assertIn("entry port, not application port", text)
+        self.assertIn("Recommended sslip.io", text)
+        self.assertIn(config.ACCESS_GUIDE, text)
+
+        app.c.domain_suffix = "preview.example.internal"
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            app.completion()
+        manual = output.getvalue()
+        self.assertIn("Preview URL format: http://pm-r<repository_id>-pr<PR>.preview.example.internal:18080", manual)
+        self.assertIn("Manual suffix:", manual)
+        self.assertIn(config.ACCESS_GUIDE, manual)
 
     def test_failed_install_progress_ignores_stale_checkpoints_and_redacts_secrets(self):
         app = self.instance()

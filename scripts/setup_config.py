@@ -13,6 +13,16 @@ import tempfile
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+")
 RFC1918 = tuple(ipaddress.ip_network(value) for value in
                 ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+ACCESS_GUIDE = "https://github.com/flashrick/PreviewMesh/blob/main/ops/install/access.md"
+
+
+def validate_domain_suffix(value):
+    # Reserve space for the longest supported preview identity and separating dot.
+    if value != "auto" and (len(value) > 199 or any(
+            len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+            for label in value.split("."))):
+        raise SetupError("domain_suffix must be auto or a lowercase DNS suffix / 域名后缀需为 auto 或合法小写 DNS 后缀。")
+    return value
 
 
 class SetupError(Exception):
@@ -82,10 +92,11 @@ class Config:
     dispatch_file: Path
     ghcr_file: Path
     sources: list
+    domain_suffix: str = "auto"
 
     @property
     def suffix(self):
-        return self.lan_ip + ".sslip.io"
+        return self.lan_ip + ".sslip.io" if self.domain_suffix == "auto" else self.domain_suffix
 
     @property
     def runner_config(self):
@@ -107,7 +118,7 @@ def load_config(path, root, *, content=None):
         raise SetupError(f"Invalid INI configuration / INI 格式错误: {path}")
     allowed = {
         "project": {"control_repository", "control_directory", "public_repository", "language"},
-        "network": {"lan_ip", "allowed_subnet"},
+        "network": {"lan_ip", "allowed_subnet", "domain_suffix"},
         "credentials": {"dispatch_token_file", "ghcr_token_file"},
     }
     if parser.defaults():
@@ -176,7 +187,7 @@ def load_config(path, root, *, content=None):
         if any(token_path == directory or directory in token_path.parents for directory in directories):
             raise SetupError("Keep token files outside Git checkouts / Token 文件必须放在仓库目录之外。")
     return Config(path, control, control_dir, public, language, str(address), subnet,
-                  dispatch, ghcr, sources)
+                  dispatch, ghcr, sources, validate_domain_suffix(value("network", "domain_suffix", "auto")))
 
 
 def read_token(path):

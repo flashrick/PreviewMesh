@@ -2,6 +2,8 @@
 
 [自动安装入口](../../README_CN.md#安装)
 
+[预览访问说明](access.md)
+
 本文是手工流程。自动 `install` 命令可能在本地准备 source 通知文件，但不会提交、推送、创建或合并 source 改动。需要使用引导式接入流程时，执行 `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO`；默认模式只显示完整 diff，`--create-pr` 才会显式进入可审核 PR 流程。下面的手工步骤仍适用于希望自行复制和编辑工作流的情况。
 
 ## 前提条件
@@ -325,15 +327,24 @@ Control 仓库应包含所有登记的 `source_secret` 和 `GHCR_READ_TOKEN`；�
 
 ### 7. 配置 Ingress 和 source 通知
 
-预览域名由 source 仓库 ID 和 PR 编号组成，例如 `pm-r123456789-pr12.preview.test`。Runner 和浏览器都需要通过这个域名访问 Traefik。`.test` 域名不会自动解析；第 8 步拿到 PR 编号后，再添加对应的 hosts 记录。
+运行预览步骤前先选择访问方案。[预览访问说明](access.md)是统一入口。引导式安装适合局域网地址和使用 `sslip.io` 的 `domain_suffix = auto`；本文手工流程保留 `127.0.0.1` 的本机 socket，作为本机 hosts 替代方案。部署流程会把 source 仓库 ID 和 PR 编号放入主机名。手工流程没有 setup.ini 或安装器 `doctor` 检查，也不会配置局域网转发，因此不能证明第二台局域网机器可以访问。
+
+在工作流使用后缀前，先将它写入 control 仓库。下面的旧版 `preview.test` 适用于后面的本机 hosts 方案；只有在你管理对应 DNS 或 hosts 条目时，才替换成其他小写后缀。手工流程没有 setup.ini 或安装器 `doctor` 检查：
+
+```bash
+export PREVIEWMESH_DOMAIN_SUFFIX=preview.test
+# 如果使用内部 DNS 或其他本机后缀，请将上面的值替换掉。
+gh variable set PREVIEWMESH_DOMAIN_SUFFIX --repo "$CONTROL_REPOSITORY" \
+  --body "$PREVIEWMESH_DOMAIN_SUFFIX"
+```
 
 #### 配置 HTTP 入口
 
-PreviewMesh 的预览链接和健康检查统一使用主机端口 `18080`。代理连接 Traefik 时仍使用集群内部的 `80` 端口；`config/repositories.json` 中的应用端口是另一项配置。Hosts 记录只填写域名，不要加端口。
+PreviewMesh 的预览链接和健康检查统一使用主机端口 `18080`。代理连接 Traefik 时仍使用集群内部的 `80` 端口；`config/repositories.json` 中的应用端口是另一项配置。Hosts 记录把 IP 地址映射到完整主机名，不要加端口。探测和每个 PR 的条目请按[预览访问说明](access.md)填写。
 
 安装代理前，在 WSL 中执行 `ss -ltn 'sport = :18080'`，在 Windows PowerShell 中执行 `Get-NetTCPConnection -LocalPort 18080 -State Listen -ErrorAction SilentlyContinue`。两边都不应显示监听记录。如果端口已被占用，先处理冲突再继续。
 
-如果使用普通 Linux 服务器，且 Traefik 已经可以通过服务器的 18080 端口访问，后续使用该服务器可访问的 IP 配置 DNS 或 hosts 即可，可以直接继续下面的通知配置。
+本手工 socket 配置监听 `127.0.0.1:18080`。只有 Runner 和浏览器都能使用这个回环入口时才适用，并在这些机器上把生成的主机名映射到 `127.0.0.1`。如果需要通过 `sslip.io` 访问局域网，请在此停止并使用引导式安装；引导式安装会配置局域网入口和对应检查。
 
 如果 K3s 运行在 WSL 中，浏览器在 Windows 上，可以使用项目提供的 socket 代理，将 WSL 回环地址的 18080 端口转发到 Traefik。这要求 WSL 已启用 systemd，存在 `/usr/lib/systemd/systemd-socket-proxyd`，本地 18080 端口空闲，并且 [Windows 可以通过 localhost 访问 WSL](https://learn.microsoft.com/en-us/windows/wsl/networking)。如果下面的可执行文件检查失败，请先安装发行版中提供 `systemd-socket-proxyd` 的软件包。
 
@@ -422,13 +433,17 @@ git push -u origin preview/demo
 
 在 GitHub 选择 **Pull requests → New pull request**。**base** 选 source 默认分支（本例为 `main`），**compare** 选 `preview/demo`。确认左右两侧显示的是同一个 source 仓库，再创建 PR。创建者需要有仓库写权限。PR 会告诉 PreviewMesh 要构建哪个应用版本。第 7 步的通知工作流已进入 source 默认分支且 Actions 已启用后，打开 PR 就会自动发送预览请求。
 
-回到 control 项目目录，复用前面设置的仓库变量，把 `123` 换成实际 PR 编号。即使工作流自动启动，后面的检查也需要这些变量：
+回到 control 项目目录，复用前面设置的仓库变量，填写实际 PR 编号和所选后缀。即使工作流自动启动，后面的检查也需要这些变量：
 
 ```bash
 cd "$CONTROL_DIR"
-export PR_NUMBER=123
+export PR_NUMBER=YOUR_PR_NUMBER
+export REPOSITORY_ID="$(gh repo view "$SOURCE_REPOSITORY" --json databaseId --jq '.databaseId')"
 export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
-export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
+export PREVIEWMESH_DOMAIN_SUFFIX="$(gh variable get PREVIEWMESH_DOMAIN_SUFFIX --repo "$CONTROL_REPOSITORY" --json value --jq '.value')"
+test -n "$PREVIEWMESH_DOMAIN_SUFFIX"
+export PREVIEW_DOMAIN_SUFFIX="$PREVIEWMESH_DOMAIN_SUFFIX"
+export PREVIEW_HOST="${PREVIEW_NAMESPACE}.${PREVIEW_DOMAIN_SUFFIX}"
 go run ./cmd/control resolve \
   --repository-id "$REPOSITORY_ID" \
   --source-repository "$SOURCE_REPOSITORY" \
@@ -438,13 +453,7 @@ gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" \
 printf 'Preview hostname: %s\n' "$PREVIEW_HOST"
 ```
 
-确认 `resolve` 接受该登记，PR 状态为 `open`，且 `base` 和 `head` 都是你的 source 仓库。让 Runner 和浏览器所在的机器都能解析输出的域名。如果采用 WSL localhost 方案，按下面的格式填写 hosts，域名使用你刚才得到的实际值：
-
-```text
-127.0.0.1 pm-r123456789-pr12.preview.test
-```
-
-在 WSL 中用 `sudoedit /etc/hosts` 编辑；在 Windows 中以管理员身份打开编辑器，修改 `C:\Windows\System32\drivers\etc\hosts`。如果使用远程 Linux 服务器，将 `127.0.0.1` 换成可访问 Traefik 的服务器 IP。每个预览需要一条 hosts 记录，hosts 文件不支持通配域名。
+确认 `resolve` 接受该登记，PR 状态为 `open`，且 `base` 和 `head` 都是你的 source 仓库。然后按[预览访问说明](access.md)的本机手工方案操作：在 socket 可访问的每台机器上，将生成的完整主机名映射到 `127.0.0.1`。每个预览需要一条 hosts 记录，hosts 不支持通配域名。
 
 先在 source 仓库的 Actions 页面查看 **Notify PreviewMesh**，再到 control 仓库查看 **PreviewMesh lifecycle**。通知成功只代表请求已经发出，要等 control 工作流完成后再检查应用。
 

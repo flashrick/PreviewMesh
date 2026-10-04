@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.request
 
-from setup_config import (SetupError, atomic_write, fingerprint, load_config,
+from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, fingerprint, load_config,
                           merge_registry, read_token)
 from setup_downloads import download_archive, fetch, metadata, runner_release, tool_release
 
@@ -569,7 +569,7 @@ class Installer:
         except OSError:
             addresses = set()
         if addresses != {self.c.lan_ip}:
-            raise SetupError(f"DNS does not resolve {name} to {self.c.lan_ip}. Ask your network administrator whether sslip.io/private-IP DNS is blocked; rerun after resolving it. No hosts fallback was applied.\n域名未解析到配置的局域网 IP。请网管检查 sslip.io 或内网 IP DNS 是否被拦截；解决后重试，不会偷偷改用 hosts。")
+            raise SetupError(f"DNS does not resolve {name} to {self.c.lan_ip}. Check DNS/private-IP filtering with your administrator. For an explicitly configured manual suffix, configure wildcard DNS or a hosts entry for this probe, then each preview hostname on its clients. No hosts fallback was applied.\n域名未解析到配置的局域网 IP。请检查 DNS/内网地址过滤；若选择手工后缀，配置通配 DNS 或探测名 hosts 记录，并为客户端配置各预览主机名。不会自动修改 hosts。\n{ACCESS_GUIDE}")
 
     def http_probe(self, address):
         request = urllib.request.Request(f"http://{address}:18080/",
@@ -615,6 +615,15 @@ class Installer:
         self.say("Installation complete: all 8 infrastructure/setup stages passed.",
                  "安装完成：8 个基础环境与配置阶段均已通过。")
         self.installation_progress()
+        self.say(f"Preview URL format: http://pm-r<repository_id>-pr<PR>.{self.c.suffix}:18080 (entry port, not application port).",
+                 f"预览地址格式：http://pm-r<repository_id>-pr<PR>.{self.c.suffix}:18080（入口端口，并非应用端口）。")
+        if self.c.domain_suffix == "auto":
+            self.say("Recommended sslip.io: open the ready preview URL from the allowed network; no hosts edits are needed when DNS resolves.",
+                     "推荐 sslip.io：在允许的网络中直接打开已就绪的预览 URL；DNS 正常时无需修改 hosts。")
+        else:
+            self.say("Manual suffix: each client needs wildcard DNS or a hosts entry for the exact preview hostname before opening its URL.",
+                     "手工后缀：每台客户端需先配置通配 DNS 或该预览完整主机名的 hosts 记录，再打开 URL。")
+        self.say(f"Installation → open preview: {ACCESS_GUIDE}", f"安装完成 → 打开预览：{ACCESS_GUIDE}")
         for source in self.c.sources:
             if self.source_status.get(source.repository) == "merged":
                 self.say(f"{source.repository}: notification merged; test PR verification remains.",

@@ -10,7 +10,8 @@ import re
 import socket
 import subprocess
 
-from setup_config import SetupError, RFC1918, atomic_write, load_config, validate_repo
+from setup_config import (ACCESS_GUIDE, SetupError, RFC1918, atomic_write, load_config,
+                          validate_domain_suffix, validate_repo)
 
 
 def safe(value):
@@ -196,6 +197,11 @@ def run_wizard(path, root):
     print('Confirm the LAN address; VPN/container IPs may be unsuitable. WSL: Windows Settings > Network > IPv4; Ubuntu: Settings > Network / 请核对实际 LAN 地址，勿选 VPN/容器地址。')
     data['network'] = dict(lan_ip=choose('LAN IPv4', ips, private_ip),
                            allowed_subnet=ask('Allowed subnet / 允许网段', previous.subnet if previous else 'auto'))
+    print('Recommended: auto uses <LAN IPv4>.sslip.io; clients on the allowed network open the generated URL without hosts edits when DNS resolves / 推荐 auto：自动使用 sslip.io，DNS 正常时无需修改 hosts。')
+    print('Alternative: enter a custom DNS suffix and configure wildcard DNS or per-host hosts entries on each client; include previewmesh-check.<suffix> on this installer / 替代：填写手工后缀，并配置通配 DNS 或逐台客户端 hosts；安装机还需配置探测域名。')
+    print('Access guide / 访问指南: ' + ACCESS_GUIDE)
+    data['network']['domain_suffix'] = ask('Domain suffix / 域名后缀',
+                                          previous.domain_suffix if previous else 'auto', validate_domain_suffix)
     secrets = Path.home() / '.config/previewmesh/secrets'
     data['credentials'] = dict(dispatch_token_file=ask('Dispatch token FILE / 通知 Token 文件路径', previous.dispatch_file if previous else secrets / 'dispatch.token', token_location),
                                 ghcr_token_file=ask('GHCR token FILE / 镜像 Token 文件路径', previous.ghcr_file if previous else secrets / 'ghcr.token', token_location))
@@ -227,6 +233,8 @@ def run_wizard(path, root):
     print(f'\nReview / 确认摘要:\nConfiguration: {path}\nControl: {config.control}\nCheckout: {config.control_dir}\nTemplate: {config.public}\nLanguage: {config.language}\nLAN: {config.lan_ip}\nSubnet: {config.subnet}')
     for source in config.sources:
         print(f'Source: {source.repository}; checkout: {source.directory}; HTTP: {source.port}')
+    print(f'Preview URL format / 预览地址格式: http://pm-r<repository_id>-pr<PR>.{config.suffix}:18080')
+    print('18080 is the preview entry port; application HTTP ports remain separate / 18080 为预览入口端口，与应用 HTTP 端口不同。')
     print('Credentials: separate file references only; values never read / 凭据：仅保存独立文件引用，不读取凭据内容。')
     print(f'Dispatch token file: {config.dispatch_file}\nGHCR token file: {config.ghcr_file}')
     for source in config.sources:

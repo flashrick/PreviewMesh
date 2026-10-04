@@ -235,7 +235,7 @@ func loadPreviewStatus(read func(string, bool) ([]byte, error), repo, pr string,
 			s.State = "ready"
 			s.URL = r.URL
 			s.Explanation = "Current revision passed build, deployment, readiness and health checks at the recorded time; this query does not probe the preview."
-			s.NextAction = "Open the preview using the configured preview network and hostname mapping."
+			s.NextAction = "Open the preview URL from the allowed network; sslip.io needs no hosts edits when DNS resolves. For manual DNS/hosts or connection checks, see https://github.com/flashrick/PreviewMesh/blob/main/ops/install/access.md."
 		}
 	}
 	if s.State == "failure" {
@@ -308,6 +308,9 @@ func runStatus(args []string, out io.Writer) error {
 	}
 	if s.URL != "" {
 		fmt.Fprintln(out, "Preview URL:", s.URL)
+		// Point clients to the same DNS and network prerequisites as the installer.
+		fmt.Fprintln(out, "Open from the allowed preview network. sslip.io needs no hosts edits when DNS resolves; manual suffixes need client DNS/hosts configuration.")
+		fmt.Fprintln(out, "Access guide: https://github.com/flashrick/PreviewMesh/blob/main/ops/install/access.md")
 	} else {
 		fmt.Fprintln(out, "Preview URL: unavailable / expired")
 	}

@@ -253,7 +253,8 @@ func reportStatus(a api, r registration, pr, sha, status, description, target, r
 		body += "\n" + statusrecord.Marker + string(data) + " -->\n"
 	}
 	if status == "success" && target != runURL {
-		body += fmt.Sprintf("\n[Open preview](<%s>)\n\nThis preview URL requires access to the preview network and its hostname mapping.\n", target)
+		// Keep PR readers on the same access instructions as installation and status.
+		body += fmt.Sprintf("\n[Open preview](<%s>)\n\nOpen from the allowed preview network. Recommended sslip.io addresses need no hosts edits when DNS resolves; manual suffixes require client DNS/hosts configuration. [Preview access guide](https://github.com/flashrick/PreviewMesh/blob/main/ops/install/access.md).\n", target)
 	}
 	commentErr := a.request("POST", "/repos/"+r.Source+"/issues/"+pr+"/comments", map[string]string{"body": body}, nil)
 	if commentErr != nil {

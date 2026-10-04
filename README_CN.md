@@ -53,7 +53,7 @@ flowchart LR
 
 `local` Job 通过 `runs-on: [self-hosted, Linux, X64, previewmesh]` 选择 Runner。安装器会在 K3s 所在机器上注册并启动 Runner，可在 private control 仓库的 **Settings → Actions → Runners** 中查看。GitHub 会把 build Job 输出的 `image` 和已确认的 commit SHA 传给这个 Job。[`scripts/local-attempt.sh`](scripts/local-attempt.sh) 再把完整的 digest 引用传给 `previewmesh deploy`；Kubernetes 使用由 `GHCR_READ_TOKEN` 生成的 Namespace 内 `ghcr-pull` Secret 从 GHCR 拉取镜像，之后 Helm 创建或更新 K3s 资源。
 
-部署后，local Job 检查应用的 `/health` 响应和实际提供的 commit SHA。`control status` 使用配置给 source 仓库的 Token 调用 GitHub 的 commit-status 和 PR comment API。等待中的或最终的 `PreviewMesh` 状态会链接到工作流运行页或预览地址，最终 PR 评论还会包含运行详情和 **Open preview** 链接。这个预览地址仍是本地/私有地址；查看 PR 的人必须能访问对应网络，并配置相应的 hosts 或 DNS 记录。
+部署后，local Job 检查应用的 `/health` 响应和实际提供的 commit SHA。`control status` 使用配置给 source 仓库的 Token 调用 GitHub 的 commit-status 和 PR comment API。等待中的或最终的 `PreviewMesh` 状态会链接到工作流运行页或预览地址，最终 PR 评论还会包含运行详情和 **Open preview** 链接。这个预览地址仍是本地/私有地址；域名、DNS 和 hosts 的统一访问方法见[预览访问说明](ops/install/access.md)。
 
 ## 安装
 
@@ -78,9 +78,12 @@ bash scripts/setup.sh init
 | Source 配置段 | 每个应用的 GitHub 仓库、本机目录、实际 HTTP 监听端口 |
 | Token 文件路径 | Source、通知和镜像读取 Token 各自的独立文件，放在 Git 仓库外；配置中不填写 Token 明文 |
 | 局域网 IP | Ubuntu 服务器的固定局域网 IPv4；WSL 填 **Windows 主机**的局域网 IPv4 |
+| 域名后缀 | `auto` 推荐使用 `<LAN_IP>.sslip.io`；也可以选择小写的内部 DNS 后缀 |
 | 输出语言 | `auto` 跟随系统，`zh-CN` 为中文，`en` 为英文 |
 
 保存前，向导会显示仓库、目录、局域网地址、端口和 Token 文件路径等非敏感摘要。请审核后确认保存；在任意提示输入 `q` 都会退出且不写入配置。已有配置时，向导会先询问是否载入并审核，再决定是否替换。
+
+向导默认使用 `domain_suffix = auto`，将选定的局域网地址与 `sslip.io` 组合。若使用内部 DNS 或 hosts 替代方案，请选择小写的手工后缀，并按[预览访问说明](ops/install/access.md)配置。向导和安装器都不会打印 Token 内容。
 
 如果只需要带注释的配置文件，可显式使用模板模式：
 
@@ -145,7 +148,7 @@ bash scripts/setup.sh doctor --config /配置文件路径/setup.ini
 
 安装器负责基础环境，不会改写应用或证明应用的运行行为。第一个真实 PR 会验证镜像权限、应用兼容性和实际提供的 SHA；关闭或合并该 PR 后，再确认 control 工作流已删除预览。
 
-预览链接类似 `http://pm-r123-pr4.192.168.1.20.sslip.io:18080`。[sslip.io](https://nip.io/) 会将域名解析为其中的局域网 IP，因此同事无需为每个预览修改 hosts。这依赖外部 DNS；公司网络若拦截内网 IP 的解析结果，安装器会明确停止并解释，不会暗中更换网络方案。使用局域网 IP 不会把预览公开到互联网。还需让同事从另一台局域网机器实际检查访问。
+[预览访问说明](ops/install/access.md)是从安装完成到打开 URL 的统一入口。推荐的 `domain_suffix = auto` 使用 `<LAN_IP>.sslip.io`，DNS 检查通过后不需要为每个预览添加 hosts。小写手工后缀支持内部通配 DNS 或明确的 hosts 替代方案；入口中说明探测条目、每个 PR 的条目、`18080` 端口和 `/health` 验证。如果局域网地址或后缀发生变化，请重新安装并重新部署开放的 PR，旧 URL 不会自动迁移。
 
 ### 检查和恢复
 
@@ -162,7 +165,7 @@ root 管理的后台维护服务每五分钟检查一次 Runner 的 Kubernetes �
 
 `doctor` 会区分“基础环境就绪”和“source 通知文件尚待发布”；基础环境检查通过不代表已经成功部署过真实预览。已有手工安装可以保留登记及 Secret 名称；接入新安装器前，先更新旧版 control 代码。
 
-需要底层操作说明时，参见[手工安装参考](ops/install/manual_CN.md)。手工流程保留旧的 `preview.test` 默认域名。
+需要底层操作说明时，参见[手工安装参考](ops/install/manual_CN.md)。两种安装路径都使用[预览访问说明](ops/install/access.md)统一处理域名、端口和验证。
 
 ## 更新 private control 仓库
 
@@ -217,7 +220,7 @@ Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些
 
 ## CLI 说明
 
-可信域名后缀依次由 `--domain-suffix` 参数、`PREVIEWMESH_DOMAIN_SUFFIX` 环境变量、默认值 `preview.test` 决定。安装器会在 control 保存此变量。显式指定的 `--hostname` 仍必须匹配仓库/PR 身份与该后缀。
+直接使用 CLI 时，可信域名后缀依次由 `--domain-suffix`、`PREVIEWMESH_DOMAIN_SUFFIX` 和旧版默认值 `preview.test` 决定。安装器推荐 `domain_suffix = auto`，解析为 `<LAN_IP>.sslip.io`；也支持小写手工后缀。直接 CLI 的旧默认值仍要求匹配的 DNS 或 hosts 配置，不是安装器推荐方案。显式指定的 `--hostname` 仍必须匹配仓库/PR 身份与该后缀。URL 生成及 DNS/hosts 验证见[预览访问说明](ops/install/access.md)。
 
 `control resolve` 只验证登记文件，不访问 GitHub。`control inspect` 检查当前 PR、Fork 状态和作者权限。`control status` 写入 `PreviewMesh` commit status。
 
@@ -260,8 +263,8 @@ Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些
 | 没有状态或 PR 评论 | 检查 `source_secret` 对应的 Token、Commit statuses 和 Pull requests 写权限，以及运行摘要中的回写错误。 |
 | Kubernetes 返回 Unauthorized 或无法读取配置 | 检查 Runner 服务环境中的 `KUBECONFIG`、文件归属和 Token 有效期。先运行 `setup.sh doctor` 并检查 `previewmesh-maintenance.service`；手工安装可按[Runner 说明](ops/install/manual_CN.md#5-配置-k3s-和-runner)续期。 |
 | 镜像推送或拉取失败 | 推送失败时检查 control 工作流对 Package 的写权限，尤其是已存在的 Package；拉取失败时检查 classic `GHCR_READ_TOKEN`、其用户的 Package 读取权限，以及预览 Namespace 中的 `ghcr-pull` Secret。 |
-| 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress 状态中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后检查 Runner 的 DNS/hosts、Traefik 路由和 `/health`。响应必须包含 `status: ok` 和预期的 `PREVIEW_COMMIT_SHA`。 |
-| Runner 验证通过，但浏览器打不开 | 运行安装器的 doctor 命令，检查浏览器所在机器的 DNS 和局域网连接。 |
+| 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress 状态中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后按[预览访问说明](ops/install/access.md)检查配置的 DNS/hosts 探测、生成的 URL 和 `/health`。 |
+| Runner 验证通过，但浏览器打不开 | 从浏览器所在机器按[预览访问说明](ops/install/access.md)检查，再运行 `setup.sh doctor`。如果局域网地址或后缀改变，请重新安装并重新部署开放的 PR；旧 URL 不会迁移。 |
 | PR 关闭后预览仍存在 | 找到 `closed` 通知并等待对应 control 运行完成。如果通知失败，修复后手动触发这个已关闭 PR，重试清理。 |
 | 更新工作流无法创建 PR | 检查更新章节中的 Actions PR 创建权限，或者自行推送生成的分支并创建 PR。 |
 

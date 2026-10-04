@@ -2,6 +2,8 @@
 
 [Guided installer](../../README.md#install)
 
+[Preview access guide](access.md)
+
 This document is the manual path. The guided `install` command may prepare a local source notification file, but it does not commit, push, create or merge source changes. For the guided onboarding flow, run `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO`; its default mode shows the complete diff only, and `--create-pr` is the explicit reviewed-PR mode. The manual steps below remain available when you want to copy and edit the workflow yourself.
 
 ## Requirements
@@ -366,15 +368,24 @@ Each source image is published as `ghcr.io/OWNER/previewmesh-cCONTROL_REPOSITORY
 
 ### 7. Configure ingress and source notifications
 
-A preview uses a hostname such as `pm-r123456789-pr12.preview.test`, built from the source repository ID and PR number. Both the runner and the browser need to reach Traefik using that hostname. The `.test` name does not resolve automatically; step 8 shows where to add the hosts entry once you know the PR number.
+Choose the address scheme before running the preview steps. The [preview access guide](access.md) is canonical. The guided installer is the recommended path for a LAN address and `domain_suffix = auto` with `sslip.io`; this manual reference keeps the socket entry on `127.0.0.1` and is a local hosts-file alternative. The source repository ID and PR number are inserted into the hostname by the deployment flow. This manual path does not configure LAN forwarding, so it cannot prove that a second LAN machine can reach the preview.
+
+Set the suffix in the control repository before a workflow uses it. The legacy `preview.test` value is suitable for the local hosts alternative below; replace it with another lowercase suffix only when you manage its DNS or hosts entries. This manual path has no setup.ini or installer `doctor` checkpoint:
+
+```bash
+export PREVIEWMESH_DOMAIN_SUFFIX=preview.test
+# For a private DNS zone or another local suffix, replace the value above.
+gh variable set PREVIEWMESH_DOMAIN_SUFFIX --repo "$CONTROL_REPOSITORY" \
+  --body "$PREVIEWMESH_DOMAIN_SUFFIX"
+```
 
 #### Set up the HTTP entry point
 
-PreviewMesh uses host port `18080` for preview URLs and health checks. The proxy still connects to Traefik on its internal port `80`; the application port in `config/repositories.json` is separate. Hosts entries contain only the hostname, without a port.
+PreviewMesh uses host port `18080` for preview URLs and health checks. The proxy still connects to Traefik on its internal port `80`; the application port in `config/repositories.json` is separate. A hosts entry maps an IP address to a complete hostname and contains no port. Follow the [preview access guide](access.md) for the probe and per-PR entries.
 
 Before installing the proxy, run `ss -ltn 'sport = :18080'` in WSL and `Get-NetTCPConnection -LocalPort 18080 -State Listen -ErrorAction SilentlyContinue` in Windows PowerShell. Neither should show a listener. If the port is occupied, resolve the conflict before continuing.
 
-On a Linux server with a working Traefik entry point on port 18080, use that server's reachable IP for DNS or hosts entries and continue to the notification setup below.
+This manual socket configuration listens on `127.0.0.1:18080`. Use it only when the Runner and browser can use that loopback entry, and map the generated hostname to `127.0.0.1` on each such machine. For LAN access through `sslip.io`, stop here and use the guided installer, which configures the LAN entry and its checks.
 
 For K3s inside WSL with a browser on Windows, the included socket proxy forwards port 18080 on WSL's loopback address to Traefik. This requires systemd in WSL, `/usr/lib/systemd/systemd-socket-proxyd`, a free local port 18080, and working [Windows-to-WSL localhost access](https://learn.microsoft.com/en-us/windows/wsl/networking). If the executable check fails, install your distribution's package providing `systemd-socket-proxyd` before continuing.
 
@@ -463,13 +474,17 @@ git push -u origin preview/demo
 
 On GitHub, choose **Pull requests → New pull request**. Set **base** to the source default branch (`main` in this example) and **compare** to `preview/demo`. Check that GitHub shows the same source repository on both sides, then create the PR. Use an account with write access. The PR tells PreviewMesh which application revision to build. Once the step 7 notification workflow is on the source default branch and Actions is enabled, opening it sends the preview request automatically.
 
-In the control checkout, reuse the repository variables from setup and replace `123` with the actual PR number. These variables are needed even when the workflow starts automatically:
+In the control checkout, reuse the repository variables from setup and set the actual PR number and configured suffix. These variables are needed even when the workflow starts automatically:
 
 ```bash
 cd "$CONTROL_DIR"
-export PR_NUMBER=123
+export PR_NUMBER=YOUR_PR_NUMBER
+export REPOSITORY_ID="$(gh repo view "$SOURCE_REPOSITORY" --json databaseId --jq '.databaseId')"
 export PREVIEW_NAMESPACE="pm-r${REPOSITORY_ID}-pr${PR_NUMBER}"
-export PREVIEW_HOST="${PREVIEW_NAMESPACE}.preview.test"
+export PREVIEWMESH_DOMAIN_SUFFIX="$(gh variable get PREVIEWMESH_DOMAIN_SUFFIX --repo "$CONTROL_REPOSITORY" --json value --jq '.value')"
+test -n "$PREVIEWMESH_DOMAIN_SUFFIX"
+export PREVIEW_DOMAIN_SUFFIX="$PREVIEWMESH_DOMAIN_SUFFIX"
+export PREVIEW_HOST="${PREVIEW_NAMESPACE}.${PREVIEW_DOMAIN_SUFFIX}"
 go run ./cmd/control resolve \
   --repository-id "$REPOSITORY_ID" \
   --source-repository "$SOURCE_REPOSITORY" \
@@ -479,13 +494,7 @@ gh api "repos/$SOURCE_REPOSITORY/pulls/$PR_NUMBER" \
 printf 'Preview hostname: %s\n' "$PREVIEW_HOST"
 ```
 
-Confirm `resolve` accepts the registration, the PR is `open`, and both `base` and `head` name your source repository. Add the printed hostname to DNS or hosts on both the runner machine and the browser machine. For the WSL localhost setup, use this form with your actual hostname:
-
-```text
-127.0.0.1 pm-r123456789-pr12.preview.test
-```
-
-Edit `/etc/hosts` in WSL with `sudoedit /etc/hosts`. On Windows, open an editor as Administrator and edit `C:\Windows\System32\drivers\etc\hosts`. For a remote Linux server, use its reachable Traefik IP instead of `127.0.0.1`. Hosts files need one entry per preview; they do not support wildcard hostnames.
+Confirm `resolve` accepts the registration, the PR is `open`, and both `base` and `head` name your source repository. Then follow the [preview access guide](access.md) for the local manual mapping: where the socket is reachable, add the generated full hostname with `127.0.0.1` on each hosts file. Hosts files need one entry per preview and do not support wildcard hostnames.
 
 Look in the source repository's Actions tab for **Notify PreviewMesh**, then in the control repository for **PreviewMesh lifecycle**. A successful notification only means the request was sent. Wait for the control run to finish before checking the app.
 
