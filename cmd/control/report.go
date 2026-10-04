@@ -2,21 +2,24 @@ package main
 
 import (
 	"fmt"
+	"previewmesh/internal/statusrecord"
 	"strings"
 )
 
 // reportEvidence contains only the observations intended for PR feedback.
 type reportEvidence struct {
-	Build                string            `json:"-"`
-	Runtime              map[string]string `json:"runtime"`
-	HTTPStatus           int               `json:"http_status"`
-	HTTPVerification     string            `json:"http_verification"`
-	RequestedSHA         string            `json:"requested_sha"`
-	ServedSHA            string            `json:"served_sha"`
-	RevisionVerification string            `json:"revision_verification"`
-	FailedStage          string            `json:"failed_stage"`
-	Rollback             string            `json:"rollback"`
-	Cleanup              string            `json:"cleanup"`
+	Build                string                `json:"-"`
+	Runtime              map[string]string     `json:"runtime"`
+	HTTPStatus           int                   `json:"http_status"`
+	HTTPVerification     string                `json:"http_verification"`
+	RequestedSHA         string                `json:"requested_sha"`
+	ServedSHA            string                `json:"served_sha"`
+	RevisionVerification string                `json:"revision_verification"`
+	FailedStage          string                `json:"failed_stage"`
+	Rollback             string                `json:"rollback"`
+	Cleanup              string                `json:"cleanup"`
+	Result               string                `json:"result"`
+	StageTimings         []statusrecord.Timing `json:"stage_timings"`
 }
 
 // markdown uses explicit unknowns so missing evidence never looks successful.

@@ -221,6 +221,22 @@ The trusted DNS suffix is selected by the `--domain-suffix` flag, then `PREVIEWM
 
 `control resolve` validates a registration without calling GitHub. `control inspect` rechecks the current PR, fork status, and author permission. `control status` writes the `PreviewMesh` commit status.
 
+### Query a preview by pull request
+
+Use the `previewmesh status` command when you have only the source repository and PR number:
+
+```bash
+previewmesh status --repo OWNER/REPO --pr 123
+previewmesh status --repo OWNER/REPO --pr 123 --json
+previewmesh status --repo OWNER/REPO --pr 123 --max-age 24h
+```
+
+The command is read-only. It uses an authenticated `gh` CLI session (`gh auth login`) to read the PR's current state and head SHA, the `PreviewMesh` commit status for that SHA, and the structured feedback attached to the PR. It does not need the PreviewMesh registry, Kubernetes access, GHCR credentials or deployment credentials. `--max-age` controls how long recorded health evidence remains usable; it defaults to 24 hours. The command reports a historical observation and does not probe the preview URL or perform a live health check.
+
+The result combines build, deployment, readiness, health, cleanup, evidence and available timing information. A `ready` result requires complete structured evidence for the current head SHA: a successful build, deployment and readiness check, HTTP 200 with the expected `status: ok` and commit revision, matching requested and served revisions, and a preview URL that matches the current status. Missing or legacy unstructured feedback is reported as missing, and old evidence is reported as expired; neither case supplies a usable URL. A pending attempt is `running`, while an unsuccessful attempt identifies the failed stage when the evidence provides it and links to the PR or workflow evidence for the next check.
+
+Closed or merged PRs never receive a live preview URL from this query. After closure, the result can remain `running`, `missing`, `failure` or `expired` while cleanup evidence is pending, unavailable or unsuccessful; only a post-closure status that confirms the preview is absent reports `removed`. A repository or PR that cannot be found or read produces an actionable GitHub access/error message. Use `--json` when automation needs the same state fields without parsing the human-readable output.
+
 When it has enough PR information to report a result, the workflow attempts to post a comment to the source PR, including its commit SHA, deployment status, and workflow run link. A verified deployment also includes an **Open preview** link. Build/deployment failures, superseded revisions, and cleanup results do not advertise a live preview. Pending builds appear in the PR's `PreviewMesh` status check. Each result is a new comment; reruns can add another comment for the same commit.
 
 `control status --comment --run-url <workflow-url>` enables result comments. The source token needs the **Pull requests: Read and write** and **Commit statuses: Read and write** permissions described in the configuration template. Both writes are attempted independently, and reporting failures are recorded without changing the deployment or cleanup outcome. Preview URLs still require the configured network access and DNS resolution; publishing a link does not expose the local environment publicly.

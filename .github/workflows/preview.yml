@@ -73,14 +73,13 @@ jobs:
           "$RUNNER_TEMP/control" inspect --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER"
       - name: Report pending attempt
         id: pending
-        if: steps.state.outputs.state == 'open'
         continue-on-error: true
         working-directory: control
         env:
           SOURCE_TOKEN: ${{ secrets[steps.registration.outputs.source_secret] }}
           ATTEMPT_SHA: ${{ steps.state.outputs.sha }}
         run: |
-          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state pending --description 'Building preview' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state pending --description 'Preview attempt queued' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - name: Check out exact source revision
         if: steps.state.outputs.state == 'open'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -118,7 +117,9 @@ jobs:
           ATTEMPT_SHA: ${{ steps.state.outputs.sha }}
           BUILD_STATE: ${{ steps.build.outcome }}
         run: |
-          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state failure --description 'Preview build or authorization failed' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --comment --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --build-state "$BUILD_STATE"
+          details=()
+          if [ -f evidence/build.json ]; then details+=(--result-file evidence/build.json); fi
+          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state failure --description 'Preview build or authorization failed' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --comment --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --build-state "$BUILD_STATE" "${details[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

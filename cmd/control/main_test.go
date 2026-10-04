@@ -47,6 +47,9 @@ func TestReportStatus(t *testing.T) {
 						t.Errorf("unexpected status: %v", payload)
 					}
 					w.WriteHeader(tc.statusCode)
+					if tc.statusCode >= 200 && tc.statusCode < 300 {
+						fmt.Fprint(w, `{"id":123}`)
+					}
 				case "/repos/owner/demo/issues/3/comments":
 					commentCalls++
 					body := payload["body"]

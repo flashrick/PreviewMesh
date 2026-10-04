@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"previewmesh/internal/statusrecord"
 	"regexp"
 	"strconv"
 	"strings"
@@ -220,7 +221,10 @@ func reportStatus(a api, r registration, pr, sha, status, description, target, r
 	if !validURL(target) || (comment && (!validURL(runURL) || status == "pending")) {
 		return errors.New("invalid reporting URL or nonterminal comment")
 	}
-	statusErr := a.request("POST", "/repos/"+r.Source+"/statuses/"+sha, map[string]string{"state": status, "context": "PreviewMesh", "description": description, "target_url": target}, nil)
+	var published struct {
+		ID int64 `json:"id"`
+	}
+	statusErr := a.request("POST", "/repos/"+r.Source+"/statuses/"+sha, map[string]string{"state": status, "context": "PreviewMesh", "description": description, "target_url": target}, &published)
 	if statusErr != nil {
 		statusErr = fmt.Errorf("commit status: %w", statusErr)
 	}
@@ -235,6 +239,19 @@ func reportStatus(a api, r registration, pr, sha, status, description, target, r
 		details = evidence[0]
 	}
 	body += details.markdown()
+	// Publish only allowlisted evidence, linked to the exact status so retries cannot mix.
+	if statusErr == nil && published.ID > 0 {
+		record := statusrecord.Record{StatusID: published.ID, Repository: r.Source, PR: pr, SHA: sha, State: status, RunURL: runURL,
+			Build: details.Build, Result: details.Result, Runtime: details.Runtime, HTTPStatus: details.HTTPStatus,
+			HTTPVerification: details.HTTPVerification, RequestedSHA: details.RequestedSHA, ServedSHA: details.ServedSHA,
+			RevisionVerification: details.RevisionVerification, FailedStage: details.FailedStage, Rollback: details.Rollback,
+			Cleanup: details.Cleanup, StageTimings: details.StageTimings}
+		if status == "success" && target != runURL {
+			record.URL = target
+		}
+		data, _ := json.Marshal(record)
+		body += "\n" + statusrecord.Marker + string(data) + " -->\n"
+	}
 	if status == "success" && target != runURL {
 		body += fmt.Sprintf("\n[Open preview](<%s>)\n\nThis preview URL requires access to the preview network and its hostname mapping.\n", target)
 	}

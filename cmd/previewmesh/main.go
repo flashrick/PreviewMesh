@@ -123,7 +123,7 @@ func identity(repoID, pr string) (string, error) {
 func parse(args []string) (options, error) {
 	var o options
 	if len(args) == 0 {
-		return o, errors.New("usage: previewmesh build|deploy|verify|cleanup|cleanup-retry|cleanup-inspect [flags]")
+		return o, errors.New("usage: previewmesh status|build|deploy|verify|cleanup|cleanup-retry|cleanup-inspect [flags]")
 	}
 	o.command = args[0]
 	// Use the command name for clearer flag errors and help output.
@@ -760,6 +760,14 @@ func execute(o options) (result, error) {
 
 // main parses input, runs the command, and prints the structured result.
 func main() {
+	// Status needs only GitHub access, without deployment credentials or cluster tools.
+	if len(os.Args) > 1 && os.Args[1] == "status" {
+		if err := runStatus(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	o, err := parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
