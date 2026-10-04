@@ -64,7 +64,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_init_does_not_overwrite(self):
         destination = self.work / "new/setup.ini"
-        command = ["bash", str(ROOT / "scripts/setup.sh"), "init", "--config", str(destination)]
+        command = ["bash", str(ROOT / "scripts/setup.sh"), "init", "--template", "--config", str(destination)]
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(destination.stat().st_mode & 0o777, 0o600)

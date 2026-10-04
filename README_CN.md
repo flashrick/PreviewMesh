@@ -61,13 +61,15 @@ flowchart LR
 
 先下载并解压本仓库的 ZIP 到 Linux 用户目录，或在已有 Git 的机器上 clone。在该目录打开终端。公开模板目录和私有 control 目录必须分开。安装器会补齐 Git 等缺少的工具，因此下载 ZIP 的方式不要求预先安装 Git。
 
-### 1. 复制并填写配置模板
+### 1. 运行配置向导
 
 ```bash
 bash scripts/setup.sh init
 ```
 
-这会把[带逐项说明的模板](config/setup.example.ini)复制到 `~/.config/previewmesh/setup.ini`，并打印文件位置；不会覆盖已有文件。用编辑器打开它，填写：
+向导会从选定的 checkout 发现 GitHub remote、可用的局域网 IPv4 候选值，以及 Dockerfile `EXPOSE` 中声明的应用端口，并在展示端口前进行检查。没有候选值或候选不止一个时，会要求手动填写或选择，不会静默猜测。WSL 客户端无法从 guest 自动判断 Windows 主机的局域网地址，因此出现提示时请手动填写 Windows 地址。
+
+向导会分开收集普通配置和 Token 文件路径。不要把 Token 粘贴到向导中；配置文件只保存类似下面的文件引用：
 
 | 配置 | 填什么 |
 | --- | --- |
@@ -78,7 +80,15 @@ bash scripts/setup.sh init
 | 局域网 IP | Ubuntu 服务器的固定局域网 IPv4；WSL 填 **Windows 主机**的局域网 IPv4 |
 | 输出语言 | `auto` 跟随系统，`zh-CN` 为中文，`en` 为英文 |
 
-每增加一个应用，复制一份 `[source:名称]` 配置段即可。模板逐项说明用途和填写示例。仓库 ID、Secret 名称、内部服务地址等由安装器自动获取。
+保存前，向导会显示仓库、目录、局域网地址、端口和 Token 文件路径等非敏感摘要。请审核后确认保存；在任意提示输入 `q` 都会退出且不写入配置。已有配置时，向导会先询问是否载入并审核，再决定是否替换。
+
+如果只需要带注释的配置文件，可显式使用模板模式：
+
+```bash
+bash scripts/setup.sh init --template
+```
+
+它会把[带逐项说明的模板](config/setup.example.ini)复制到 `~/.config/previewmesh/setup.ini`，不会覆盖已有文件。编辑后，安装时继续使用同一个配置路径。
 
 ### 2. 执行安装
 

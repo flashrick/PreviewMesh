@@ -735,10 +735,17 @@ def main():
     parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor"), default="install")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--verbose", action="store_true", help="Show redacted tool output / 显示脱敏工具输出")
+    parser.add_argument("--template", action="store_true", help="init: copy a template instead of the interactive wizard / 仅复制配置模板")
     args = parser.parse_args()
+    if args.template and args.command != "init":
+        parser.error("--template requires init / --template 仅用于 init")
     installer = None
     try:
         if args.command == "init":
+            if not args.template:
+                from setup_wizard import run_wizard
+                run_wizard(args.config, ROOT)
+                return 0
             path = args.config.expanduser().absolute()
             if path.exists() or path.is_symlink():
                 raise SetupError(f"Already exists; edit this file / 文件已存在，请直接编辑: {path}")

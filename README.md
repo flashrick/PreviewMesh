@@ -61,13 +61,15 @@ Use **Ubuntu 22.04 or 24.04 x64**, including those distributions on **WSL2 with 
 
 Download and extract this repository's ZIP into your Linux home directory, or clone it if Git is installed. Open a terminal in that directory. The public template directory and private control directory must be different. Git and other missing tools can be installed by the installer, so downloading the ZIP does not require a Git installation.
 
-### 1. Copy the configuration template
+### 1. Run the configuration wizard
 
 ```bash
 bash scripts/setup.sh init
 ```
 
-This copies the [commented template](config/setup.example.ini) to `~/.config/previewmesh/setup.ini` and prints its location. Existing configuration is never overwritten. Open that file in your editor and fill in:
+The wizard discovers GitHub remotes in the selected checkouts, private LAN IPv4 candidates and application ports declared by `Dockerfile` `EXPOSE` lines. It checks each port before presenting it. When discovery returns no value or more than one candidate, it asks you to enter or select a value instead of choosing silently. WSL cannot identify the Windows host's LAN address from the guest, so enter that address manually when prompted.
+
+The wizard collects ordinary settings and token file paths separately. Never paste a token into the wizard; it only writes references such as these:
 
 | Setting | What to enter |
 | --- | --- |
@@ -78,7 +80,15 @@ This copies the [commented template](config/setup.example.ini) to `~/.config/pre
 | LAN IP | The Ubuntu server's stable LAN IPv4, or the **Windows host's** LAN IPv4 when using WSL |
 | Language | `auto`, `en` or `zh-CN` |
 
-Add another `[source:name]` section for each application. Each option in the template explains its purpose and examples. Repository IDs, secret names and internal service addresses are discovered automatically.
+Before saving, it prints a non-sensitive summary of the repositories, directories, LAN address, ports and token file paths. Review it and confirm the save. Enter `q` at any prompt to leave without writing a configuration. If a configuration already exists, the wizard asks whether to load it for review before replacing it.
+
+If you need the commented file without running the wizard, use the explicit template mode:
+
+```bash
+bash scripts/setup.sh init --template
+```
+
+This copies the [commented template](config/setup.example.ini) to `~/.config/previewmesh/setup.ini` and never overwrites an existing file. You can then edit it and pass the same path to `install`.
 
 ### 2. Run the installer
 

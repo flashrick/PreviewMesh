@@ -92,12 +92,15 @@ class Config:
         return self.control_dir / "config/previewmesh-runner.yaml"
 
 
-def load_config(path, root):
+def load_config(path, root, *, content=None):
     path = Path(path).expanduser().resolve()
     parser = configparser.ConfigParser(interpolation=None, strict=True)
     try:
-        with path.open(encoding="utf-8") as stream:
-            parser.read_file(stream)
+        if content is None:
+            with path.open(encoding="utf-8") as stream:
+                parser.read_file(stream)
+        else:
+            parser.read_string(content)
     except FileNotFoundError:
         raise SetupError(f"Configuration missing / 缺少配置: {path}\nRun / 执行: bash scripts/setup.sh init")
     except configparser.Error:
