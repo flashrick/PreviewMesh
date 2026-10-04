@@ -24,6 +24,7 @@ import urllib.request
 from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, fingerprint, load_config,
                           merge_registry, read_token)
 from setup_downloads import download_archive, fetch, metadata, runner_release, tool_release
+from setup_resume import Checkpoints, REUSABLE
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path.home() / ".config/previewmesh/setup.ini"
@@ -38,7 +39,14 @@ class Installer:
         self.home = Path.home() / ".local/share/previewmesh"
         self.state_path = self.home / "install-state.json"
         self.log_path = self.home / "setup.log"
-        self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
+        try:
+            self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
+            if not isinstance(self.state, dict) or any(
+                    not isinstance(self.state.get(key, {}), dict)
+                    for key in ("stages", "completed", "files", "downloads")):
+                raise ValueError()
+        except (ValueError, OSError):
+            raise SetupError("Installation state is unreadable or damaged. Preserve the damaged file, inspect install-state.json.bak beside it, and restore that file if trusted, then rerun the same command. If no trusted backup exists, recover the ownership records from this machine and control repository before continuing; do not discard them. / 安装状态无法读取或已损坏。请保留损坏文件，检查同目录 install-state.json.bak，确认可信后恢复并重跑同一命令；若无可信备份，请先根据本机及 control 仓库恢复资源归属记录，不要直接丢弃。")
         owner = self.state.get("control")
         if owner and owner != self.c.control and self.state.get("control_id"):
             raise SetupError("This account already manages another control repository / 本机账号已管理另一个 control 仓库。")
@@ -53,6 +61,8 @@ class Installer:
         self.pending = []
         self.source_status = {}
         self.completed_stages = []
+        self.stage_results = {}
+        self.checkpoints = Checkpoints(self, ROOT)
 
     def say(self, en, zh):
         print(zh if self.zh else en, flush=True)
@@ -64,6 +74,11 @@ class Installer:
 
     def save(self):
         self.state["control"] = self.c.control
+        # Keep a private last-known-good copy; never overwrite it with broken JSON.
+        if self.state_path.exists():
+            previous = self.state_path.read_text()
+            if isinstance(json.loads(previous), dict):
+                atomic_write(self.state_path.with_suffix(".json.bak"), previous)
         atomic_write(self.state_path, json.dumps(self.state, indent=2) + "\n")
 
     def run(self, args, *, cwd=None, input=None, env=None, check=True, timeout=300, interactive=False):
@@ -109,7 +124,19 @@ class Installer:
 
     def step(self, number, en, zh, action):
         self.say(f"\n[{number}/8] {en}", f"\n[{number}/8] {zh}")
+        inputs = self.checkpoints.inputs(number)
+        reuse, reason = self.checkpoints.assess(number, inputs)
+        self.stage_results[number] = ("reused" if reuse else "rerun", reason)
+        self.say(f"{'Reusing' if reuse else 'Running'}: {reason}",
+                 f"{'复用' if reuse else '重新执行'}：{reason}")
+        if reuse:
+            self.completed_stages.append((number, en, zh))
+            return
+        # Invalidate before side effects so an interrupted repair cannot retain success.
+        self.checkpoints.record(number, "running", inputs)
         action()
+        artifacts = self.checkpoints.artifacts(number) if number in REUSABLE else {}
+        self.checkpoints.record(number, "complete", self.checkpoints.inputs(number), artifacts)
         self.state.setdefault("completed", {})[str(number)] = int(time.time())
         self.save()
         self.completed_stages.append((number, en, zh))
@@ -636,9 +663,12 @@ class Installer:
         self.source_verification()
 
     def installation_progress(self):
-        # Only report checks completed in this run, not stale resume checkpoints.
+        # Include reuse only after current-run validation has succeeded.
         for number, en, zh in self.completed_stages:
             self.say(f"Completed [{number}/8]: {en}", f"已完成 [{number}/8]：{zh}")
+        for number, (result, reason) in self.stage_results.items():
+            self.say(f"Recovery [{number}/8]: {result}: {reason}",
+                     f"恢复结果 [{number}/8]：{'复用' if result == 'reused' else '重新执行'}：{reason}")
         if len(self.completed_stages) < 8:
             remaining = ", ".join(str(number) for number in range(len(self.completed_stages) + 1, 9))
             self.say(f"Installation incomplete. Stages still requiring completion: {remaining}. Source onboarding is not yet verified.",
@@ -767,7 +797,7 @@ class Installer:
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.log_path.touch(mode=0o600, exist_ok=True)
         self.log_path.chmod(0o600)
-        # One install per account; checkpoints are hints and every step rechecks reality.
+        # One install per account; validate checkpoints under the installation lock.
         with (self.home / "install.lock").open("w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

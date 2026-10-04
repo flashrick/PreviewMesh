@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline installer checks. Never access GitHub, sudo, a cluster, or Windows settings."""
 import contextlib
+import copy
 import io
 import json
 import os
@@ -15,6 +16,7 @@ import setup as installer
 import setup_config as config
 import setup_downloads as downloads
 import setup_maintenance as maintenance
+import setup_resume as resume
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +40,29 @@ class InstallerTests(unittest.TestCase):
     def instance(self):
         with patch.object(Path, "home", return_value=self.work):
             return installer.Installer(self.c, "check")
+
+    def checkpoint_inputs(self):
+        return {
+            "configuration": "configuration-digest",
+            "scripts": "scripts-digest",
+            "versions": {
+                "python": "3.12.3",
+                "git": {"version": "2.43.0", "output": "git-output", "binary": {"sha256": "git-binary", "mode": 0o755, "size": 4}},
+            },
+        }
+
+    def checkpoint_artifact(self, app, name="source"):
+        target = self.work / name / ".github/workflows/previewmesh-notify.yml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("workflow\n")
+        target.chmod(0o600)
+
+        def artifacts(number):
+            self.assertEqual(number, 7)
+            return {str(target): resume.file_record(target)}
+
+        app.checkpoints.artifacts = artifacts
+        return target
 
     def test_config_defaults_and_multiple_sources(self):
         self.assertEqual(self.c.domain_suffix, "auto")
@@ -148,6 +173,291 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(config.SetupError):
             resumed.managed(target, "third")
         self.assertEqual(target.read_text(), "user modification")
+
+    def test_checkpoint_reuses_verified_artifacts(self):
+        app = self.instance()
+        self.checkpoint_artifact(app)
+        inputs = self.checkpoint_inputs()
+        artifacts = app.checkpoints.artifacts(7)
+        app.checkpoints.record(7, "complete", copy.deepcopy(inputs), artifacts)
+
+        reusable, reason = app.checkpoints.assess(7, inputs)
+
+        self.assertTrue(reusable)
+        self.assertIn("verified", reason)
+
+    def test_checkpoint_rejects_missing_corrupt_permission_changed_and_symlink_artifacts(self):
+        scenarios = ("missing", "corrupt", "permissions", "symlink")
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                app = self.instance()
+                target = self.checkpoint_artifact(app, "source-" + scenario)
+                inputs = self.checkpoint_inputs()
+                app.checkpoints.record(7, "complete", copy.deepcopy(inputs),
+                                       app.checkpoints.artifacts(7))
+                if scenario == "missing":
+                    target.unlink()
+                elif scenario == "corrupt":
+                    target.write_text("tampered workflow\n")
+                elif scenario == "permissions":
+                    target.chmod(0o644)
+                else:
+                    replacement = target.with_name("replacement.yml")
+                    replacement.write_text("replacement\n")
+                    replacement.chmod(0o600)
+                    target.unlink()
+                    target.symlink_to(replacement)
+
+                reusable, reason = app.checkpoints.assess(7, inputs)
+
+                self.assertFalse(reusable)
+                self.assertIn("artifact", reason)
+
+    def test_checkpoint_rejects_configuration_script_and_dependency_changes(self):
+        app = self.instance()
+        self.checkpoint_artifact(app)
+        original = self.checkpoint_inputs()
+        app.checkpoints.record(7, "complete", copy.deepcopy(original),
+                               app.checkpoints.artifacts(7))
+        changes = {
+            "configuration": "new-configuration-digest",
+            "scripts": "new-scripts-digest",
+            "versions": {
+                "python": "3.12.3",
+                "git": {"version": "2.44.0", "output": "git-output", "binary": {"sha256": "git-binary", "mode": 0o755, "size": 4}},
+            },
+        }
+        for key, value in changes.items():
+            with self.subTest(key=key):
+                current = copy.deepcopy(original)
+                current[key] = value
+                reusable, reason = app.checkpoints.assess(7, current)
+                self.assertFalse(reusable)
+                expected = {
+                    "configuration": "configuration changed",
+                    "scripts": "installer or templates changed",
+                    "versions": "dependency versions changed",
+                }[key]
+                self.assertIn(expected, reason)
+
+    def test_checkpoint_records_dependency_version_and_binary_evidence(self):
+        app = self.instance()
+        tool_dir = self.work / "tools"
+        tool_dir.mkdir()
+        outputs = {
+            "git": "git version 2.43.0\n",
+            "go": "go version go1.25.1 linux/amd64\n",
+            "gh": "gh version 2.100.0 (2026-09-03)\n",
+            "helm": "v3.21.4+g813176c\n",
+        }
+        for name in outputs:
+            binary = tool_dir / name
+            binary.write_bytes((name + " binary").encode())
+            binary.chmod(0o755)
+        app.tool = lambda name: str(tool_dir / name) if name in outputs else None
+
+        def run(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, outputs[args[0]], "")
+
+        app.run = run
+        inputs = app.checkpoints.inputs(7)
+
+        for name, output in outputs.items():
+            with self.subTest(tool=name):
+                version = inputs["versions"][name]
+                self.assertIn("version", version)
+                self.assertIn("output", version)
+                self.assertIn("binary", version)
+                self.assertNotEqual(version["output"], output)
+                self.assertEqual(version["binary"]["size"], len((name + " binary").encode()))
+
+    def test_old_timestamp_does_not_skip_stage_and_running_checkpoint_cannot_resume(self):
+        app = self.instance()
+        inputs = self.checkpoint_inputs()
+        app.state["completed"] = {"7": 123}
+        app.checkpoints.inputs = lambda number: copy.deepcopy(inputs)
+        app.checkpoints.artifacts = lambda number: {}
+        called = []
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            app.step(7, "Stage", "阶段", lambda: called.append(True))
+
+        self.assertEqual(called, [True])
+        self.assertEqual(app.stage_results[7][0], "rerun")
+        self.assertIn("no verifiable checkpoint", output.getvalue())
+
+        app.state["stages"]["7"] = {
+            "schema": resume.SCHEMA,
+            "status": "running",
+            "inputs": copy.deepcopy(inputs),
+            "artifacts": {},
+        }
+        reusable, reason = app.checkpoints.assess(7, inputs)
+        self.assertFalse(reusable)
+        self.assertIn("interrupted", reason)
+
+    def test_cross_instance_resume_reuses_valid_stage_and_retries_interrupted_stage(self):
+        original = self.instance()
+        self.checkpoint_artifact(original, "cross-instance")
+        inputs = self.checkpoint_inputs()
+        original.checkpoints.record(7, "complete", copy.deepcopy(inputs),
+                                    original.checkpoints.artifacts(7))
+
+        resumed = self.instance()
+        self.checkpoint_artifact(resumed, "cross-instance")
+        resumed.checkpoints.inputs = lambda number: copy.deepcopy(inputs)
+        called = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            resumed.step(7, "Stage", "阶段", lambda: called.append(True))
+        self.assertEqual(called, [])
+        self.assertEqual(resumed.stage_results[7][0], "reused")
+
+        for interruption in (config.SetupError("failed"), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                failing = self.instance()
+                failing.checkpoints.inputs = lambda number: copy.deepcopy(inputs)
+                failing.checkpoints.artifacts = lambda number: {}
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(type(interruption)):
+                    failing.step(7, "Stage", "阶段", lambda interruption=interruption: (_ for _ in ()).throw(interruption))
+
+                next_run = self.instance()
+                next_run.checkpoints.inputs = lambda number: copy.deepcopy(inputs)
+                next_run.checkpoints.artifacts = lambda number: {}
+                reusable, reason = next_run.checkpoints.assess(7, inputs)
+                self.assertFalse(reusable)
+                self.assertIn("interrupted", reason)
+
+    def test_dynamic_stages_are_rechecked_instead_of_reused(self):
+        app = self.instance()
+        inputs = self.checkpoint_inputs()
+        app.state.setdefault("stages", {})
+        for number in (1, 3, 4, 5, 6, 8):
+            app.state["stages"][str(number)] = {
+                "schema": resume.SCHEMA,
+                "status": "complete",
+                "inputs": copy.deepcopy(inputs),
+                "artifacts": {},
+            }
+
+        for number in (1, 3, 4, 5, 6, 8):
+            with self.subTest(stage=number):
+                reusable, reason = app.checkpoints.assess(number, inputs)
+                self.assertFalse(reusable)
+                self.assertIn("live credentials or runtime state", reason)
+
+    def test_control_checkpoint_revalidation_restores_registrations(self):
+        app = self.instance()
+        app.control_id = "42"
+        control = app.c.control_dir
+        control.joinpath("config").mkdir(parents=True)
+        control.joinpath("config/repositories.json").write_text(json.dumps([
+            {"repository_id": "7", "source_repository": "owner/app",
+             "port": 8080, "source_secret": "SOURCE_REPO_7"},
+        ]))
+
+        def api(path, **kwargs):
+            if path == "repos/owner/control":
+                return {"private": True, "permissions": {"admin": True},
+                        "id": 42, "default_branch": "main"}
+            if path == "repos/owner/app":
+                return {"full_name": "owner/app", "permissions": {"admin": True}, "id": 7}
+            self.fail("unexpected API path: " + path)
+
+        def run(args, **kwargs):
+            path = Path(args[2])
+            operation = args[3:]
+            repository = "owner/control" if path == control else "owner/app"
+            if operation == ["remote", "get-url", "origin"]:
+                value = f"https://github.com/{repository}.git\n"
+            elif operation == ["branch", "--show-current"]:
+                value = "main\n"
+            elif operation == ["rev-parse", "HEAD"]:
+                value = "abc\n"
+            elif operation == ["ls-remote", "origin", "refs/heads/main"]:
+                value = "abc\trefs/heads/main\n"
+            elif operation == ["status", "--porcelain"]:
+                value = ""
+            else:
+                self.fail("unexpected git command: " + repr(args))
+            return subprocess.CompletedProcess(args, 0, value, "")
+
+        app.api = api
+        app.run = run
+        self.assertTrue(app.checkpoints.control_valid())
+        self.assertEqual(app.registrations, [{
+            "repository_id": "7", "source_repository": "owner/app",
+            "port": 8080, "source_secret": "SOURCE_REPO_7",
+        }])
+
+        def dirty_run(args, **kwargs):
+            if args[3:] == ["status", "--porcelain"]:
+                return subprocess.CompletedProcess(args, 0, " M config/repositories.json\n", "")
+            return run(args, **kwargs)
+
+        app.run = dirty_run
+        self.assertFalse(app.checkpoints.control_valid())
+
+    def test_remote_checkpoint_failure_uses_safe_reason(self):
+        app = self.instance()
+        inputs = self.checkpoint_inputs()
+        artifacts = {"control": {"sha256": "digest", "mode": 0o755, "size": 4}}
+        app.checkpoints.artifacts = lambda number: artifacts
+        app.checkpoints.record(2, "complete", copy.deepcopy(inputs), artifacts)
+        app.checkpoints.control_valid = lambda: (_ for _ in ()).throw(
+            config.SetupError("github_pat_sensitive-value"))
+
+        reusable, reason = app.checkpoints.assess(2, inputs)
+
+        self.assertFalse(reusable)
+        self.assertIn("validation failed", reason)
+        self.assertNotIn("github_pat_sensitive-value", reason)
+
+    def test_damaged_state_has_actionable_recovery_hint_without_echoing_values(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text('{"stages": "github_pat_sensitive-value"')
+
+        with patch.object(Path, "home", return_value=self.work), self.assertRaises(config.SetupError) as error:
+            installer.Installer(self.c, "check")
+
+        self.assertIn("install-state.json.bak", str(error.exception))
+        self.assertIn("rerun the same command", str(error.exception))
+        self.assertNotIn("github_pat_sensitive-value", str(error.exception))
+
+    def test_state_backup_is_last_valid_json_and_corruption_does_not_replace_it(self):
+        app = self.instance()
+        app.save()
+        app.state["marker"] = "second"
+        app.save()
+        backup = app.state_path.with_suffix(".json.bak")
+        backup_text = backup.read_text()
+
+        self.assertEqual(json.loads(backup_text), {"control": "owner/control"})
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+        app.state_path.write_text("broken state")
+        app.state["marker"] = "third"
+        with self.assertRaises(json.JSONDecodeError):
+            app.save()
+        self.assertEqual(backup.read_text(), backup_text)
+        self.assertEqual(app.state_path.read_text(), "broken state")
+
+    def test_recovery_summary_reports_reasons_without_credentials(self):
+        app = self.instance()
+        app.secrets = ["ghp_SYNTHETIC_SECRET"]
+        app.completed_stages = [(2, "Stage 2", "阶段 2")]
+        app.stage_results = {
+            2: ("reused", "artifacts, inputs and versions verified"),
+            7: ("rerun", "artifact missing, incomplete or changed"),
+        }
+
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            app.installation_progress()
+
+        text = output.getvalue()
+        self.assertIn("Recovery [2/8]: reused", text)
+        self.assertIn("Recovery [7/8]: rerun", text)
+        self.assertIn("artifact missing", text)
+        self.assertNotIn("ghp_SYNTHETIC_SECRET", text)
 
     def test_failure_does_not_mark_stage_completed(self):
         app = self.instance()

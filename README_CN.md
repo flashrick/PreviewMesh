@@ -105,7 +105,7 @@ bash scripts/setup.sh install
 
 WSL 安装期间，Windows 会请求管理员权限来配置局域网转发。当前连接需为“专用”或“域”网络；安装器不会关闭防火墙，也不会把“公用”网络自动改为受信任网络。
 
-某一步失败时，安装器会列出本次运行已完成的阶段、仍需完成的阶段和继续执行的准确命令。根据提示处理问题，再运行**同一条安装命令**；安装器会检查并复用已完成的资源，不会静默覆盖已有自定义工作流或配置。工具的详细输出会脱敏保存到仅当前用户可访问的 `~/.local/share/previewmesh/setup.log`；需要在终端查看时，加上 `--verbose`。
+某一步失败时，安装器会列出本次运行已完成的阶段、仍需完成的阶段和继续执行的准确命令。根据提示处理问题，再运行**同一条安装命令**。每个阶段都会记录在 `~/.local/share/previewmesh/install-state.json` 中，包括配置、安装脚本和依赖版本摘要，以及可验证的产物信息。只有这些校验通过才会复用阶段：control checkout 阶段和 source 通知阶段在文件及已发布版本仍匹配时可以复用；凭据、集群、Runner、网络和就绪检查阶段会重新向现场系统校验。产物、配置、脚本或依赖版本缺失、变化或损坏时，对应阶段会重新执行，并说明原因。上一次有效状态保存在 `install-state.json.bak`；如果状态文件无法读取，请保留原文件，检查该备份并在确认可信后恢复，再重跑命令。状态摘要只保存摘要值和元数据，不保存 Token 内容。安装器不会静默覆盖已有自定义工作流或配置。工具的详细输出会脱敏保存到仅当前用户可访问的 `~/.local/share/previewmesh/setup.log`；需要在终端查看时，加上 `--verbose`。
 
 ### 3. 创建经过审核的 source 接入 PR
 
@@ -159,7 +159,7 @@ bash scripts/setup.sh check
 bash scripts/setup.sh doctor
 ```
 
-所有命令都支持 `--config /配置文件路径/setup.ini`。换终端不需要重新 export 变量。更新配置或 Token 文件后重新执行 `install`。每个 Linux 账号管理一套安装，Windows 转发绑定对应的 WSL 发行版。
+所有命令都支持 `--config /配置文件路径/setup.ini`。换终端不需要重新 export 变量。更新配置或 Token 文件后重新执行 `install`；安装器会说明需要重新检查的阶段。每个 Linux 账号管理一套安装，Windows 转发绑定对应的 WSL 发行版。
 
 root 管理的后台维护服务每五分钟检查一次 Runner 的 Kubernetes 凭据，在接近**实际到期时间**时续期，同时刷新 Traefik 代理目标地址。写入受限 kubeconfig 前会放弃 root 权限；续期失败会保留原凭据。WSL NAT 转发会在 Windows 用户已登录且发行版正在运行时刷新，不会为了刷新转发而启动已停止的发行版。
 

@@ -105,7 +105,7 @@ You still complete browser login and create GitHub tokens. The installer shows e
 
 For WSL, approve the Windows administrator prompt to configure LAN forwarding. Windows must consider the connection Private or Domain; the installer does not disable firewall protection or change a Public connection into a trusted one.
 
-If a step fails, the installer prints the stages completed in that run, the stages still requiring completion, and the exact command to continue. Fix the reported problem and repeat the **same command**; completed resources are checked and reused. Existing custom workflows and configuration are protected from silent overwriting. Raw tool output is saved in a redacted, owner-only log at `~/.local/share/previewmesh/setup.log`; `--verbose` also shows it in the terminal.
+If a step fails, the installer prints the stages completed in that run, the stages still requiring completion, and the exact command to continue. Fix the reported problem and repeat the **same command**. Each stage is recorded in `~/.local/share/previewmesh/install-state.json` with configuration, installer-input and dependency summaries plus verifiable artifact details. A stage is reused only after those checks pass: the control checkout stage and source notification stage can be reused when their files and published revision still match; credentials, cluster, runner, network and readiness stages are checked again against live systems. Missing, changed or damaged artifacts, configuration, scripts or dependency versions cause that stage to run again, and the output gives the reason. The last valid state is kept in `install-state.json.bak`; if the state file is unreadable, preserve it, inspect that backup and restore a trusted copy before rerunning. State summaries contain digests and metadata rather than token values. Existing custom workflows and configuration are protected from silent overwriting. Raw tool output is saved in a redacted, owner-only log at `~/.local/share/previewmesh/setup.log`; `--verbose` also shows it in the terminal.
 
 ### 3. Create a reviewed source onboarding PR
 
@@ -199,7 +199,7 @@ bash scripts/setup.sh check
 bash scripts/setup.sh doctor
 ```
 
-All commands accept `--config /path/to/setup.ini`. You do not need to restore shell exports in a new terminal. Re-run `install` after updating configuration or token files. One installation is managed per Linux account; Windows forwarding is associated with its WSL distribution.
+All commands accept `--config /path/to/setup.ini`. You do not need to restore shell exports in a new terminal. Re-run `install` after updating configuration or token files; the installer will explain which stages must be rechecked. One installation is managed per Linux account; Windows forwarding is associated with its WSL distribution.
 
 The runner's short-lived Kubernetes credential is renewed by a root-owned maintenance service every five minutes **when renewal is due**, based on its actual expiry. The service also refreshes the Traefik proxy target. Root privileges are dropped before writing the restricted kubeconfig. Renewal failure retains the previous credential. WSL NAT forwarding refreshes while the Windows user is logged in and that distro is running; it does not start a stopped distro.
 
