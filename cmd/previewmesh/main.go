@@ -52,6 +52,7 @@ type options struct {
 
 // result is the structured outcome shared by the CLI and automation.
 type result struct {
+	Preflight            *preflightReport   `json:"preflight,omitempty"`
 	Namespace            string             `json:"namespace"`
 	RequestedSHA         string             `json:"requested_sha"`
 	ServedSHA            string             `json:"served_sha"`
@@ -123,7 +124,7 @@ func identity(repoID, pr string) (string, error) {
 func parse(args []string) (options, error) {
 	var o options
 	if len(args) == 0 {
-		return o, errors.New("usage: previewmesh status|build|deploy|verify|cleanup|cleanup-retry|cleanup-inspect [flags]")
+		return o, errors.New("usage: previewmesh preflight|status|build|deploy|verify|cleanup|cleanup-retry|cleanup-inspect [flags]")
 	}
 	o.command = args[0]
 	// Use the command name for clearer flag errors and help output.
@@ -380,6 +381,11 @@ func (x *runner) build() error {
 		}
 		if len(bytes.TrimSpace(b)) != 0 {
 			return errors.New("source checkout must be clean")
+		}
+		// Recheck this exact source before publishing any image; saved reports are never authorization.
+		x.r.Preflight, err = inspectApplication(abs, x.o.sha, x.o.port, x.o.timeout)
+		if err != nil {
+			return err
 		}
 		meta, err := os.CreateTemp("", "previewmesh-build-*.json")
 		if err != nil {
@@ -760,6 +766,13 @@ func execute(o options) (result, error) {
 
 // main parses input, runs the command, and prints the structured result.
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "preflight" {
+		if err := runPreflight(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Status needs only GitHub access, without deployment credentials or cluster tools.
 	if len(os.Args) > 1 && os.Args[1] == "status" {
 		if err := runStatus(os.Args[2:], os.Stdout); err != nil {

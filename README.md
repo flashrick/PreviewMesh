@@ -143,6 +143,46 @@ Your application needs a root Dockerfile that builds for linux/amd64, listens on
 {"status":"ok","commit_sha":"the value of PREVIEW_COMMIT_SHA"}
 ```
 
+#### Run the application preflight
+
+Build the CLI outside the source checkout, then run the preflight against a clean source checkout. The report file must also be outside that checkout: the check includes untracked and ignored files, so redirecting JSON into the source directory would make the checkout dirty during the check.
+
+```bash
+go build -o /tmp/previewmesh ./cmd/previewmesh
+SOURCE_DIR=/path/to/source
+PREFLIGHT_DIR=$(mktemp -d /tmp/previewmesh-preflight.XXXXXX)
+EXPECTED_SHA=$(git -C "$SOURCE_DIR" rev-parse HEAD)
+
+# Static checks only; Docker is not called by this command.
+/tmp/previewmesh preflight \
+  --source-dir "$SOURCE_DIR" \
+  --port 8080 \
+  --sha "$EXPECTED_SHA" \
+  > "$PREFLIGHT_DIR/static.json"
+```
+
+Replace `SOURCE_DIR` and `8080` with the source checkout and registered application port from your configuration.
+
+`--sha SHA` is optional; when omitted, the command checks the checkout's `HEAD`. A SHA must be the full lowercase Git commit ID. Static preflight checks the port range, Git root and revision, a clean checkout (including ignored files), the root Dockerfile and its final-stage `EXPOSE`/`USER` declarations, and source markers for `0.0.0.0`, `GET /health`, `PREVIEW_COMMIT_SHA`, and the `commit_sha` health field. These are source checks and heuristics. They cannot prove the listener, HTTP response, environment propagation, file permissions, or other runtime behavior.
+
+The JSON report records `source_sha`, `configuration_fingerprint`, `checked_at` (UTC), the port and contract, plus `static`, `container`, `deployment`, and `findings` fields. A `blocker` includes a repair direction and exits nonzero. A `warning` includes a repair direction and leaves static status as `passed_with_warnings`; the static-limit warning is always present because source scanning cannot prove runtime behavior. Review warnings before building. The report contains controlled diagnostics rather than source snippets or tool logs. Keep it outside the source checkout and treat its SHA, fingerprint, and timestamp as the identity of that check.
+
+To opt into a local runtime check, repeat the command with `--container-check`:
+
+```bash
+# Build and run a temporary local image/container; nothing is pushed or deployed.
+/tmp/previewmesh preflight \
+  --source-dir "$SOURCE_DIR" \
+  --port 8080 \
+  --sha "$EXPECTED_SHA" \
+  --container-check \
+  > "$PREFLIGHT_DIR/container.json"
+```
+
+This explicit mode builds and runs the application locally for `linux/amd64`, injects `PREVIEW_COMMIT_SHA`, publishes an ephemeral loopback-only port, and checks `/health`. The container runs as UID/GID `65532:65532` with all capabilities dropped and `no-new-privileges`; it is bounded to 512 MiB, one CPU and 128 processes. `--timeout` defaults to five minutes per external operation and `--http-timeout` to one minute for startup/health; both timeout values are recorded in `container_configuration` and included in the configuration fingerprint. If a static blocker is found first, Docker is not called and `container` is reported as `not_run_static_failed`. The temporary image and container are removed after the check. This validates local startup and health behavior only; it does not validate cluster networking, mounts, ingress, or a real deployment, and it never publishes an image or creates a preview.
+
+`previewmesh build` repeats the static inspection against the exact clean checkout before its Docker build and push. Pass the same `--port PORT` used by preflight (the default is `8080`) so the report matches the registered application port. Static blockers stop the build before publishing; static warnings are included in the build result for review. The build does not run the optional local container check automatically.
+
 The installer prepares infrastructure; it does not rewrite your application or prove its runtime behavior. The first real PR verifies image permissions, application compatibility and the exact served SHA. After closing or merging that PR, confirm the control workflow removes its preview.
 
 Preview links look like `http://pm-r123-pr4.192.168.1.20.sslip.io:18080`. [sslip.io](https://nip.io/) resolves the embedded private IP, so colleagues on the LAN do not need per-preview hosts entries. This relies on external DNS; if your network blocks private-IP DNS answers, installation stops with an explanation instead of silently changing the networking approach. A private IP does not make the preview publicly reachable. Ask a colleague to test from a second LAN machine too.
