@@ -74,15 +74,58 @@ function Invoke-WSL([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw 'WSL command failed. Run wsl --update in Windows, reopen Ubuntu and retry setup.' }
     return ($result -join [Environment]::NewLine)
 }
+function Get-WslNetworkMode {
+    $networkMode = (Invoke-WSL @('wslinfo', '--networking-mode')).Trim()
+    if ($networkMode -notin @('nat', 'mirrored')) {
+        throw "Unsupported WSL networking mode: $networkMode. Use NAT or mirrored networking."
+    }
+    return $networkMode
+}
+function Assert-MirroredHostAccess([string]$NetworkMode) {
+    if ($NetworkMode -ne 'mirrored') { return }
+    $settingsPath = Join-Path $env:USERPROFILE '.wslconfig'
+    $enabled = $false
+    $section = ''
+    # This setting lets Windows verify WSL through the same LAN address used by clients.
+    if (Test-Path -LiteralPath $settingsPath) {
+        foreach ($line in [IO.File]::ReadAllLines($settingsPath)) {
+            if ($line -match '^\s*\[([^\]]+)\]\s*(?:[#;].*)?$') {
+                $section = $Matches[1].Trim()
+            } elseif ($section -eq 'experimental' -and $line -match '^\s*hostAddressLoopback\s*=\s*([^#;]*)') {
+                $enabled = $Matches[1].Trim() -eq 'true'
+            }
+        }
+    }
+    if (-not $enabled) {
+        throw "WSL mirrored networking requires hostAddressLoopback=true for Windows to reach the preview through its LAN IPv4. In $settingsPath, add hostAddressLoopback=true under [experimental], preserving existing settings. Save work in all WSL distributions, run wsl --shutdown in Windows PowerShell (stops all distributions), reopen $Distro, then rerun the same setup.sh install command."
+    }
+}
+function Resolve-EntryAddresses([string]$Name) {
+    return @([System.Net.Dns]::GetHostAddresses($Name) | Where-Object AddressFamily -eq InterNetwork | ForEach-Object IPAddressToString | Select-Object -Unique)
+}
 function Test-Entry {
     $name = "previewmesh-check.$LanIP.sslip.io"
-    $addresses = @([System.Net.Dns]::GetHostAddresses($name) | Where-Object AddressFamily -eq InterNetwork | ForEach-Object IPAddressToString | Select-Object -Unique)
+    $addresses = @(Resolve-EntryAddresses -Name $name)
     if ($addresses.Count -ne 1 -or $addresses[0] -ne $LanIP) {
         throw "Windows DNS does not resolve $name to $LanIP. Ask your network administrator about private-IP DNS filtering."
     }
-    $status = & curl.exe --noproxy '*' --max-time 10 -sS -o NUL -w '%{http_code}' -H 'Host: previewmesh-ingress-check.invalid' "http://$($LanIP):18080/"
-    if ($LASTEXITCODE -ne 0 -or $status -ne '404') {
-        throw "Cannot reach Traefik at $($LanIP):18080 (expected 404). Check the network profile, firewall and WSL forwarding."
+    $errorPath = [IO.Path]::GetTempFileName()
+    try {
+        # A native stderr stream can throw before Windows PowerShell inspects curl's exit code.
+        $status = & curl.exe --noproxy '*' --max-time 10 -sS --stderr $errorPath -o NUL -w '%{http_code}' -H 'Host: previewmesh-ingress-check.invalid' "http://$($LanIP):18080/"
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0 -or $status -ne '404') {
+            $detail = [IO.File]::ReadAllText($errorPath).Trim()
+            $hint = 'Check the network profile, firewall and WSL forwarding.'
+            # Keep the primary HTTP failure if this secondary diagnostic probe fails.
+            try { $probeMode = Get-WslNetworkMode } catch { $probeMode = 'unknown' }
+            if ($probeMode -eq 'mirrored') {
+                $hint = 'For mirrored networking, ensure [experimental] hostAddressLoopback=true in %UserProfile%\.wslconfig and restart WSL after saving all WSL work (Windows PowerShell: wsl --shutdown). Also check the allowed subnet and Windows/Hyper-V firewall rules.'
+            }
+            throw "Cannot reach Traefik at $($LanIP):18080 (expected HTTP 404; actual HTTP $status; curl exit $exitCode). $detail $hint"
+        }
+    } finally {
+        Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
     }
     Write-Output 'PASS: Windows DNS and LAN entry. Ask a colleague to check from a second LAN machine too.'
 }
@@ -102,8 +145,9 @@ if (-not ($bytes[0] -eq 10 -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $by
 }
 if ($Mode -eq 'Check') { Test-Entry; exit 0 }
 if ($Mode -eq 'Install') {
-    # Check address/profile before UAC; they are checked again after elevation.
+    # Check LAN and mirrored prerequisites before UAC; recheck after elevation.
     [void](Get-LanInterface -Address $LanIP)
+    Assert-MirroredHostAccess -NetworkMode (Get-WslNetworkMode)
     Invoke-AdministratorSetup -ScriptPath $PSCommandPath
     exit 0
 }
@@ -120,8 +164,8 @@ if ($subnet -eq 'auto') {
     $subnet = ([System.Net.IPAddress]::new($networkBytes)).ToString() + '/' + $interface.PrefixLength
 }
 elseif ($subnet -notmatch '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') { throw 'Invalid allowed_subnet.' }
-$networkMode = (Invoke-WSL @('wslinfo', '--networking-mode')).Trim()
-if ($networkMode -notin @('nat', 'mirrored')) { throw "Unsupported WSL networking mode: $networkMode. Use NAT or mirrored networking." }
+$networkMode = Get-WslNetworkMode
+Assert-MirroredHostAccess -NetworkMode $networkMode
 if (Test-Path $configPath) {
     $saved = Get-Content -Raw $configPath | ConvertFrom-Json
     if ($saved.distro -ne $Distro) {

@@ -84,6 +84,30 @@ and the entry checks run.
 或手动填写当前地址，然后重新运行原来那条 `install` 命令。这样会在配置 Windows 转发
 和入口检查前更新保存的地址。
 
+For **mirrored** WSL, if the Windows check can reach `127.0.0.1:18080` but the
+configured Windows LAN address reports an HTTP status of `000` or a nonzero curl
+exit, merge this setting into `%UserProfile%\.wslconfig` while preserving its
+other settings:
+
+    [experimental]
+    hostAddressLoopback=true
+
+Save work in WSL, run `wsl --shutdown` from Windows PowerShell (this stops all
+WSL distributions), reopen Ubuntu, and rerun the same `install` command with the
+same configuration. This setting is for mirrored mode; keep the existing
+networking settings when using NAT.
+
+对于 **mirrored** WSL，如果 Windows 检查可以访问 `127.0.0.1:18080`，但配置的 Windows
+局域网地址返回 HTTP `000` 或 curl 非零退出码，请在 `%UserProfile%\.wslconfig` 中合并下面的
+设置并保留其他已有设置：
+
+    [experimental]
+    hostAddressLoopback=true
+
+先保存 WSL 中的工作，再在 Windows PowerShell 执行 `wsl --shutdown`（会停止所有 WSL 发行版），
+重新打开 Ubuntu，然后使用相同配置重新运行同一条 `install` 命令。此设置只适用于 mirrored
+模式；使用 NAT 时保留现有网络设置。
+
 Windows must classify the active connection as **Private** or **Domain**. On a
 trusted home or office LAN only, open **Settings → Network & Internet → the
 active connection → Properties**, set **Network profile** to **Private**, and

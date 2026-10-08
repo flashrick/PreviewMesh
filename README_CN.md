@@ -465,6 +465,7 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 | 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress status 中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后按[预览访问说明](ops/install/access.md)检查配置的 DNS/hosts 探测、生成的 URL 和 `/health`。 |
 | Traefik 自定义配置不匹配 | 修改前先查看现有对象：`sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get helmchartconfig traefik --ignore-not-found -o yaml`。安装器遇到未识别字段时会在 apply 前停止；审核并处理后重新运行同一条 `install` 命令。 |
 | WSL 局域网入口提示配置的地址不存在或已变化 | 执行 `bash scripts/setup.sh init`，选择 WSL，确认向导重新发现的 Windows 主机局域网 IPv4，或手动填写当前地址，然后重新运行原来那条 `install` 命令。 |
+| Mirrored WSL 可以访问 loopback，但不能访问 Windows 局域网地址 | 在 `%UserProfile%\.wslconfig` 中合并下面的设置并保留已有设置：`[experimental]` 和 `hostAddressLoopback=true`。保存 WSL 中的工作后，在 Windows PowerShell 执行 `wsl --shutdown`（会停止所有发行版），重新打开 Ubuntu，再运行同一条 `install` 命令。此设置只适用于 mirrored 模式。 |
 | Windows 报告当前网络为“公用” | 仅在可信的家庭或办公局域网中，打开 Windows **设置 → 网络和 Internet → 当前连接 → 属性**，将**网络配置文件**设为**专用**，再重新运行同一条 `install` 命令。安装器支持“专用”和“域”网络，不会自动把“公用”网络改为受信任网络，也不会削弱防火墙保护。 |
 | Windows 管理员步骤失败 | 查看终端显示的提权子进程错误，并查看 `~/.local/share/previewmesh/setup.log` 中的脱敏日志。按提示处理地址、网络 Profile、WSL 或转发问题后，重新运行同一条 `install` 命令。 |
 | Runner 验证通过，但浏览器打不开 | 从浏览器所在机器按[预览访问说明](ops/install/access.md)检查，再运行 `setup.sh doctor`。如果局域网地址或后缀改变，请重新安装并重新部署开放的 PR；旧 URL 不会迁移。 |
