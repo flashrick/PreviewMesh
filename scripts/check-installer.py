@@ -779,7 +779,17 @@ class InstallerTests(unittest.TestCase):
             config.atomic_write(path, path.name + "-synthetic")
         calls = []
         def run(args, **kwargs):
+            args = [str(item) for item in args]
             calls.append((args, kwargs.get("input")))
+            if args[:2] == ["gh", "api"]:
+                path = args[-1]
+                if path == "repos/owner/app":
+                    return subprocess.CompletedProcess(args, 0, '{"default_branch":"main"}', "")
+                if path == "repos/owner/app/commits/main/statuses?per_page=1":
+                    return subprocess.CompletedProcess(args, 0, "[]", "")
+                if path == "repos/owner/control/actions/workflows":
+                    return subprocess.CompletedProcess(args, 0, "{}", "")
+                self.fail("unexpected secret validation API path: " + path)
             return subprocess.CompletedProcess(args, 0, "{}", "")
         app.run = run
         with contextlib.redirect_stdout(io.StringIO()):
@@ -789,12 +799,159 @@ class InstallerTests(unittest.TestCase):
                                   ("PREVIEWMESH_DISPATCH_TOKEN", "owner/app", "dispatch.token-synthetic"),
                                   ("GHCR_READ_TOKEN", "owner/control", "ghcr.token-synthetic")])
         def failing(args, **kwargs):
+            args = [str(item) for item in args]
+            if args[:2] == ["gh", "api"]:
+                path = args[-1]
+                if path == "repos/owner/app":
+                    return subprocess.CompletedProcess(args, 0, '{"default_branch":"main"}', "")
+                if path == "repos/owner/app/commits/main/statuses?per_page=1":
+                    return subprocess.CompletedProcess(args, 0, "[]", "")
+                if path == "repos/owner/control/actions/workflows":
+                    return subprocess.CompletedProcess(args, 0, "{}", "")
+                self.fail("unexpected upload-failure validation API path: " + path)
             if args[:3] == ["gh", "secret", "set"]:
                 raise config.SetupError("upload failed")
             return subprocess.CompletedProcess(args, 0, "{}", "")
         app.run = failing
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(config.SetupError):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(config.SetupError) as error:
             app.secrets_step()
+        self.assertEqual(str(error.exception), "upload failed")
+
+    def test_source_status_access_failure_blocks_upload_and_redacts_token(self):
+        app = self.instance()
+        app.registrations = [{"source_secret": "SOURCE_APP"}]
+        token = "synthetic-source-token"
+        config.atomic_write(self.c.sources[0].token_file, token + "\n")
+        calls = []
+
+        def run(args, **kwargs):
+            args = [str(item) for item in args]
+            calls.append((args, kwargs))
+            if args[:2] == ["gh", "api"]:
+                path = args[-1]
+                if path == "repos/owner/app":
+                    return subprocess.CompletedProcess(args, 0, '{"default_branch":"main"}', "")
+                if path == "repos/owner/app/commits/main/statuses?per_page=1":
+                    return subprocess.CompletedProcess(args, 1, "", "HTTP 403: Resource not accessible for " + token)
+                self.fail("unexpected source validation API path: " + path)
+            if args[:3] == ["gh", "secret", "set"]:
+                self.fail("source secret upload was attempted after status access failure")
+            return subprocess.CompletedProcess(args, 0, "{}", "")
+
+        app.run = run
+        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(config.SetupError) as error:
+            app.secrets_step()
+
+        text = output.getvalue() + str(error.exception)
+        self.assertIn("owner/app", text)
+        self.assertIn("Commit statuses", text)
+        self.assertNotIn(token, text)
+        self.assertFalse(any(args[:3] == ["gh", "secret", "set"] for args, _ in calls))
+
+    def test_source_status_probe_encodes_default_branch_and_uses_get(self):
+        app = self.instance()
+        app.registrations = [{"source_secret": "SOURCE_APP"}]
+        for path in (self.c.sources[0].token_file, self.c.dispatch_file, self.c.ghcr_file):
+            config.atomic_write(path, path.name + "-synthetic")
+        calls = []
+
+        def run(args, **kwargs):
+            args = [str(item) for item in args]
+            calls.append((args, kwargs))
+            if args[:2] == ["gh", "api"]:
+                path = args[-1]
+                if path == "repos/owner/app":
+                    return subprocess.CompletedProcess(args, 0, '{"default_branch":"release/candidate"}', "")
+                if path.endswith("/statuses?per_page=1"):
+                    return subprocess.CompletedProcess(args, 0, "[]", "")
+                if path == "repos/owner/control/actions/workflows":
+                    return subprocess.CompletedProcess(args, 0, "{}", "")
+                self.fail("unexpected source validation API path: " + path)
+            return subprocess.CompletedProcess(args, 0, "{}", "")
+
+        app.run = run
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.secrets_step()
+
+        status_calls = [args for args, _ in calls if args[:2] == ["gh", "api"] and
+                        args[-1].endswith("/statuses?per_page=1")]
+        self.assertEqual(status_calls, [[
+            "gh", "api", "--method", "GET",
+            "repos/owner/app/commits/release%2Fcandidate/statuses?per_page=1",
+        ]])
+        self.assertFalse(any("--method" in args and args[args.index("--method") + 1] == "POST"
+                             for args, _ in calls))
+
+    def test_doctor_reports_source_status_access_failure_without_side_effects(self):
+        app = self.instance()
+        token = "synthetic-doctor-source-token"
+        config.atomic_write(self.c.sources[0].token_file, token + "\n")
+        app.state["runner_name"] = "runner-fixture"
+        app.c.control_dir.mkdir(parents=True, exist_ok=True)
+        (app.c.control_dir / "config").mkdir(parents=True, exist_ok=True)
+        (app.c.control_dir / "config/repositories.json").write_text(json.dumps([{
+            "repository_id": "42", "source_repository": "owner/app",
+            "port": 8080, "source_secret": "SOURCE_APP",
+        }]))
+        runner_token = "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature"
+        (app.c.runner_config).write_text(json.dumps({"users": [{"user": {"token": runner_token}}]}))
+        calls = []
+
+        def run(args, **kwargs):
+            args = [str(item) for item in args]
+            calls.append((args, kwargs))
+            if args[:2] == ["gh", "auth"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[0] == "systemctl":
+                code = 3 if "is-failed" in args else 0
+                return subprocess.CompletedProcess(args, code, "", "")
+            if args[0] == "kubectl":
+                if "clusterroles" in args:
+                    return subprocess.CompletedProcess(args, 1, "no\n", "")
+                return subprocess.CompletedProcess(args, 0, "yes\n", "")
+            if args[:2] == ["gh", "api"]:
+                path = args[-1]
+                payloads = {
+                    "repos/owner/control": {"private": True},
+                    "repos/owner/control/actions/permissions": {"enabled": True},
+                    "repos/owner/control/actions/variables?per_page=100": {
+                        "variables": [
+                            {"name": "PREVIEWMESH_ENABLED", "value": "true"},
+                            {"name": "PREVIEWMESH_DOMAIN_SUFFIX", "value": self.c.suffix},
+                        ]},
+                    "repos/owner/control/actions/secrets?per_page=100": {
+                        "secrets": [{"name": "GHCR_READ_TOKEN"}, {"name": "SOURCE_APP"}]},
+                    "repos/owner/control/actions/runners?per_page=100&page=1": {
+                        "runners": [{"name": "runner-fixture", "status": "online",
+                                     "labels": [{"name": label} for label in
+                                                ("self-hosted", "Linux", "X64", "previewmesh")]}]},
+                    "repos/owner/app": {"default_branch": "main"},
+                    "repos/owner/app/actions/secrets?per_page=100": {
+                        "secrets": [{"name": "PREVIEWMESH_DISPATCH_TOKEN"}]},
+                    "repos/owner/app/actions/permissions": {"enabled": True},
+                }
+                if path in payloads:
+                    return subprocess.CompletedProcess(args, 0, json.dumps(payloads[path]), "")
+                if path == "repos/owner/app/commits/main/statuses?per_page=1":
+                    return subprocess.CompletedProcess(args, 1, "", "HTTP 403: Resource not accessible")
+                if path == "repos/owner/app/contents/.github/workflows/previewmesh-notify.yml":
+                    return subprocess.CompletedProcess(args, 1, "", "HTTP 404: Not Found")
+                self.fail("unexpected doctor API path: " + path)
+            self.fail("unexpected doctor side effect: " + repr(args))
+
+        app.run = run
+        app.preflight = lambda: None
+        app.check_dns = lambda: None
+        app.http_probe = lambda address: None
+        app.wsl = False
+        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(config.SetupError) as error:
+            app.doctor()
+
+        text = output.getvalue() + str(error.exception)
+        self.assertIn("owner/app", text)
+        self.assertIn("token", text.lower())
+        self.assertNotIn(token, text)
+        self.assertFalse(any(args and args[0] == "sudo" for args, _ in calls))
 
     def test_runner_download_fallback_uses_latest_official_asset_at_download_boundary(self):
         checksum = "a" * 64

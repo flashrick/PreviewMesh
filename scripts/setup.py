@@ -20,6 +20,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 
 from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, fingerprint, load_config,
                           merge_registry, read_token)
@@ -340,13 +341,28 @@ class Installer:
         self.secrets.append(value)
         return value
 
+    def check_source_token(self, source, token):
+        if token not in self.secrets:
+            self.secrets.append(token)
+        repository = json.loads(self.run(["gh", "api", f"repos/{source.repository}"],
+                                         env={"GH_TOKEN": token}).stdout)
+        default = repository.get("default_branch") if isinstance(repository, dict) else None
+        if not isinstance(default, str) or not default:
+            raise SetupError(f"Cannot determine the application default branch / 无法确定应用默认分支: {source.repository}")
+        # Probe without publishing a status; a real preview still verifies write access.
+        endpoint = f"repos/{source.repository}/commits/{quote(default, safe='')}/statuses?per_page=1"
+        result = self.run(["gh", "api", "--method", "GET", endpoint],
+                          env={"GH_TOKEN": token}, check=False)
+        if result.returncode:
+            raise SetupError(f"Application token cannot read Commit statuses for {source.repository}. Check GitHub access and set Commit statuses to Read and write on this application's fine-grained token, then rerun the same command.\n应用 Token 无法读取 {source.repository} 的提交状态。请检查 GitHub 访问权限，并将该应用 fine-grained Token 的 Commit statuses 设置为 Read and write（读写），然后重跑同一命令。")
+
     def secrets_step(self):
         fine = "https://github.com/settings/personal-access-tokens/new"
         for source, registration in zip(self.c.sources, self.registrations):
             token = self.credential(source.token_file,
-                f"Application access token for {source.repository}: deployment automation uses it to read this application and update PR feedback. Create a fine-grained token at {fine}; select only this application. Contents/Metadata: read; Pull requests/Commit statuses: read and write.",
-                f"{source.repository} 的应用访问 Token：部署自动化用它读取应用代码并更新 PR 反馈。在 {fine} 创建 fine-grained Token，仅选这个应用仓库。Contents/Metadata 只读；Pull requests/Commit statuses 读写。")
-            self.run(["gh", "api", f"repos/{source.repository}"], env={"GH_TOKEN": token})
+                f"Application access token for {source.repository}: deployment automation uses it to read this application and update PR feedback. Create a fine-grained token at {fine}; select only this application.\nRequired repository permissions:\n  Contents: Read-only\n  Metadata: Read-only\n  Pull requests: Read and write\n  Commit statuses: Read and write (publishes the PreviewMesh commit status).",
+                f"{source.repository} 的应用访问 Token：部署自动化用它读取应用代码并更新 PR 反馈。在 {fine} 创建 fine-grained Token，仅选这个应用仓库。\n所需仓库权限（Repository permissions）：\n  Contents：Read-only（只读）\n  Metadata：Read-only（只读）\n  Pull requests：Read and write（读写）\n  Commit statuses：Read and write（读写，用于回写 PreviewMesh 提交状态）。")
+            self.check_source_token(source, token)
             self.run(["gh", "secret", "set", registration["source_secret"], "--repo", self.c.control, "--app", "actions"], input=token)
         token = self.credential(self.c.dispatch_file,
             f"Deployment notification token: application workflows use it to start workflows in {self.c.control}. Create it at {fine}; select only that deployment management repository. Actions: read/write; Metadata: read.",
@@ -826,6 +842,8 @@ class Installer:
                 require(self.api(f"repos/{source.repository}/actions/permissions")["enabled"],
                         "Application Actions disabled / 应用源码仓库的 Actions 未启用。")
             check(source.repository + " Actions", source_check)
+            check(source.repository + " token access / 应用 Token 访问",
+                  lambda source=source: self.check_source_token(source, read_token(source.token_file)))
             result = self.run(["gh", "api", f"repos/{source.repository}/contents/.github/workflows/previewmesh-notify.yml"], check=False)
             if result.returncode and "HTTP 404" not in result.stderr:
                 self.source_status[source.repository] = "unknown"

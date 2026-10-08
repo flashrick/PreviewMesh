@@ -344,8 +344,8 @@ def run_wizard(path, root, *, language=None):
                '填写这个应用的 GitHub 仓库，例如 your-name/your-app。通知工作流合并后，该仓库的拉取请求（PR）会触发预览。')
         application = dict(repository=ui.choose('Application repository', '应用源码仓库', repos, validate_repo),
                            directory=directory, port=application_port(directory, old.port if old else None, language=language))
-        ui.say('The application access token lets deployment automation read this repository and update its pull request feedback. Authorize it for this application only and give it its own file, separate from the notification and image tokens.',
-               '应用访问 Token 让部署自动化读取这个应用仓库，并更新拉取请求的反馈信息。请仅授权给这个应用，并使用独立文件，与部署通知和镜像下载 Token 分开。')
+        ui.say('The application access token lets deployment automation read this repository and update its pull request feedback. Authorize it for this application only and give it its own file, separate from the notification and image tokens.\nRequired repository permissions:\n  Contents: Read-only\n  Metadata: Read-only\n  Pull requests: Read and write\n  Commit statuses: Read and write (publishes the PreviewMesh commit status).',
+               '应用访问 Token 让部署自动化读取这个应用仓库，并更新拉取请求的反馈信息。请仅授权给这个应用，并使用独立文件，与部署通知和镜像下载 Token 分开。\n所需仓库权限（Repository permissions）：\n  Contents：Read-only（只读）\n  Metadata：Read-only（只读）\n  Pull requests：Read and write（读写）\n  Commit statuses：Read and write（读写，用于回写 PreviewMesh 提交状态）。')
         application['token_file'] = ui.ask('Application access token file', '应用访问 Token 文件路径', old.token_file if old else secrets / f'{name}.token', token_location)
         data[f'source:{name}'] = application
         index += 1
