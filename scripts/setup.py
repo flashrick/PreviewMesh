@@ -71,7 +71,10 @@ class Installer:
     def redact(self, value):
         for secret in self.secrets:
             value = value.replace(secret, "[REDACTED]")
-        return re.sub(r"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)", "[REDACTED]", value)
+        value = re.sub(r"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)", "[REDACTED]", value)
+        # GitHub can return temporary tokens before we know their values.
+        return re.sub(r'("(?:token|temp_download_token)"\s*:\s*)"(?:\\.|[^"\\])*"',
+                      r'\1"[REDACTED]"', value, flags=re.IGNORECASE)
 
     def save(self):
         self.state["control"] = self.c.control
@@ -465,6 +468,25 @@ class Installer:
             raise SetupError("Invalid service environment / 服务环境变量无效。")
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
+    def runner_download(self):
+        catalog = self.api(f"repos/{self.c.control}/actions/runners/downloads")
+        if not isinstance(catalog, list) or any(not isinstance(item, dict) for item in catalog):
+            raise SetupError("Invalid Runner download list; check GitHub API and retry / Runner 下载列表格式错误，请检查 GitHub API 后重试。")
+        app = next((item for item in catalog
+                    if item.get("os") == "linux" and item.get("architecture") == "x64"), None)
+        if app is not None:
+            filename = app.get("filename")
+            version = re.fullmatch(r"actions-runner-linux-x64-(\d+\.\d+\.\d+)\.tar\.gz",
+                                   filename if isinstance(filename, str) else "")
+            if not version:
+                raise SetupError("Invalid Linux x64 Runner filename; check GitHub API and retry / Linux x64 Runner 文件名异常，请检查 GitHub API 后重试。")
+            release = self.api(f"repos/actions/runner/releases/tags/v{version[1]}")
+        else:
+            self.say("GitHub returned no Linux x64 Runner download; using the official stable release with SHA-256 verification.",
+                     "GitHub 未返回 Linux x64 Runner 下载项；将使用官方稳定发行包，并验证 SHA-256。")
+            release = self.api("repos/actions/runner/releases/latest")
+        return runner_release(app, release)
+
     def runner(self):
         directory = self.home / "runner"
         name = "previewmesh-" + self.control_id + "-" + re.sub(r"[^a-zA-Z0-9_-]", "-", socket.gethostname())[:40]
@@ -482,10 +504,7 @@ class Installer:
                 raise SetupError("Runner name is already registered elsewhere / 相同 Runner 名称已在其他位置登记，请先检查 GitHub Runners 页面。")
             spec = self.state.get("runner_download")
             if not spec:
-                app = next(item for item in self.api(f"repos/{self.c.control}/actions/runners/downloads")
-                           if item["os"] == "linux" and item["architecture"] == "x64")
-                version = re.search(r"actions-runner-linux-x64-(.+)\.tar\.gz", app["filename"])[1]
-                spec = runner_release(app, self.api(f"repos/actions/runner/releases/tags/v{version}"))
+                spec = self.runner_download()
                 self.state["runner_download"] = spec
                 self.save()
             if not (directory / "config.sh").exists():

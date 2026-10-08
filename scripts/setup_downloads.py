@@ -112,13 +112,38 @@ def tool_release(name):
 
 
 def runner_release(app, release):
-    filename = app["filename"]
-    asset = next((item for item in release["assets"] if item["name"] == filename), {})
-    checksum = app.get("sha256_checksum") or (asset.get("digest") or "").removeprefix("sha256:")
+    if not isinstance(release, dict):
+        raise SetupError("Runner release metadata missing; check GitHub and retry / Runner 发行信息缺失，请检查 GitHub 后重试。")
+    tag = release.get("tag_name")
+    assets = release.get("assets")
+    if (not isinstance(tag, str) or not re.fullmatch(r"v\d+\.\d+\.\d+", tag)
+            or release.get("draft") or release.get("prerelease")
+            or not isinstance(assets, list) or any(not isinstance(item, dict) for item in assets)):
+        raise SetupError("Invalid stable Runner release metadata; check the official release / Runner 稳定发行信息异常，请检查官方发行页面。")
+    filename = f"actions-runner-linux-x64-{tag[1:]}.tar.gz"
+    asset = next((item for item in assets if item.get("name") == filename), {})
+    if app is None:
+        if not asset:
+            raise SetupError("Official Runner release has no Linux x64 archive; check the release and retry / Runner 官方发行中没有 Linux x64 安装包，请检查发行页面后重试。")
+        url = asset.get("browser_download_url")
+        # An empty repository catalog must never redirect us to an unofficial package.
+        if url != f"https://github.com/actions/runner/releases/download/{tag}/{filename}":
+            raise SetupError("Official Runner archive URL missing or invalid; check the release / Runner 官方安装包地址缺失或异常，请检查发行页面。")
+        app = {"filename": filename, "download_url": url}
+    if (not isinstance(app, dict) or app.get("filename") != filename
+            or not isinstance(app.get("download_url"), str)
+            or not app["download_url"].startswith("https://")):
+        raise SetupError("Runner download does not match its release or HTTPS URL is missing / Runner 下载项与发行版本不匹配，或缺少 HTTPS 下载地址。")
+    digest = asset.get("digest")
+    checksum = app.get("sha256_checksum") or (digest.removeprefix("sha256:") if isinstance(digest, str) else "")
+    if not isinstance(checksum, str):
+        checksum = ""
     if not re.fullmatch(r"[a-f0-9]{64}", checksum or ""):
         # Older GitHub releases publish the checksum beside the filename in the body.
-        match = re.search(r"([a-f0-9]{64})\s+\*?" + re.escape(filename), release.get("body") or "")
+        body = release.get("body")
+        match = re.search(r"([a-f0-9]{64})\s+\*?" + re.escape(filename) + r"(?![\w.-])",
+                          body if isinstance(body, str) else "")
         if not match:
             raise SetupError("Runner checksum missing; check GitHub release / Runner 官方校验和缺失，请检查发行页面。")
         checksum = match[1]
-    return {"url": app["download_url"], "sha256": checksum, "version": release["tag_name"]}
+    return {"url": app["download_url"], "sha256": checksum, "version": tag}

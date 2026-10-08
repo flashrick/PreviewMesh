@@ -454,6 +454,7 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 | 通知返回 403 或 404 | 检查应用工作流中的部署管理仓库 owner/name、部署管理仓库 `main` 上的 `preview.yml`，以及 dispatch Token 选择的部署管理仓库、Actions 写权限、审批状态和有效期。 |
 | 部署管理 Job 被跳过 | 将部署管理仓库的 Actions variable `PREVIEWMESH_ENABLED` 设为准确的 `true`，并选择 `main` 触发。 |
 | `local` 一直排队 | 确认私有仓库的 Runner 在线，并且有 `self-hosted`、`Linux`、`X64`、`previewmesh` 四个标签。 |
+| 仓库 Runner 下载列表为空或没有 Linux/x64 项 | 阶段 5 会从官方 [`actions/runner` 稳定发行版](https://github.com/actions/runner/releases/latest) 获取匹配的安装包，并在解压前验证 SHA-256。若找不到匹配的版本、架构或校验和，安装器会明确停止。已完成阶段和 `install-state.json` 会保留，修复后重新运行同一条 `install` 命令。 |
 | 登记或 PR 授权失败 | 与部署管理仓库 `main` 上已提交的登记文件核对仓库 ID、owner/name、端口和 `source_secret`。PR 必须来自已登记的应用源码仓库内部，作者需要有写权限。 |
 | 应用本地目录检出失败 | 检查应用 Token 的仓库访问范围、Contents 读取权限、审批状态和有效期。 |
 | 没有状态或 PR 评论 | 检查 `source_secret` 对应的 Token、Commit statuses 和 Pull requests 写权限，以及运行摘要中的回写错误。 |

@@ -41,9 +41,60 @@ class InstallerTests(unittest.TestCase):
         self.config_path.write_text(self.text)
         self.c = config.load_config(self.config_path, ROOT)
 
-    def instance(self):
+    def instance(self, command="check"):
         with patch.object(Path, "home", return_value=self.work):
-            return installer.Installer(self.c, "check")
+            return installer.Installer(self.c, command)
+
+    def runner_app(self, catalog, *, latest=None, pinned=None, cached=None):
+        """Build an offline runner fixture; every non-fixture side effect is a test failure."""
+        state_home = self.work / ".local/share/previewmesh"
+        for state_path in (state_home / "install-state.json", state_home / "install-state.json.bak"):
+            state_path.unlink(missing_ok=True)
+        app = self.instance()
+        app.control_id = "42"
+        app.home.mkdir(parents=True, exist_ok=True)
+        calls = []
+
+        def api(path, **kwargs):
+            calls.append(path)
+            if path == "repos/owner/control/actions/runners?per_page=100&page=1":
+                return {"runners": []}
+            if path == "repos/owner/control/actions/runners/downloads":
+                return catalog
+            if path == "repos/actions/runner/releases/latest":
+                return latest
+            if path == "repos/actions/runner/releases/tags/v2.320.0":
+                return pinned
+            self.fail("unexpected runner fixture API path: " + path)
+
+        app.api = api
+        app.run = lambda *args, **kwargs: self.fail("runner side effect reached fixture boundary")
+        if cached is not None:
+            app.state["runner_download"] = cached
+        return app, calls
+
+    @staticmethod
+    def runner_asset(version="2.321.0", checksum=None, **extra):
+        filename = "actions-runner-linux-x64-" + version + ".tar.gz"
+        asset = {
+            "name": filename,
+            "browser_download_url": "https://github.com/actions/runner/releases/download/v"
+                                    + version + "/" + filename,
+            "digest": "sha256:" + (checksum or "a" * 64),
+        }
+        asset.update(extra)
+        return asset
+
+    def latest_runner_release(self, **extra):
+        release = {
+            "tag_name": "v2.321.0",
+            "draft": False,
+            "prerelease": False,
+            "assets": [self.runner_asset()],
+            "body": "",
+        }
+        release.update(extra)
+        return release
 
     def run_tty(self, arguments, input_text="", timeout=5):
         """Run the shell entry point with a PTY so its TTY-only language menu is exercised."""
@@ -646,6 +697,157 @@ class InstallerTests(unittest.TestCase):
         app.run = failing
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(config.SetupError):
             app.secrets_step()
+
+    def test_runner_download_fallback_uses_latest_official_asset_at_download_boundary(self):
+        checksum = "a" * 64
+        latest = self.latest_runner_release()
+        for catalog in (
+                [],
+                [{"os": "linux", "architecture": "arm64",
+                  "filename": "actions-runner-linux-arm64-2.321.0.tar.gz",
+                  "download_url": "https://example.invalid/arm64.tar.gz"}],
+        ):
+            with self.subTest(catalog=catalog):
+                app, calls = self.runner_app(catalog, latest=latest)
+                with patch.object(installer, "download_archive",
+                                  side_effect=config.SetupError("DOWNLOAD_BOUNDARY")) as archive:
+                    with self.assertRaises(config.SetupError) as error:
+                        app.runner()
+
+                self.assertEqual(str(error.exception), "DOWNLOAD_BOUNDARY")
+                expected = {
+                    "url": latest["assets"][0]["browser_download_url"],
+                    "sha256": checksum,
+                    "version": latest["tag_name"],
+                }
+                self.assertEqual(app.state.get("runner_download"), expected)
+                self.assertEqual(archive.call_args.args[0:2], (expected["url"], checksum))
+                self.assertIn("repos/actions/runner/releases/latest", calls)
+                self.assertNotIn("repos/actions/runner/releases/tags/v2.321.0", calls)
+
+    def test_runner_download_catalog_keeps_pinned_release_tag(self):
+        checksum = "b" * 64
+        filename = "actions-runner-linux-x64-2.320.0.tar.gz"
+        catalog = [{
+            "os": "linux", "architecture": "x64", "filename": filename,
+            "download_url": "https://github.com/actions/runner/download/v2.320.0/" + filename,
+            "sha256_checksum": checksum,
+        }]
+        pinned = {
+            "tag_name": "v2.320.0", "assets": [], "body": "",
+            "draft": False, "prerelease": False,
+        }
+        app, calls = self.runner_app(catalog, pinned=pinned)
+        with patch.object(installer, "download_archive",
+                          side_effect=config.SetupError("DOWNLOAD_BOUNDARY")) as archive:
+            with self.assertRaises(config.SetupError) as error:
+                app.runner()
+
+        self.assertEqual(str(error.exception), "DOWNLOAD_BOUNDARY")
+        self.assertEqual(app.state["runner_download"], {
+            "url": catalog[0]["download_url"], "sha256": checksum, "version": "v2.320.0",
+        })
+        self.assertIn("repos/actions/runner/releases/tags/v2.320.0", calls)
+        self.assertNotIn("repos/actions/runner/releases/latest", calls)
+        archive.assert_called_once()
+
+    def test_runner_download_rejects_unusable_official_release_without_download(self):
+        valid = self.runner_asset()
+        missing_checksum = dict(valid)
+        missing_checksum.pop("digest")
+        missing_url = dict(valid)
+        missing_url.pop("browser_download_url")
+        cases = {
+            "missing release": None,
+            "malformed release": {"tag_name": "v2.321.0"},
+            "no linux x64 asset": self.latest_runner_release(assets=[dict(valid, name="actions-runner-linux-arm64-2.321.0.tar.gz")]),
+            "draft release": self.latest_runner_release(draft=True),
+            "prerelease": self.latest_runner_release(prerelease=True),
+            "tag mismatch": self.latest_runner_release(tag_name="v2.999.0"),
+            "missing URL": self.latest_runner_release(assets=[missing_url]),
+            "missing checksum": self.latest_runner_release(assets=[missing_checksum]),
+        }
+        for label, latest in cases.items():
+            with self.subTest(case=label):
+                app, _ = self.runner_app([], latest=latest)
+                with patch.object(installer, "download_archive") as archive:
+                    with self.assertRaises(config.SetupError):
+                        app.runner()
+                archive.assert_not_called()
+
+    def test_runner_download_rejects_malformed_catalog_and_noncanonical_official_url(self):
+        malformed_catalogs = (None, {}, [None], [{"os": "linux", "architecture": "x64"}])
+        for catalog in malformed_catalogs:
+            with self.subTest(catalog=catalog):
+                app, _ = self.runner_app(catalog, latest=self.latest_runner_release())
+                with patch.object(installer, "download_archive") as archive:
+                    with self.assertRaises(config.SetupError):
+                        app.runner()
+                archive.assert_not_called()
+
+        noncanonical = self.latest_runner_release(
+            assets=[self.runner_asset(browser_download_url="https://downloads.example.invalid/runner.tar.gz")])
+        app, _ = self.runner_app([], latest=noncanonical)
+        with patch.object(installer, "download_archive") as archive:
+            with self.assertRaises(config.SetupError):
+                app.runner()
+        archive.assert_not_called()
+
+    def test_runner_download_uses_official_body_checksum_when_digest_is_absent(self):
+        checksum = "d" * 64
+        asset = self.runner_asset()
+        asset.pop("digest")
+        latest = self.latest_runner_release(
+            assets=[asset], body=checksum + "  *" + asset["name"] + "\n")
+        app, calls = self.runner_app([], latest=latest)
+        with patch.object(installer, "download_archive",
+                          side_effect=config.SetupError("DOWNLOAD_BOUNDARY")) as archive:
+            with self.assertRaises(config.SetupError) as error:
+                app.runner()
+
+        self.assertEqual(str(error.exception), "DOWNLOAD_BOUNDARY")
+        self.assertEqual(app.state["runner_download"], {
+            "url": asset["browser_download_url"], "sha256": checksum, "version": latest["tag_name"],
+        })
+        self.assertIn("repos/actions/runner/releases/latest", calls)
+        self.assertEqual(archive.call_args.args[0:2], (asset["browser_download_url"], checksum))
+
+    def test_runner_download_cache_skips_release_selection(self):
+        cached = {
+            "url": "https://github.com/actions/runner/download/v2.300.0/runner.tar.gz",
+            "sha256": "c" * 64,
+            "version": "v2.300.0",
+        }
+        app, calls = self.runner_app([], latest=None, cached=cached)
+        with patch.object(installer, "download_archive",
+                          side_effect=config.SetupError("DOWNLOAD_BOUNDARY")) as archive:
+            with self.assertRaises(config.SetupError) as error:
+                app.runner()
+
+        self.assertEqual(str(error.exception), "DOWNLOAD_BOUNDARY")
+        self.assertEqual(calls, ["repos/owner/control/actions/runners?per_page=100&page=1"])
+        self.assertEqual(archive.call_args.args[0:2], (cached["url"], cached["sha256"]))
+
+    def test_redact_masks_json_token_fields_while_api_payload_stays_parseable(self):
+        app = self.instance("install")
+        app.home.mkdir(parents=True, exist_ok=True)
+        token = "synthetic-runner-token"
+        temporary = "synthetic-temp-download-token"
+        payload = json.dumps({"token": token, "temp_download_token": temporary,
+                              "name": "runner-fixture"})
+        with patch.object(subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, payload, "")):
+            response = app.run(["gh", "api", "repos/owner/control/actions/runners"])
+
+        self.assertEqual(json.loads(response.stdout)["token"], token)
+        redacted = app.redact(response.stdout)
+        self.assertNotIn(token, redacted)
+        self.assertNotIn(temporary, redacted)
+        self.assertIn("runner-fixture", redacted)
+        log = app.log_path.read_text()
+        self.assertNotIn(token, log)
+        self.assertNotIn(temporary, log)
+        self.assertIn("[REDACTED]", log)
 
     def test_dns_failure_has_no_hosts_fallback(self):
         app = self.instance()
