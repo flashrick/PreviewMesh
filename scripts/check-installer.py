@@ -20,6 +20,7 @@ from unittest.mock import Mock, patch
 import setup as installer
 import setup_config as config
 import setup_downloads as downloads
+import setup_ingress_route as ingress_route
 import setup_maintenance as maintenance
 import setup_resume as resume
 
@@ -1064,7 +1065,13 @@ class InstallerTests(unittest.TestCase):
             self.fail("unexpected WSL network kube call: " + repr(args))
 
         app.kube = kube
-        app.managed = lambda *args, **kwargs: False
+        managed_calls = []
+
+        def managed(*args, **kwargs):
+            managed_calls.append((args, kwargs))
+            return False
+
+        app.managed = managed
         app.http_probe = lambda *args, **kwargs: None
         app.run = lambda args, **kwargs: subprocess.CompletedProcess(
             args, 0, "\\\\wsl.localhost\\Ubuntu\\ops\\wsl\\setup-lan.ps1\n" if args[0] == "wslpath" else "", "")
@@ -1082,6 +1089,11 @@ class InstallerTests(unittest.TestCase):
                          if "-Mode" in entry[0] and entry[0][entry[0].index("-Mode") + 1] == "Install"]
         self.assertEqual(len(install_calls), 1)
         self.assertFalse(install_calls[0][1].get("interactive", False))
+        route_artifacts = [entry for entry in managed_calls
+                           if str(entry[0][0]) == "/usr/local/lib/previewmesh/ingress-route.py"]
+        self.assertEqual(len(route_artifacts), 1)
+        self.assertEqual(route_artifacts[0][0][1], (ROOT / "scripts/setup_ingress_route.py").read_text())
+        self.assertTrue(route_artifacts[0][1].get("privileged"))
 
     def test_redact_masks_json_token_fields_while_api_payload_stays_parseable(self):
         app = self.instance("install")
@@ -1198,6 +1210,141 @@ class InstallerTests(unittest.TestCase):
         with patch.object(maintenance, "capture", return_value=subprocess.CompletedProcess([], 0, "yes\n", "")), self.assertRaises(RuntimeError):
             maintenance.replace_credential(target, {"users": ["overprivileged"]}, ["fake-kubectl"])
         self.assertEqual(target.read_text(), old)
+
+    def prepare_ingress_fixture(self, endpoint, *, osrelease="6.1.0-microsoft-standard-WSL2",
+                                networking_mode="mirrored", address_payloads=None,
+                                route_payload=None, return_error=False):
+        """Run the route helper against JSON command fixtures, never the host network."""
+        address_payloads = list(address_payloads or [])
+        route_payload = [] if route_payload is None else route_payload
+        calls = []
+        sleeps = []
+        trusted_paths = []
+        clock = [0.0]
+        address_args = ["/usr/sbin/ip", "-j", "-4", "address", "show", "dev", "cni0"]
+        route_args = ["/usr/sbin/ip", "-j", "-4", "route", "show", "table", "main", "exact",
+                      endpoint.rsplit(":", 1)[0] + "/32"]
+
+        def fake_capture(args, accepted=(0,)):
+            normalized = list(args)
+            calls.append((normalized, tuple(accepted)))
+            if normalized == ["/usr/bin/wslinfo", "--networking-mode"]:
+                return subprocess.CompletedProcess(normalized, 0, networking_mode + "\n", "")
+            if normalized == address_args:
+                payload = address_payloads.pop(0) if address_payloads else []
+                return subprocess.CompletedProcess(normalized, 0, json.dumps(payload), "")
+            if normalized == route_args:
+                return subprocess.CompletedProcess(normalized, 0, json.dumps(route_payload), "")
+            if normalized[:4] == ["/usr/sbin/ip", "-4", "route", "add"]:
+                return subprocess.CompletedProcess(normalized, 0, "", "")
+            self.fail("unexpected ingress route command: " + repr(normalized))
+
+        def fake_read_text(path, *args, **kwargs):
+            if str(path) == "/proc/sys/kernel/osrelease":
+                return osrelease
+            self.fail("unexpected ingress fixture read: " + str(path))
+
+        def fake_trusted(path):
+            trusted_paths.append(str(path))
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        with patch.object(ingress_route, "capture", side_effect=fake_capture), \
+             patch.object(ingress_route.Path, "read_text", autospec=True, side_effect=fake_read_text), \
+             patch.object(ingress_route, "trusted", side_effect=fake_trusted), \
+             patch.object(ingress_route.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(ingress_route.time, "sleep", side_effect=fake_sleep):
+            try:
+                ingress_route.prepare_ingress_route(endpoint)
+            except Exception as error:
+                if return_error:
+                    return calls, sleeps, trusted_paths, error
+                raise
+        return calls, sleeps, trusted_paths
+
+    @staticmethod
+    def cni_address(ip):
+        return [{"ifname": "cni0", "addr_info": [{"family": "inet", "local": ip, "scope": "global"}]}]
+
+    def test_prepare_ingress_skips_non_wsl_and_nat_without_route_commands(self):
+        for label, osrelease, mode in (
+                ("non-wsl", "6.1.0-generic", "mirrored"),
+                ("nat", "6.1.0-microsoft-standard-WSL2", "nat")):
+            with self.subTest(case=label):
+                calls, sleeps, trusted_paths = self.prepare_ingress_fixture(
+                    "10.96.0.10:80", osrelease=osrelease, networking_mode=mode,
+                    address_payloads=[self.cni_address("10.244.0.2")])
+                self.assertEqual(calls, [] if label == "non-wsl" else [
+                    (["/usr/bin/wslinfo", "--networking-mode"], (0,))])
+                self.assertEqual(sleeps, [])
+                expected_trusted = [] if label == "non-wsl" else [str(Path("/usr/bin/wslinfo").resolve())]
+                self.assertEqual(trusted_paths, expected_trusted)
+
+    def test_prepare_ingress_adds_only_missing_private_vip_route_from_cni_source(self):
+        calls, sleeps, trusted_paths = self.prepare_ingress_fixture(
+            "10.96.0.10:80", address_payloads=[self.cni_address("10.244.0.2")], route_payload=[])
+        self.assertEqual(sleeps, [])
+        self.assertEqual(set(trusted_paths), {
+            str(Path("/usr/bin/wslinfo").resolve()), str(Path("/usr/sbin/ip").resolve())})
+        self.assertEqual(calls[0][0], ["/usr/bin/wslinfo", "--networking-mode"])
+        self.assertEqual(calls[1][0], ["/usr/sbin/ip", "-j", "-4", "address", "show", "dev", "cni0"])
+        self.assertEqual(calls[1][1], (0, 1))
+        self.assertEqual(calls[2][0], ["/usr/sbin/ip", "-j", "-4", "route", "show", "table", "main", "exact",
+                                       "10.96.0.10/32"])
+        additions = [args for args, _ in calls if args[:4] == ["/usr/sbin/ip", "-4", "route", "add"]]
+        self.assertEqual(additions, [["/usr/sbin/ip", "-4", "route", "add", "10.96.0.10/32",
+                                      "dev", "cni0", "src", "10.244.0.2"]])
+
+    def test_prepare_ingress_existing_matching_route_is_idempotent(self):
+        route = [{"dst": "10.96.0.10/32", "dev": "cni0", "prefsrc": "10.244.0.2"}]
+        calls, _, _ = self.prepare_ingress_fixture(
+            "10.96.0.10:80", address_payloads=[self.cni_address("10.244.0.2")], route_payload=route)
+        self.assertFalse(any(args[:4] == ["/usr/sbin/ip", "-4", "route", "add"] for args, _ in calls))
+
+    def test_prepare_ingress_refuses_to_replace_existing_different_route(self):
+        route = [{"dst": "10.96.0.10/32", "dev": "eth0", "prefsrc": "192.168.1.20"}]
+        with self.assertRaises(RuntimeError):
+            self.prepare_ingress_fixture(
+                "10.96.0.10:80", address_payloads=[self.cni_address("10.244.0.2")], route_payload=route)
+
+    def test_prepare_ingress_cni_timeout_has_no_route_side_effect(self):
+        calls, sleeps, _, error = self.prepare_ingress_fixture(
+            "10.96.0.10:80", address_payloads=[[] for _ in range(61)], return_error=True)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertGreaterEqual(len(sleeps), 59)
+        self.assertLessEqual(len(sleeps), 60)
+        self.assertFalse(any(args[:4] == ["/usr/sbin/ip", "-4", "route", "add"] for args, _ in calls))
+        self.assertFalse(any(args[:4] == ["/usr/sbin/ip", "-j", "-4", "route"] for args, _ in calls))
+
+    def test_prepare_ingress_rejects_non_private_or_non_http_endpoint(self):
+        for endpoint in ("127.0.0.1:80", "8.8.8.8:80", "10.96.0.10:443", "10.96.0.10"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(RuntimeError):
+                self.prepare_ingress_fixture(endpoint, address_payloads=[self.cni_address("10.244.0.2")])
+
+    def test_prepare_ingress_helper_main_uses_environment_and_root_guard(self):
+        endpoints = []
+        with patch.object(ingress_route.os, "getuid", return_value=0), \
+             patch.dict(ingress_route.os.environ, {"PREVIEWMESH_TRAEFIK_ENDPOINT": "10.96.0.10:80"}), \
+             patch.object(ingress_route, "prepare_ingress_route",
+                          side_effect=lambda endpoint: endpoints.append(endpoint)) as prepare:
+            self.assertIsNone(ingress_route.main())
+        prepare.assert_called_once_with("10.96.0.10:80")
+        self.assertEqual(endpoints, ["10.96.0.10:80"])
+        with patch.object(ingress_route.os, "getuid", return_value=1000), \
+             patch.object(ingress_route, "prepare_ingress_route") as prepare:
+            with self.assertRaises(RuntimeError):
+                ingress_route.main()
+        prepare.assert_not_called()
+
+    def test_prepare_ingress_service_prepares_route_before_socket_proxy(self):
+        service = (ROOT / "ops/wsl/previewmesh-ingress.service").read_text()
+        self.assertIn("EnvironmentFile=-/etc/previewmesh/ingress.env", service)
+        self.assertIn("ExecStartPre=+/usr/bin/python3 /usr/local/lib/previewmesh/ingress-route.py", service)
+        self.assertNotIn("--prepare-ingress", service)
+        self.assertNotIn("maintain.py", service)
+        self.assertNotIn("timer", service.lower())
 
     def test_checked_download_rejects_corruption_and_traversal(self):
         for filename, checksum_ok in (("safe", False), ("../outside", True)):

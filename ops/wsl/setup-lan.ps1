@@ -219,13 +219,20 @@ if ($networkMode -eq 'nat') {
 }
 if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) { Remove-NetFirewallRule -Name $ruleName }
 New-NetFirewallRule -Name $ruleName -DisplayName 'PreviewMesh LAN entry' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 18080 -LocalAddress $LanIP -RemoteAddress $subnet -Profile Private,Domain | Out-Null
-if ($Mode -eq 'Apply') {
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $installedScript + '" -Mode Refresh'
+if ($Mode -eq 'Apply' -and $networkMode -eq 'nat') {
+    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $installedScript + '" -Mode Refresh'
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $triggers = @((New-ScheduledTaskTrigger -AtLogOn -User $user), (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)))
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers -Principal $taskPrincipal -Description 'Keep WSL preview LAN forwarding current while this user distro is running.' -Force | Out-Null
+} elseif ($Mode -eq 'Apply') {
+    # Mirrored networking uses persistent firewall rules and needs no address refresh.
+    $existingTask = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
+    if ($existingTask) {
+        Disable-ScheduledTask -InputObject $existingTask | Out-Null
+        Stop-ScheduledTask -InputObject $existingTask
+    }
 }
 if ($Mode -eq 'Apply' -and $previousIP) {
     & netsh.exe interface portproxy delete v4tov4 "listenaddress=$previousIP" listenport=18080 | Out-Null

@@ -1,5 +1,5 @@
 [Unit]
-Description=Forward Windows localhost requests to K3s Traefik
+Description=PreviewMesh LAN entry to K3s Traefik
 Requires=k3s.service
 After=k3s.service
 Requires=previewmesh-ingress.socket
@@ -10,6 +10,8 @@ After=previewmesh-ingress.socket
 Type=notify
 Sockets=previewmesh-ingress.socket
 EnvironmentFile=-/etc/previewmesh/ingress.env
+# Prepare only this internal Service route once, before the unprivileged proxy.
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/previewmesh/ingress-route.py
 ExecStart=/usr/lib/systemd/systemd-socket-proxyd ${PREVIEWMESH_TRAEFIK_ENDPOINT}
 DynamicUser=yes
 NoNewPrivileges=yes

@@ -17,6 +17,23 @@ $installAst = $ast.FindAll({ param($node) $node -is [System.Management.Automatio
 if ($null -eq $installAst) { throw 'Could not extract the real Install branch from setup-lan.ps1.' }
 $installBranch = [scriptblock]::Create($installAst.Extent.Text)
 $installBranchNoExit = [scriptblock]::Create(($installAst.Extent.Text -replace '(?i)\bexit\s+0\b', 'return'))
+$scheduleTaskAst = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] }, $true) |
+    Where-Object { $_.Extent.Text -match '(?i)\bRegister-ScheduledTask\b' } |
+    Where-Object { $_.Extent.Text -match '(?i)\bDisable-ScheduledTask\b|\bStop-ScheduledTask\b' } |
+    Sort-Object { $_.Extent.Text.Length } |
+    Select-Object -First 1
+if ($null -eq $scheduleTaskAst) {
+    # Keep the pre-fix fixture useful while the scheduler branch has no legacy-task cleanup yet.
+    $scheduleTaskAst = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] }, $true) |
+        Where-Object { $_.Extent.Text -match '(?i)\bRegister-ScheduledTask\b' } |
+        Sort-Object { $_.Extent.Text.Length } |
+        Select-Object -First 1
+}
+if ($null -eq $scheduleTaskAst) { throw 'Could not extract the isolated scheduled-task branch from setup-lan.ps1.' }
+if ($scheduleTaskAst.Extent.Text -match '(?i)New-NetFirewallRule|New-NetFirewallHyperVRule|netsh\.exe') {
+    throw 'The scheduled-task test seam unexpectedly includes the firewall/portproxy Apply branch.'
+}
+$scheduleTaskBranch = [scriptblock]::Create($scheduleTaskAst.Extent.Text)
 $testEntryAst = $ast.FindAll({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-Entry'
     }, $true) | Select-Object -First 1
@@ -336,6 +353,196 @@ $script:InstallEvents = @()
 & $installBranchNoExit
 Assert-Condition ($script:AdministratorCalls -eq 1) 'NAT install did not reach administrator setup.'
 Assert-Condition (($script:InstallEvents -join ',') -eq 'interface,mode,host-access,administrator') 'NAT install path changed unexpectedly.'
+
+# Exercise only the scheduler If branch. These command shims keep the test
+# offline: no task, firewall rule, port proxy, or interactive window is used.
+$script:ScheduleActionCalls = @()
+$script:ScheduleTriggerCalls = @()
+$script:SchedulePrincipalCalls = @()
+$script:ScheduleRegisterCalls = @()
+$script:ScheduleTaskLookupCalls = @()
+$script:ScheduleOperationCalls = @()
+$script:ScheduleExpectedTaskName = 'PreviewMesh LAN forwarding'
+$script:ScheduleExistingTask = $null
+$script:ScheduleUnrelatedTask = [pscustomobject]@{ TaskName = 'Unrelated scheduled task' }
+$script:ScheduleInstalledScript = 'C:\ProgramData\PreviewMesh\setup-lan.ps1'
+
+function Reset-ScheduleMocks([object]$ExistingTask) {
+    $script:ScheduleExistingTask = $ExistingTask
+    $script:ScheduleActionCalls = @()
+    $script:ScheduleTriggerCalls = @()
+    $script:SchedulePrincipalCalls = @()
+    $script:ScheduleRegisterCalls = @()
+    $script:ScheduleTaskLookupCalls = @()
+    $script:ScheduleOperationCalls = @()
+}
+
+function New-ScheduledTaskAction {
+    param([string]$Execute, [string]$Argument)
+    $action = [pscustomobject]@{ Execute = $Execute; Argument = $Argument }
+    $script:ScheduleActionCalls += $action
+    return $action
+}
+
+function New-ScheduledTaskTrigger {
+    param(
+        [switch]$AtLogOn,
+        [string]$User,
+        [switch]$Once,
+        [datetime]$At,
+        [timespan]$RepetitionInterval
+    )
+    $trigger = [pscustomobject]@{
+        AtLogOn = [bool]$AtLogOn
+        User = $User
+        Once = [bool]$Once
+        At = $At
+        RepetitionInterval = $RepetitionInterval
+    }
+    $script:ScheduleTriggerCalls += $trigger
+    return $trigger
+}
+
+function New-ScheduledTaskPrincipal {
+    param([string]$UserId, [string]$LogonType, [string]$RunLevel)
+    $principal = [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType; RunLevel = $RunLevel }
+    $script:SchedulePrincipalCalls += $principal
+    return $principal
+}
+
+function Get-ScheduledTask {
+    param([string]$TaskName, [string]$TaskPath, [string]$ErrorAction)
+    $script:ScheduleTaskLookupCalls += [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath }
+    # A missing or broad lookup receives the unrelated fixture, so the test
+    # catches implementations that stop an arbitrary scheduled task.
+    if ($TaskName -eq $script:ScheduleExpectedTaskName -and
+        ($null -eq $TaskPath -or $TaskPath -eq '\')) {
+        return $script:ScheduleExistingTask
+    }
+    return $script:ScheduleUnrelatedTask
+}
+
+function Disable-ScheduledTask {
+    param([object]$InputObject)
+    $script:ScheduleOperationCalls += [pscustomobject]@{ Operation = 'Disable'; InputObject = $InputObject }
+}
+
+function Stop-ScheduledTask {
+    param([object]$InputObject)
+    $script:ScheduleOperationCalls += [pscustomobject]@{ Operation = 'Stop'; InputObject = $InputObject }
+}
+
+function Register-ScheduledTask {
+    param(
+        [string]$TaskName,
+        [string]$TaskPath,
+        [object]$Action,
+        [object[]]$Trigger,
+        [object]$Principal,
+        [string]$Description,
+        [switch]$Force
+    )
+    $registration = [pscustomobject]@{
+        TaskName = $TaskName
+        TaskPath = $TaskPath
+        Action = $Action
+        Trigger = @($Trigger)
+        Principal = $Principal
+        Description = $Description
+        Force = [bool]$Force
+    }
+    $script:ScheduleRegisterCalls += $registration
+    return $registration
+}
+
+function Invoke-ScheduleBranchCase([string]$CaseName, [string]$ModeValue, [string]$NetworkModeValue,
+                                   [object]$ExistingTask) {
+    Reset-ScheduleMocks $ExistingTask
+    $Mode = $ModeValue
+    $networkMode = $NetworkModeValue
+    $taskName = $script:ScheduleExpectedTaskName
+    $installedScript = $script:ScheduleInstalledScript
+    $caught = $null
+    try { & $scheduleTaskBranch } catch { $caught = $_.Exception }
+    Assert-Condition ($null -eq $caught) ($CaseName + ': isolated scheduler branch threw ' + $(if ($null -ne $caught) { $caught.Message } else { '' }))
+}
+
+$expectedScheduleUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$natTask = [pscustomobject]@{ TaskName = $script:ScheduleExpectedTaskName; Marker = 'nat' }
+Invoke-ScheduleBranchCase 'apply-nat' 'Apply' 'nat' $natTask
+Assert-Condition ($script:ScheduleRegisterCalls.Count -eq 1) 'Apply NAT did not register exactly one refresh task.'
+Assert-Condition ($script:ScheduleTaskLookupCalls.Count -eq 0) 'Apply NAT looked up a legacy task.'
+Assert-Condition ($script:ScheduleOperationCalls.Count -eq 0) 'Apply NAT disabled or stopped a task.'
+if ($script:ScheduleActionCalls.Count -eq 1) {
+    $natAction = $script:ScheduleActionCalls[0]
+    $natArguments = [string]$natAction.Argument
+    Assert-Condition ($natAction.Execute -eq 'powershell.exe') 'Apply NAT changed the scheduled-task executable.'
+    Assert-Condition ($natArguments -match '(?i)(^|\s)-NoProfile(\s|$)') 'Apply NAT refresh action omitted -NoProfile.'
+    Assert-Condition ($natArguments -match '(?i)(^|\s)-NonInteractive(\s|$)') 'Apply NAT refresh action omitted -NonInteractive.'
+    Assert-Condition ($natArguments -match '(?i)(^|\s)-WindowStyle\s+Hidden(\s|$)') 'Apply NAT refresh action omitted -WindowStyle Hidden.'
+    Assert-Condition ($natArguments -match '(?i)(^|\s)-ExecutionPolicy\s+Bypass(\s|$)') 'Apply NAT refresh action omitted -ExecutionPolicy Bypass.'
+    Assert-Condition ($natArguments.Contains('-File "' + $script:ScheduleInstalledScript + '" -Mode Refresh')) 'Apply NAT refresh action changed the installed script path or Refresh mode.'
+} else {
+    Add-Failure 'Apply NAT did not produce an action fixture.'
+}
+if ($script:SchedulePrincipalCalls.Count -eq 1) {
+    $natPrincipal = $script:SchedulePrincipalCalls[0]
+    Assert-Condition ($natPrincipal.UserId -eq $expectedScheduleUser) 'Apply NAT changed the scheduled-task user.'
+    Assert-Condition ($natPrincipal.LogonType -eq 'Interactive') 'Apply NAT changed the scheduled-task logon type.'
+    Assert-Condition ($natPrincipal.RunLevel -eq 'Highest') 'Apply NAT changed the scheduled-task run level.'
+} else {
+    Add-Failure 'Apply NAT did not produce one task principal fixture.'
+}
+if ($script:ScheduleRegisterCalls.Count -eq 1) {
+    $natRegistration = $script:ScheduleRegisterCalls[0]
+    Assert-Condition ($natRegistration.TaskName -eq $script:ScheduleExpectedTaskName) 'Apply NAT changed the task name.'
+    Assert-Condition ([string]::IsNullOrEmpty([string]$natRegistration.TaskPath) -or $natRegistration.TaskPath -eq '\') 'Apply NAT changed the task root path.'
+    Assert-Condition ([object]::ReferenceEquals($natRegistration.Action, $script:ScheduleActionCalls[0])) 'Apply NAT registered a different action fixture.'
+    Assert-Condition (@($natRegistration.Trigger).Count -eq 2) 'Apply NAT changed the logon/refresh trigger count.'
+    Assert-Condition ([object]::ReferenceEquals($natRegistration.Principal, $script:SchedulePrincipalCalls[0])) 'Apply NAT registered a different principal fixture.'
+    Assert-Condition ($natRegistration.Force) 'Apply NAT omitted task replacement with -Force.'
+}
+Assert-Condition ($script:ScheduleTriggerCalls.Count -eq 2) 'Apply NAT changed the logon/refresh trigger count.'
+if ($script:ScheduleTriggerCalls.Count -ge 1) {
+    Assert-Condition ($script:ScheduleTriggerCalls[0].AtLogOn) 'Apply NAT omitted the logon trigger.'
+    Assert-Condition ($script:ScheduleTriggerCalls[0].User -eq $expectedScheduleUser) 'Apply NAT changed the logon trigger user.'
+}
+if ($script:ScheduleTriggerCalls.Count -ge 2) {
+    Assert-Condition ($script:ScheduleTriggerCalls[1].Once) 'Apply NAT omitted the one-time refresh trigger.'
+    Assert-Condition ($script:ScheduleTriggerCalls[1].RepetitionInterval -eq (New-TimeSpan -Minutes 1)) 'Apply NAT changed the refresh interval.'
+}
+
+$oldTask = [pscustomobject]@{ TaskName = $script:ScheduleExpectedTaskName; Marker = 'existing' }
+$script:ScheduleUnrelatedTask = [pscustomobject]@{ TaskName = 'Unrelated scheduled task'; Marker = 'must-not-stop' }
+Invoke-ScheduleBranchCase 'apply-mirrored-existing-task' 'Apply' 'mirrored' $oldTask
+Assert-Condition ($script:ScheduleRegisterCalls.Count -eq 0) 'Apply mirrored registered a refresh task.'
+Assert-Condition ($script:ScheduleActionCalls.Count -eq 0 -and $script:ScheduleTriggerCalls.Count -eq 0 -and $script:SchedulePrincipalCalls.Count -eq 0) 'Apply mirrored constructed refresh-task objects.'
+Assert-Condition ($script:ScheduleTaskLookupCalls.Count -eq 1) 'Apply mirrored did not perform one legacy-task lookup.'
+if ($script:ScheduleTaskLookupCalls.Count -eq 1) {
+    Assert-Condition ($script:ScheduleTaskLookupCalls[0].TaskName -eq $script:ScheduleExpectedTaskName) 'Apply mirrored looked up an unrelated task name.'
+    Assert-Condition ([string]::IsNullOrEmpty([string]$script:ScheduleTaskLookupCalls[0].TaskPath) -or $script:ScheduleTaskLookupCalls[0].TaskPath -eq '\') 'Apply mirrored looked outside the task root.'
+}
+Assert-Condition ($script:ScheduleOperationCalls.Count -eq 2) 'Apply mirrored did not perform exactly disable and stop operations.'
+if ($script:ScheduleOperationCalls.Count -eq 2) {
+    Assert-Condition ($script:ScheduleOperationCalls[0].Operation -eq 'Disable') 'Apply mirrored did not disable the legacy task first.'
+    Assert-Condition ($script:ScheduleOperationCalls[1].Operation -eq 'Stop') 'Apply mirrored did not stop the legacy task second.'
+    Assert-Condition ([object]::ReferenceEquals($script:ScheduleOperationCalls[0].InputObject, $oldTask)) 'Apply mirrored disabled an unrelated task.'
+    Assert-Condition ([object]::ReferenceEquals($script:ScheduleOperationCalls[1].InputObject, $oldTask)) 'Apply mirrored stopped an unrelated task.'
+    Assert-Condition (-not ($script:ScheduleOperationCalls | Where-Object { [object]::ReferenceEquals($_.InputObject, $script:ScheduleUnrelatedTask) })) 'Apply mirrored stopped the unrelated task fixture.'
+}
+
+$script:ScheduleUnrelatedTask = [pscustomobject]@{ TaskName = 'Unrelated scheduled task'; Marker = 'must-not-stop' }
+Invoke-ScheduleBranchCase 'apply-mirrored-no-existing-task' 'Apply' 'mirrored' $null
+Assert-Condition ($script:ScheduleRegisterCalls.Count -eq 0) 'Apply mirrored without a legacy task registered a refresh task.'
+Assert-Condition ($script:ScheduleOperationCalls.Count -eq 0) 'Apply mirrored without a legacy task performed task operations.'
+Assert-Condition ($script:ScheduleTaskLookupCalls.Count -eq 1) 'Apply mirrored without a legacy task did not perform one lookup.'
+
+foreach ($nonApplyMode in @('Refresh', 'Check')) {
+    Invoke-ScheduleBranchCase ('mode-' + $nonApplyMode + '-does-not-touch-task') $nonApplyMode 'mirrored' $oldTask
+    Assert-Condition ($script:ScheduleRegisterCalls.Count -eq 0) ($nonApplyMode + ' registered a refresh task.')
+    Assert-Condition ($script:ScheduleTaskLookupCalls.Count -eq 0) ($nonApplyMode + ' looked up a scheduled task.')
+    Assert-Condition ($script:ScheduleOperationCalls.Count -eq 0) ($nonApplyMode + ' disabled or stopped a scheduled task.')
+}
 
 # Restore the real handoff function for result protocol tests.
 . ([scriptblock]::Create($administratorFunctionAst.Extent.Text))

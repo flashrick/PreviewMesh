@@ -636,6 +636,8 @@ class Installer:
                 raise SetupError("Port 18080 is already occupied; free it and rerun / 18080 端口已被占用，请处理后重试。")
             finally:
                 probe.close()
+        self.managed("/usr/local/lib/previewmesh/ingress-route.py",
+                     (ROOT / "scripts/setup_ingress_route.py").read_text(), privileged=True)
         service_content = (ROOT / "ops/wsl/previewmesh-ingress.service").read_text()
         socket_original = (ROOT / "ops/wsl/previewmesh-ingress.socket").read_text()
         listener = "0.0.0.0:18080" if self.wsl else "127.0.0.1:18080\nListenStream=" + self.c.lan_ip + ":18080"
@@ -651,8 +653,8 @@ class Installer:
             if not distro:
                 raise SetupError("WSL_DISTRO_NAME is missing; open a normal WSL terminal / 缺少 WSL 发行版信息，请从正常 WSL 终端启动。")
             windows_script = self.run(["wslpath", "-w", ROOT / "ops/wsl/setup-lan.ps1"]).stdout.strip()
-            self.say("Windows will request administrator access to configure LAN forwarding.",
-                     "Windows 将请求管理员权限，用来配置局域网转发。")
+            self.say("Windows will request administrator access to configure preview LAN access.",
+                     "Windows 将请求管理员权限，用来配置局域网预览访问的防火墙和网络设置。")
             self.powershell("-File", windows_script, "-Mode", "Install", "-Distro", distro,
                             "-LanIP", self.c.lan_ip, "-AllowedSubnet", self.c.subnet)
             self.powershell("-File", windows_script, "-Mode", "Check", "-Distro", distro,
@@ -891,8 +893,8 @@ class Installer:
                  "Register and start a GitHub Actions Runner on this computer. It receives jobs from the deployment management repository and deploys previews into the local cluster.",
                  "在本机注册并启动 GitHub Actions Runner。这个程序接收部署管理仓库的任务，将预览部署到本机集群。", self.runner),
                 ("Configure LAN preview access.", "配置局域网预览访问。",
-                 f"Check DNS for {self.c.suffix} and configure the preview entry on {self.c.lan_ip}:18080 for the allowed client subnet. Requests are routed to each application's configured container HTTP port. WSL also needs Windows forwarding and firewall rules.",
-                 f"检查 {self.c.suffix} 的 DNS，并在 {self.c.lan_ip}:18080 配置预览入口，供允许网段内的客户端访问。请求会转发到各应用配置的容器内 HTTP 端口；WSL 还需配置 Windows 转发和防火墙规则。", self.network),
+                 f"Check DNS for {self.c.suffix} and configure the preview entry on {self.c.lan_ip}:18080 for the allowed client subnet. Requests are routed to each application's configured container HTTP port. WSL also needs Windows network-mode checks and the required firewall rules.",
+                 f"检查 {self.c.suffix} 的 DNS，并在 {self.c.lan_ip}:18080 配置预览入口，供允许网段内的客户端访问。请求会转发到各应用配置的容器内 HTTP 端口；WSL 还需检查 Windows 网络模式并配置必要的防火墙规则。", self.network),
                 ("Prepare application notification workflows.", "准备应用通知工作流。",
                  "Generate notification workflow files in the application directories for review. Once merged into each application's default branch, they notify deployment management when PRs change. Use onboard-source to review the diff or open an onboarding PR, then review and merge it on GitHub.",
                  "在应用目录生成通知工作流文件供审核。文件合并到应用默认分支后，会在 PR 发生变化时通知部署管理仓库。使用 onboard-source 查看差异或创建接入 PR，再到 GitHub 审核并合并。", self.sources),
