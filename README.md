@@ -93,9 +93,11 @@ These requirements are checked by the [application preflight](#run-the-applicati
 bash scripts/setup.sh init
 ```
 
-The wizard discovers GitHub remotes in the selected deployment management and application checkouts, private LAN IPv4 candidates, and application ports declared by `Dockerfile` `EXPOSE` lines. It checks each port before presenting it. When discovery returns no value or more than one candidate, it asks you to enter or select a value instead of choosing silently. WSL cannot identify the Windows host's LAN address from the guest, so enter that address manually when prompted.
+At the network step, the wizard asks whether this installation runs directly on Ubuntu or inside WSL. It recommends the mode detected from the current platform; the choice is used only for this wizard and is not saved as a configuration setting. Ubuntu mode reads private global IPv4 candidates from the local `ip` command and filters known VPN/container interface prefixes. WSL mode uses read-only PowerShell to read preferred IPv4 addresses on active physical Windows adapters, so the WSL guest NAT address is never used as the preview LAN address.
 
-When exactly one candidate is available, the prompt shows its actual value as the default, for example `[flashrick/PreviewMesh]`; press Enter to accept that value, or enter `1` to select the first numbered item. With multiple candidates, enter the number or the full value. With no candidate, enter the full `OWNER/NAME`, path, address, or port requested by the prompt.
+The wizard discovers GitHub remotes in the selected deployment management and application checkouts, private LAN IPv4 candidates, and application ports declared by `Dockerfile` `EXPOSE` lines. It checks each port before presenting it. A single discovered network address is shown as the actual default; press Enter to accept it. When several addresses are available, it lists them and requires a number or full address, so it never silently chooses a network interface. If discovery is unavailable or finds no address, the prompt explains the fallback and lets you enter a private LAN IPv4 manually.
+
+For repository, directory, and port lists, when exactly one candidate is available, the prompt shows its actual value as the default, for example `[flashrick/PreviewMesh]`; press Enter to accept that value, or enter `1` to select the first numbered item. With multiple candidates, enter the number or the full value. With no candidate, enter the full `OWNER/NAME`, path, address, or port requested by the prompt.
 
 The wizard collects ordinary settings and token file paths separately. Never paste a token into the wizard; it only writes references such as these:
 
@@ -106,8 +108,8 @@ The wizard collects ordinary settings and token file paths separately. Never pas
 | PreviewMesh code repository (public) (`public_repository`) | The public code source used when creating a new deployment management repository; it is not a public control repository |
 | Application repository (`[source:name]`) | Each application's GitHub repository, application code local directory and actual HTTP listening port |
 | Token file paths | Separate files outside Git for application, dispatch and GHCR tokens; never paste token values into the configuration |
-| LAN IP | The Ubuntu server's stable LAN IPv4, or the **Windows host's** LAN IPv4 when using WSL |
-| Allowed subnet | `auto` uses the network and prefix length of the interface owning the selected LAN IP; enter a private CIDR for a different client network |
+| LAN IP | The Ubuntu server's stable private LAN IPv4, or the **Windows host's** private LAN IPv4 when using WSL; the wizard discovers candidates and lets you confirm or enter one manually |
+| Allowed subnet | `auto` uses the network and prefix length of the interface owning the selected LAN IP, including the Windows interface in WSL; enter a private CIDR for a different client network |
 | Domain suffix | `auto` uses `<LAN_IP>.sslip.io`; a lowercase private DNS suffix is the manual alternative |
 | Language | `auto`, `en` or `zh-CN`; `init` saves the selected value |
 

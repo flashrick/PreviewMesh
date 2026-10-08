@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the credential-free configuration wizard without external services."""
 import contextlib
+import configparser
 import io
 import json
 import os
@@ -53,6 +54,7 @@ token_file = {self.secrets / 'app.token'}
         patches = [
             patch.object(wizard, "discover_repositories", return_value=[]),
             patch.object(wizard, "discover_lan", return_value=[]),
+            patch.object(wizard, "discover_windows_lan", return_value=[]),
             patch.object(wizard, "discover_ports", return_value=[]),
             patch.object(wizard, "port_available", return_value=True),
             patch("builtins.input", side_effect=answers),
@@ -69,7 +71,7 @@ token_file = {self.secrets / 'app.token'}
         ghcr = self.secrets / "ghcr.token"
         source_token = self.secrets / "app.token"
         result, output = self.run_manual_wizard([
-            "1", str(self.control_dir), "owner/control", "", "192.168.1.20", "",
+            "1", str(self.control_dir), "owner/control", "", "1", "192.168.1.20", "",
             "", str(dispatch), str(ghcr), str(self.source_dir), "owner/app", "8080",
             str(source_token), "", "yes",
         ])
@@ -83,6 +85,7 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(value.lan_ip, "192.168.1.20")
         self.assertEqual(value.domain_suffix, "auto")
         self.assertEqual(value.sources[0].port, 8080)
+        self.assertIn("No Ubuntu LAN address was found", output)
         self.assertIn("No application port found", output)
         self.assertIn("Recommended: auto uses <LAN IPv4>.sslip.io", output)
         self.assertIn("http://pm-r<repository_id>-pr<PR>.192.168.1.20.sslip.io:18080", output)
@@ -98,7 +101,7 @@ token_file = {self.secrets / 'app.token'}
                 return []
             return ["owner/app-a", "owner/app-b"]
         answers = [
-            "2", str(self.control_dir), "2", "", "2", "", "", str(self.secrets / "dispatch"),
+            "2", str(self.control_dir), "2", "", "1", "2", "", "", str(self.secrets / "dispatch"),
             str(self.secrets / "ghcr"), str(self.source_dir), "2", "2", str(self.secrets / "app"),
             "", "yes",
         ]
@@ -107,6 +110,7 @@ token_file = {self.secrets / 'app.token'}
                                               side_effect=repositories))
             stack.enter_context(patch.object(wizard, "discover_lan",
                                               return_value=["192.168.1.20", "10.0.0.5"]))
+            stack.enter_context(patch.object(wizard, "discover_windows_lan", return_value=[]))
             stack.enter_context(patch.object(wizard, "discover_ports", return_value=[3000, 8080]))
             stack.enter_context(patch.object(wizard, "port_available", return_value=True))
             stack.enter_context(patch("builtins.input", side_effect=answers))
@@ -121,6 +125,7 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(value.sources[0].repository, "owner/app-b")
         self.assertEqual(value.sources[0].port, 8080)
         self.assertEqual(value.domain_suffix, "auto")
+        self.assertIn("已自动获取局域网 IPv4 地址", output.getvalue())
         self.assertIn("确认摘要", output.getvalue())
         self.assertIn("1. owner/control-a", output.getvalue())
         self.assertIn("2. owner/control-b", output.getvalue())
@@ -146,6 +151,28 @@ token_file = {self.secrets / 'app.token'}
         self.assertIn("Invalid choice", output.getvalue())
         self.assertIn("1. English", output.getvalue())
         self.assertIn("2. 中文", output.getvalue())
+
+    def test_network_environment_defaults_aliases_retry_and_q(self):
+        for release, expected in (("Linux", "ubuntu"), ("microsoft-standard-WSL2", "wsl")):
+            with self.subTest(release=release), \
+                 patch.object(wizard.platform, "release", return_value=release), \
+                 patch("builtins.input", return_value=""):
+                self.assertEqual(wizard.choose_network_environment(wizard.Prompts("en")), expected)
+
+        with patch.object(wizard.platform, "release", return_value="Linux"), \
+             patch("builtins.input", side_effect=["invalid", "WSL"]), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(wizard.choose_network_environment(wizard.Prompts("en")), "wsl")
+        self.assertIn("Invalid value", output.getvalue())
+
+        with patch.object(wizard.platform, "release", return_value="microsoft-standard-WSL2"), \
+             patch("builtins.input", return_value="Ubuntu"):
+            self.assertEqual(wizard.choose_network_environment(wizard.Prompts("en")), "ubuntu")
+
+        with patch.object(wizard.platform, "release", return_value="Linux"), \
+             patch("builtins.input", side_effect=["q"]):
+            with self.assertRaises(EOFError):
+                wizard.choose_network_environment(wizard.Prompts("zh-CN"))
 
     def test_single_candidate_shows_actual_default_and_enter_selects_it(self):
         output = io.StringIO()
@@ -173,7 +200,7 @@ token_file = {self.secrets / 'app.token'}
 
     def test_english_and_chinese_wizards_preserve_same_configuration_values(self):
         answers = [
-            str(self.control_dir), "owner/control", "", "192.168.1.20", "auto", "auto",
+            str(self.control_dir), "owner/control", "", "1", "192.168.1.20", "auto", "auto",
             str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "no", "yes",
@@ -185,6 +212,16 @@ token_file = {self.secrets / 'app.token'}
                 result, _ = self.run_manual_wizard(answers, language=language)
                 self.assertTrue(result)
                 value = config.load_config(self.config_path, ROOT)
+                ini = configparser.ConfigParser(interpolation=None)
+                ini.read(self.config_path)
+                self.assertEqual(set(ini.sections()), {"project", "network", "credentials", "source:app1"})
+                self.assertEqual(set(ini["project"]), {
+                    "control_repository", "control_directory", "public_repository", "language",
+                })
+                self.assertEqual(set(ini["network"]), {"lan_ip", "allowed_subnet", "domain_suffix"})
+                self.assertEqual(set(ini["credentials"]), {"dispatch_token_file", "ghcr_token_file"})
+                self.assertEqual(set(ini["source:app1"]), {"repository", "directory", "port", "token_file"})
+                self.assertNotIn("environment", ini["network"])
                 snapshots[language] = (
                     value.control,
                     value.control_dir,
@@ -205,11 +242,12 @@ token_file = {self.secrets / 'app.token'}
         original = self.config_text("8081").replace("language = auto", "language = zh-CN")
         self.config_path.write_text(original)
         before = config.load_config(self.config_path, ROOT)
-        answers = ["1", "yes", *([""] * 13), "yes"]
+        answers = ["1", "yes", *([""] * 14), "yes"]
         output = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(wizard, "discover_repositories", side_effect=lambda directory: []))
             stack.enter_context(patch.object(wizard, "discover_lan", return_value=[]))
+            stack.enter_context(patch.object(wizard, "discover_windows_lan", return_value=[]))
             stack.enter_context(patch.object(wizard, "discover_ports", return_value=[]))
             stack.enter_context(patch.object(wizard, "port_available", return_value=True))
             stack.enter_context(patch("builtins.input", side_effect=answers))
@@ -224,6 +262,7 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(after.sources[0].repository, before.sources[0].repository)
         self.assertEqual(after.sources[0].port, before.sources[0].port)
         self.assertEqual(after.language, "en")
+        self.assertIn("Previously configured LAN IPv4", output.getvalue())
         self.assertIn("Existing configuration found", output.getvalue())
 
     def test_existing_configuration_cancel_does_not_change_file(self):
@@ -237,7 +276,7 @@ token_file = {self.secrets / 'app.token'}
 
     def test_final_decline_leaves_no_file_and_q_can_exit_for_retry(self):
         answers = [
-            "1", str(self.control_dir), "owner/control", "", "192.168.1.20", "",
+            "1", str(self.control_dir), "owner/control", "", "1", "192.168.1.20", "",
             "", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "", "no",
@@ -265,13 +304,15 @@ token_file = {self.secrets / 'app.token'}
 
     def test_lan_discovery_filters_non_lan_and_container_addresses(self):
         addresses = [
-            {"ifname": "eth0", "addr_info": [
+            {"ifname": "eth0", "operstate": "UP", "addr_info": [
                 {"local": "192.168.1.20", "scope": "global"},
                 {"local": "8.8.8.8", "scope": "global"},
             ]},
-            {"ifname": "docker0", "addr_info": [{"local": "172.17.0.1", "scope": "global"}]},
-            {"ifname": "lo", "addr_info": [{"local": "10.0.0.1", "scope": "global"}]},
-            {"ifname": "eth1", "addr_info": [{"local": "10.0.0.5", "scope": "global"}]},
+            {"ifname": "docker0", "operstate": "UP", "addr_info": [{"local": "172.17.0.1", "scope": "global"}]},
+            {"ifname": "lo", "operstate": "UP", "addr_info": [{"local": "10.0.0.1", "scope": "global"}]},
+            {"ifname": "tun0", "operstate": "UP", "addr_info": [{"local": "10.0.0.2", "scope": "global"}]},
+            {"ifname": "eth1", "operstate": "DOWN", "addr_info": [{"local": "10.0.0.5", "scope": "global"}]},
+            {"ifname": "wlan0", "operstate": "UP", "addr_info": [{"local": "10.0.0.5", "scope": "global"}]},
         ]
         with patch.object(wizard.platform, "release", return_value="Linux"), \
              patch.object(wizard, "capture", return_value=json.dumps(addresses)):
@@ -281,6 +322,64 @@ token_file = {self.secrets / 'app.token'}
              patch.object(wizard, "capture") as capture:
             self.assertEqual(wizard.discover_lan(), [])
         capture.assert_not_called()
+
+    def test_windows_lan_discovery_parses_and_filters_addresses_without_running_powershell(self):
+        payload = json.dumps([
+            "192.168.1.20", "192.168.1.20", "10.0.0.5", "127.0.0.1",
+            "8.8.8.8", "::1", "not-an-ip", 42,
+        ])
+        with patch.object(wizard, "capture", return_value=payload) as capture:
+            values = wizard.discover_windows_lan()
+
+        self.assertEqual(values, ["10.0.0.5", "192.168.1.20"])
+        command = capture.call_args.args[0]
+        self.assertEqual(capture.call_args.kwargs, {"timeout": 20})
+        self.assertIn("Get-NetAdapter -Physical", command[-1])
+        self.assertIn("SkipAsSource", command[-1])
+        self.assertFalse(command[-1].lstrip().startswith("+"))
+
+        with patch.object(wizard, "capture", return_value=json.dumps("192.168.1.20")):
+            self.assertEqual(wizard.discover_windows_lan(), ["192.168.1.20"])
+        for output in ("", "not-json", json.dumps({"IPAddress": "192.168.1.20"})):
+            with self.subTest(output=output), patch.object(wizard, "capture", return_value=output):
+                self.assertEqual(wizard.discover_windows_lan(), [])
+
+    def test_wizard_uses_selected_environment_discovery_and_does_not_store_mode(self):
+        answers = [
+            str(self.control_dir), "owner/control", "", None, "", "auto", "auto",
+            str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
+            str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
+            "no", "yes",
+        ]
+        for environment, expected, discovery in (
+                ("1", "192.168.1.20", "discover_lan"),
+                ("2", "10.0.0.5", "discover_windows_lan")):
+            with self.subTest(environment=environment):
+                self.config_path = self.work / f"{environment}/setup.ini"
+                values = list(answers)
+                values[3] = environment
+                output = io.StringIO()
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(patch.object(wizard, "discover_repositories", return_value=[]))
+                    ubuntu = stack.enter_context(patch.object(wizard, "discover_lan",
+                                                               return_value=["192.168.1.20"]))
+                    windows = stack.enter_context(patch.object(wizard, "discover_windows_lan",
+                                                                return_value=["10.0.0.5"]))
+                    stack.enter_context(patch.object(wizard, "discover_ports", return_value=[]))
+                    stack.enter_context(patch.object(wizard, "port_available", return_value=True))
+                    stack.enter_context(patch("builtins.input", side_effect=values))
+                    with contextlib.redirect_stdout(output):
+                        self.assertTrue(wizard.run_wizard(self.config_path, ROOT, language="en"))
+
+                loaded = config.load_config(self.config_path, ROOT)
+                self.assertEqual(loaded.lan_ip, expected)
+                self.assertNotIn("environment", self.config_path.read_text())
+                if discovery == "discover_lan":
+                    ubuntu.assert_called_once_with()
+                    windows.assert_not_called()
+                else:
+                    windows.assert_called_once_with()
+                    ubuntu.assert_not_called()
 
     def test_dockerfile_port_discovery_handles_multiple_tcp_ports_and_ignores_udp(self):
         self.source_dir.mkdir()
@@ -310,7 +409,7 @@ token_file = {self.secrets / 'app.token'}
         for name in ("dispatch.token", "ghcr.token", "app.token"):
             (self.secrets / name).write_text("TOPSECRET_TEST_VALUE")
         result, output = self.run_manual_wizard([
-            "1", str(self.control_dir), "owner/control", "", "192.168.1.20", "",
+            "1", str(self.control_dir), "owner/control", "", "1", "192.168.1.20", "",
             "preview.example.internal", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "", "yes",

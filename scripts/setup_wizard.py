@@ -24,11 +24,11 @@ def safe(value):
     return value
 
 
-def capture(command):
+def capture(command, *, timeout=5):
     try:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('GIT_TRACE', 'GIT_CONFIG')) and key not in ('GH_DEBUG', 'GIT_CURL_VERBOSE')}
-        return subprocess.run(command, capture_output=True, text=True, timeout=5,
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout,
                               check=True, env=env).stdout
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return ""
@@ -60,12 +60,48 @@ def discover_lan():
         return []
     try:
         data = json.loads(capture(['ip', '-j', '-4', 'address', 'show', 'up']))
+        excluded = ('lo', 'docker', 'br-', 'veth', 'cni', 'flannel', 'virbr', 'podman',
+                    'tun', 'tap', 'wg', 'tailscale', 'ppp', 'vboxnet', 'vmnet', 'zt')
         return sorted({str(ipaddress.IPv4Address(info['local'])) for item in data
-                       if not item.get('ifname', '').startswith(('lo', 'docker', 'br-', 'veth', 'cni', 'flannel'))
+                       if not item.get('ifname', '').startswith(excluded)
+                       and item.get('operstate') in (None, 'UP', 'UNKNOWN')
                        for info in item.get('addr_info', []) if info.get('scope') == 'global'
                        and any(ipaddress.IPv4Address(info['local']) in net for net in RFC1918)})
     except (ValueError, KeyError, TypeError):
         return []
+
+
+def discover_windows_lan():
+    # Query Windows physical adapters so WSL NAT, container and VPN interfaces
+    # cannot be mistaken for the host's LAN entry. No network settings are changed.
+    command = """$ErrorActionPreference = 'Stop'
+$physical = @(Get-NetAdapter -Physical | Where-Object Status -eq 'Up' |
+    Select-Object -ExpandProperty ifIndex)
+$addresses = @(Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred |
+    Where-Object { $_.InterfaceIndex -in $physical -and -not $_.SkipAsSource } |
+    Select-Object -ExpandProperty IPAddress)
+ConvertTo-Json -InputObject $addresses -Compress
+"""
+    try:
+        values = json.loads(capture(['powershell.exe', '-NoProfile', '-NonInteractive',
+                                     '-Command', command], timeout=20))
+    except (ValueError, TypeError):
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    addresses = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            address = ipaddress.IPv4Address(value)
+        except ValueError:
+            continue
+        if any(address in network for network in RFC1918):
+            addresses.add(str(address))
+    return sorted(addresses)
 
 
 def discover_ports(directory):
@@ -150,6 +186,19 @@ class Prompts:
 
     def confirm(self, en, zh):
         return confirm(self.text(en, zh), language=self.language)
+
+
+def choose_network_environment(ui):
+    ui.say('Choose where PreviewMesh will run; the default is detected from this session. The wizard will query that environment for LAN addresses.\n  1. Ubuntu directly (outside WSL): use this Ubuntu machine\'s address.\n  2. Inside WSL: use the Windows host\'s address.',
+           '选择 PreviewMesh 的运行方式，默认值根据当前环境检测。向导会自动获取对应环境的局域网地址。\n  1. Ubuntu 直接安装（非 WSL）：使用这台 Ubuntu 机器的地址。\n  2. WSL 内安装：使用 Windows 主机的地址。')
+    default = 'WSL' if 'microsoft' in platform.release().lower() else 'Ubuntu'
+    def selected(value):
+        choices = {'1': 'ubuntu', 'ubuntu': 'ubuntu', '2': 'wsl', 'wsl': 'wsl'}
+        if value.lower() not in choices:
+            raise ValueError()
+        return choices[value.lower()]
+    return ui.ask('Installation environment (1/2 or Ubuntu/WSL)', '安装运行方式（1/2 或 Ubuntu/WSL）',
+                  default, selected)
 
 
 def private_ip(value):
@@ -237,13 +286,23 @@ def run_wizard(path, root, *, language=None):
     data['project'] = dict(control_repository=control, control_directory=control_dir,
                            public_repository=ui.choose('PreviewMesh code repository (public)', 'PreviewMesh 代码仓库（公开）', template_repos, validate_repo),
                            language=language)
-    ips = discover_lan()
-    if previous:
-        ips.insert(0, previous.lan_ip)
     ui.say('\n[2/5] Preview access: choose the server address, allowed client network and preview domain.',
            '\n[2/5] 预览访问：确定服务器地址、允许访问的网段和预览域名。')
-    ui.say('Use the stable LAN IPv4 that colleagues can reach. On Ubuntu, find it in Settings > Network. On WSL, use the Windows host address from Windows Settings > Network > IPv4. VPN and container addresses may be unsuitable.',
-           '填写同事能访问到的固定局域网 IPv4。Ubuntu 可在“设置 > 网络”查看；WSL 请填写 Windows 主机的地址，可在 Windows“设置 > 网络 > IPv4”查看。VPN 或容器地址可能不适用。')
+    environment = choose_network_environment(ui)
+    ips = discover_windows_lan() if environment == 'wsl' else discover_lan()
+    if ips:
+        ui.say('LAN IPv4 addresses were detected automatically. Confirm the address colleagues can reach; press Enter for a single candidate, or choose from multiple candidates. You can also enter an address manually.',
+               '已自动获取局域网 IPv4 地址。请确认同事能访问的地址：只有一个候选时可直接回车，多个候选时请选择；也可以手动填写。')
+    elif environment == 'wsl':
+        ui.say('No Windows LAN address was found or PowerShell could not run. Check Windows interoperability in WSL and retry init. For a virtual bridge or other custom network, find the Windows host LAN IPv4 in Windows Settings > Network and enter it manually.',
+               '未发现 Windows 局域网地址，或 PowerShell 未能执行。请检查 WSL 的 Windows 互操作功能后重试 init；使用虚拟桥接等自定义网络时，可在 Windows“设置 > 网络”查看主机的局域网 IPv4，并手动填写。')
+    else:
+        ui.say('No Ubuntu LAN address was found. Check that this is Ubuntu outside WSL and that its network is connected; you can find the LAN IPv4 in Ubuntu Settings > Network and enter it manually.',
+               '未发现 Ubuntu 局域网地址。请确认这是非 WSL 的 Ubuntu 且网络已连接；也可以在 Ubuntu“设置 > 网络”查看局域网 IPv4，并手动填写。')
+    if previous:
+        ui.say(f'Previously configured LAN IPv4: {previous.lan_ip}. It is also listed below for review.',
+               f'已有配置中的局域网 IPv4：{previous.lan_ip}。下面也会列出这个地址，供你核对。')
+        ips.insert(0, previous.lan_ip)
     data['network'] = dict(lan_ip=ui.choose('Preview server LAN IPv4', '预览服务器的局域网 IPv4', ips, private_ip))
     ui.say('The allowed subnet limits which client addresses can access previews. auto uses the actual network and prefix length of the interface with your selected LAN IPv4. You can also enter a private IPv4 subnet containing that address, such as 192.168.1.0/24.',
            '允许访问的网段决定哪些客户端地址能打开预览。auto 会使用所选局域网 IPv4 所属网卡的实际网络和前缀长度；也可以填写包含该地址的私有 IPv4 网段，例如 192.168.1.0/24。')
