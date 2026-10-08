@@ -654,7 +654,7 @@ class Installer:
             self.say("Windows will request administrator access to configure LAN forwarding.",
                      "Windows 将请求管理员权限，用来配置局域网转发。")
             self.powershell("-File", windows_script, "-Mode", "Install", "-Distro", distro,
-                            "-LanIP", self.c.lan_ip, "-AllowedSubnet", self.c.subnet, interactive=True)
+                            "-LanIP", self.c.lan_ip, "-AllowedSubnet", self.c.subnet)
             self.powershell("-File", windows_script, "-Mode", "Check", "-Distro", distro,
                             "-LanIP", self.c.lan_ip, "-AllowedSubnet", self.c.subnet)
         self.http_probe("127.0.0.1")

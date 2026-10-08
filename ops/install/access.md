@@ -71,6 +71,39 @@ do not migrate automatically.
 如果修改 lan_ip 或 domain_suffix，请重新运行安装，使 control 和入口检查使用新值，
 然后重新部署仍开放的 PR。已有预览 URL 不会自动迁移。
 
+## WSL LAN address and Windows network profile / WSL 局域网地址和 Windows 网络 Profile
+
+If the WSL LAN step says that the configured address is missing, has changed,
+or is the WSL guest NAT address, run `bash scripts/setup.sh init`, choose WSL,
+and accept or enter the current Windows host LAN IPv4. Then rerun the exact same
+`install` command. This refreshes the saved address before Windows forwarding
+and the entry checks run.
+
+如果 WSL 局域网步骤提示配置的地址不存在、已经变化，或是 WSL guest NAT 地址，请执行
+`bash scripts/setup.sh init`，选择 WSL，确认向导重新发现的 Windows 主机局域网 IPv4，
+或手动填写当前地址，然后重新运行原来那条 `install` 命令。这样会在配置 Windows 转发
+和入口检查前更新保存的地址。
+
+Windows must classify the active connection as **Private** or **Domain**. On a
+trusted home or office LAN only, open **Settings → Network & Internet → the
+active connection → Properties**, set **Network profile** to **Private**, and
+rerun the same `install` command. The installer does not promote a **Public**
+connection automatically and does not weaken firewall protection.
+
+Windows 当前连接必须是“**专用**”或“**域**”网络。仅在可信的家庭或办公局域网中，打开
+Windows **设置 → 网络和 Internet → 当前连接 → 属性**，将**网络配置文件**设为“**专用**”，
+然后重新运行同一条 `install` 命令。安装器不会自动把“**公用**”连接改为受信任网络，也不会
+削弱防火墙保护。
+
+If the Windows administrator step fails, read the elevated child error shown
+in the terminal. The same diagnostic is retained in the redacted log at
+`~/.local/share/previewmesh/setup.log`; resolve the reported address, profile,
+WSL, or forwarding issue, then rerun the same command.
+
+如果 Windows 管理员步骤失败，请查看终端显示的提权子进程错误。相同的诊断信息会保存在
+`~/.local/share/previewmesh/setup.log` 的脱敏日志中；按提示处理地址、网络 Profile、WSL
+或转发问题后，重新运行同一条命令。
+
 ## Recommended automatic address: sslip.io / 推荐自动地址：sslip.io
 
 Keep `[network] domain_suffix = auto`. The installer turns the selected

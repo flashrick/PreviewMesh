@@ -1039,6 +1039,50 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(probes, ["127.0.0.1", "192.168.1.20"] * 2)
         self.assertTrue(any(args[-1:] == ["--refresh-ingress"] for args in run_calls))
 
+    def test_wsl_network_install_logs_powershell_call_without_interactive_capture(self):
+        app = self.instance()
+        app.wsl = True
+        app.state.setdefault("files", {})["/etc/systemd/system/previewmesh-ingress.socket"] = "synthetic-managed-file"
+        app.check_dns = lambda: None
+        expected = self.traefik_values(None)
+        get_args = ("-n", "kube-system", "get", "helmchartconfig", "traefik",
+                    "--ignore-not-found", "-o", "json")
+        service_args = ("-n", "kube-system", "get", "service", "traefik", "-o", "json")
+        rollout_args = ("-n", "kube-system", "rollout", "status", "deployment/traefik",
+                        "--timeout=180s")
+
+        def kube(*args, **kwargs):
+            if args == get_args:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"spec": {"valuesContent": expected}}), "")
+            if args[:2] == ("apply", "-f"):
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args == service_args:
+                return subprocess.CompletedProcess(args, 0, json.dumps({
+                    "spec": {"type": "ClusterIP", "clusterIP": "10.0.0.10"}}), "")
+            if args == rollout_args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            self.fail("unexpected WSL network kube call: " + repr(args))
+
+        app.kube = kube
+        app.managed = lambda *args, **kwargs: False
+        app.http_probe = lambda *args, **kwargs: None
+        app.run = lambda args, **kwargs: subprocess.CompletedProcess(
+            args, 0, "\\\\wsl.localhost\\Ubuntu\\ops\\wsl\\setup-lan.ps1\n" if args[0] == "wslpath" else "", "")
+        powershell_calls = []
+
+        def powershell(*args, **kwargs):
+            powershell_calls.append((args, kwargs))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        app.powershell = powershell
+        with patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu-Test"}):
+            app.network()
+
+        install_calls = [entry for entry in powershell_calls
+                         if "-Mode" in entry[0] and entry[0][entry[0].index("-Mode") + 1] == "Install"]
+        self.assertEqual(len(install_calls), 1)
+        self.assertFalse(install_calls[0][1].get("interactive", False))
+
     def test_redact_masks_json_token_fields_while_api_payload_stays_parseable(self):
         app = self.instance("install")
         app.home.mkdir(parents=True, exist_ok=True)
@@ -1059,6 +1103,29 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(token, log)
         self.assertNotIn(temporary, log)
         self.assertIn("[REDACTED]", log)
+
+    def test_parent_preserves_utf8_windows_helper_error_in_output_log_and_setup_error(self):
+        app = self.instance("install")
+        app.home.mkdir(parents=True, exist_ok=True)
+        helper = self.work / "emit-utf8-helper.py"
+        helper.write_text(
+            "import sys\n"
+            "message = 'Windows \\u7ba1\\u7406\\u5458 error \\u2713'\n"
+            "sys.stdout.buffer.write(message.encode('utf-8'))\n"
+            "sys.stderr.buffer.write(message.encode('utf-8'))\n"
+            "sys.exit(7 if '--fail' in sys.argv else 0)\n")
+        message = "Windows 管理员 error ✓"
+
+        completed = app.run([sys.executable, str(helper)])
+        self.assertEqual(completed.stdout, message)
+        self.assertEqual(completed.stderr, message)
+        with self.assertRaises(config.SetupError) as error:
+            app.run([sys.executable, str(helper), "--fail"])
+        self.assertIn(message, str(error.exception))
+        self.assertNotIn("�", str(error.exception))
+        log = app.log_path.read_bytes().decode("utf-8")
+        self.assertIn(message, log)
+        self.assertNotIn("�", log)
 
     def test_dns_failure_has_no_hosts_fallback(self):
         app = self.instance()

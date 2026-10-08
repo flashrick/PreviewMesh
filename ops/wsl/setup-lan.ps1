@@ -7,6 +7,8 @@ param(
     [string]$AllowedSubnet = 'auto'
 )
 $ErrorActionPreference = 'Stop'
+# WSL captures diagnostics as UTF-8; Windows PowerShell otherwise uses its local code page.
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $directory = Join-Path $env:ProgramData 'PreviewMesh'
 $configPath = Join-Path $directory 'lan.json'
 $installedScript = Join-Path $directory 'setup-lan.ps1'
@@ -14,6 +16,59 @@ $ruleName = 'PreviewMesh-LAN-18080'
 $hypervName = 'PreviewMesh-WSL-18080'
 $taskName = 'PreviewMesh LAN forwarding'
 function Quote-Argument([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
+function Get-LanInterface([string]$Address) {
+    $interface = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $Address -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $interface) {
+        throw "Configured LAN IP $Address is not assigned to Windows. Run setup.sh init with the same config, choose WSL and select the current Windows LAN IPv4 address, then rerun install."
+    }
+    $profile = Get-NetConnectionProfile -InterfaceIndex $interface.InterfaceIndex -ErrorAction SilentlyContinue
+    if (-not $profile) { throw 'No Windows connection profile was found. Select the address of the active Windows LAN connection in setup.sh init.' }
+    if ($profile.NetworkCategory -eq 'Public') {
+        throw 'This Windows connection is Public. Only for a trusted home or office LAN, set this connection to Private in Settings > Network & Internet > connection properties, then retry install. PreviewMesh requires a Private or Domain network.'
+    }
+    return $interface
+}
+function New-SetupResultPath { return [IO.Path]::GetTempFileName() }
+function Invoke-AdministratorSetup([string]$ScriptPath) {
+    $resultPath = New-SetupResultPath
+    try {
+        $apply = '& ' + (Quote-Argument $ScriptPath) + ' -Mode Apply -Distro ' + (Quote-Argument $Distro) +
+            ' -LanIP ' + (Quote-Argument $LanIP) + ' -AllowedSubnet ' + (Quote-Argument $AllowedSubnet)
+        $quotedResult = Quote-Argument $resultPath
+        # RunAs cannot redirect standard streams. Return the child error through a caller-readable file.
+        $command = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    $apply
+    @{ ok = `$true; error = '' } | ConvertTo-Json -Compress | Set-Content -LiteralPath $quotedResult -Encoding UTF8
+    exit 0
+} catch {
+    @{ ok = `$false; error = (`$_ | Out-String).Trim() } | ConvertTo-Json -Compress | Set-Content -LiteralPath $quotedResult -Encoding UTF8
+    exit 1
+}
+"@
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        Write-Output 'Windows administrator access is needed to configure the preview LAN entry.'
+        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+        $raw = Get-Content -LiteralPath $resultPath -Raw -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            $exitCode = if ($null -ne $process) { $process.ExitCode } else { 'unavailable' }
+            throw "Windows administrator setup did not return a result (exit code: $exitCode). Check the administrator prompt or child window, then rerun install."
+        }
+        try { $result = $raw | ConvertFrom-Json } catch { throw 'Windows administrator setup returned invalid JSON; rerun install.' }
+        if ($null -eq $result -or $result.ok -isnot [bool]) { throw 'Windows administrator setup returned an invalid result; rerun install.' }
+        if (-not $result.ok) {
+            $detail = if ([string]::IsNullOrWhiteSpace([string]$result.error)) { 'The administrator process reported failure without details.' } else { [string]$result.error }
+            throw "Windows administrator setup failed:`n$detail"
+        }
+        if ($null -ne $process -and $null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
+            throw "Windows administrator setup reported success but exited with code $($process.ExitCode); rerun install."
+        }
+        Write-Output 'PASS: Windows administrator setup completed.'
+    } finally {
+        Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+    }
+}
 function Invoke-WSL([string[]]$Arguments) {
     $result = & wsl.exe -d $Distro -- @Arguments
     if ($LASTEXITCODE -ne 0) { throw 'WSL command failed. Run wsl --update in Windows, reopen Ubuntu and retry setup.' }
@@ -31,15 +86,6 @@ function Test-Entry {
     }
     Write-Output 'PASS: Windows DNS and LAN entry. Ask a colleague to check from a second LAN machine too.'
 }
-if ($Mode -eq 'Install') {
-    $command = '& ' + (Quote-Argument $PSCommandPath) + ' -Mode Apply -Distro ' + (Quote-Argument $Distro) +
-        ' -LanIP ' + (Quote-Argument $LanIP) + ' -AllowedSubnet ' + (Quote-Argument $AllowedSubnet)
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    Write-Output 'Windows administrator access is needed to configure the preview LAN entry.'
-    $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
-    if ($process.ExitCode -ne 0) { throw 'Windows setup did not complete. Rerun setup.sh install after resolving the displayed error.' }
-    exit 0
-}
 if ($Mode -eq 'Refresh') {
     $saved = Get-Content -Raw $configPath | ConvertFrom-Json
     $Distro = $saved.distro; $LanIP = $saved.lan_ip; $AllowedSubnet = $saved.allowed_subnet
@@ -55,14 +101,15 @@ if (-not ($bytes[0] -eq 10 -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $by
     throw 'Use a private LAN IPv4, not a public or loopback address.'
 }
 if ($Mode -eq 'Check') { Test-Entry; exit 0 }
+if ($Mode -eq 'Install') {
+    # Check address/profile before UAC; they are checked again after elevation.
+    [void](Get-LanInterface -Address $LanIP)
+    Invoke-AdministratorSetup -ScriptPath $PSCommandPath
+    exit 0
+}
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run Windows setup as administrator.' }
-$interface = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $LanIP | Select-Object -First 1
-if (-not $interface) { throw 'lan_ip must be the Windows LAN address, not the WSL NAT address.' }
-$profile = Get-NetConnectionProfile -InterfaceIndex $interface.InterfaceIndex
-if ($profile.NetworkCategory -eq 'Public') {
-    throw 'This Windows connection is Public. For a trusted LAN, change its network profile to Private in Settings > Network & Internet, then retry. No firewall protection was disabled.'
-}
+$interface = Get-LanInterface -Address $LanIP
 $subnet = $AllowedSubnet
 if ($subnet -eq 'auto') {
     $networkBytes = $address.GetAddressBytes()
