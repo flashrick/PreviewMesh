@@ -810,7 +810,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Installation complete: all 8 infrastructure/setup stages passed.", text)
         for number in range(1, 9):
             self.assertIn(f"Completed [{number}/8]: Stage {number}", text)
-        self.assertIn("owner/app: source onboarding is NOT complete", text)
+        self.assertIn("owner/app: application onboarding is not complete", text)
         self.assertIn("setup.sh onboard-source", text)
         self.assertIn("--source owner/app", text)
         self.assertIn("--create-pr", text)

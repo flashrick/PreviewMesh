@@ -47,10 +47,10 @@ class Installer:
                     for key in ("stages", "completed", "files", "downloads")):
                 raise ValueError()
         except (ValueError, OSError):
-            raise SetupError("Installation state is unreadable or damaged. Preserve the damaged file, inspect install-state.json.bak beside it, and restore that file if trusted, then rerun the same command. If no trusted backup exists, recover the ownership records from this machine and control repository before continuing; do not discard them. / 安装状态无法读取或已损坏。请保留损坏文件，检查同目录 install-state.json.bak，确认可信后恢复并重跑同一命令；若无可信备份，请先根据本机及 control 仓库恢复资源归属记录，不要直接丢弃。")
+            raise SetupError("Installation state is unreadable or damaged. Preserve the damaged file, inspect install-state.json.bak beside it, and restore that file if trusted, then rerun the same command. If no trusted backup exists, recover the ownership records from this machine and deployment management repository before continuing; do not discard them. / 安装状态无法读取或已损坏。请保留损坏文件，检查同目录 install-state.json.bak，确认可信后恢复并重跑同一命令；若无可信备份，请先根据本机及部署管理仓库恢复资源归属记录，不要直接丢弃。")
         owner = self.state.get("control")
         if owner and owner != self.c.control and self.state.get("control_id"):
-            raise SetupError("This account already manages another control repository / 本机账号已管理另一个 control 仓库。")
+            raise SetupError("This account already manages another deployment management repository / 本机账号已管理另一个部署管理仓库。")
         self.env = dict(os.environ)
         for key in ("GH_DEBUG", "GIT_TRACE", "GIT_TRACE_PACKET", "GIT_CURL_VERBOSE", "BASH_ENV", "ENV"):
             self.env.pop(key, None)
@@ -123,8 +123,10 @@ class Installer:
                 return result
             page += 1
 
-    def step(self, number, en, zh, action):
+    def step(self, number, en, zh, action, *, detail=None):
         self.say(f"\n[{number}/8] {en}", f"\n[{number}/8] {zh}")
+        if detail:
+            self.say(*detail)
         inputs = self.checkpoints.inputs(number)
         reuse, reason = self.checkpoints.assess(number, inputs)
         self.stage_results[number] = ("reused" if reuse else "rerun", reason)
@@ -162,7 +164,7 @@ class Installer:
         if self.c.control_dir == ROOT:
             origin = self.run(["git", "-C", ROOT, "remote", "get-url", "origin"]).stdout.strip()
             if not self.origin_matches(origin, self.c.control):
-                raise SetupError("The public checkout cannot be the control directory / 公开 checkout 不能用作 control 目录。")
+                raise SetupError("The PreviewMesh code directory cannot be the deployment management directory / PreviewMesh 代码目录不能用作部署管理目录。")
 
     def dependencies(self):
         self.preflight()
@@ -236,13 +238,13 @@ class Installer:
         lookup = self.run(["gh", "api", f"repos/{self.c.control}"], check=False)
         if lookup.returncode:
             if "HTTP 404" not in lookup.stderr:
-                raise SetupError("Cannot inspect control repository; check GitHub access / 无法检查 control 仓库，请检查 GitHub 权限和网络。")
+                raise SetupError("Cannot inspect deployment management repository; check GitHub access / 无法检查部署管理仓库，请检查 GitHub 权限和网络。")
             directory = self.c.control_dir
             if directory.exists() and any(directory.iterdir()):
                 upstream = self.run(["git", "-C", directory, "remote", "get-url", "upstream"], check=False)
                 origins = self.run(["git", "-C", directory, "remote"]).stdout.split()
                 if upstream.returncode or not self.origin_matches(upstream.stdout.strip(), self.c.public) or "origin" in origins:
-                    raise SetupError("Nonempty control directory is not an interrupted template clone / 非空 control 目录不属于可恢复的模板下载。")
+                    raise SetupError("Nonempty deployment management directory is not an interrupted PreviewMesh code clone / 部署管理目录非空，且不属于可继续恢复的 PreviewMesh 代码下载。")
             else:
                 directory.parent.mkdir(parents=True, exist_ok=True)
                 self.run(["git", "clone", "--origin", "upstream",
@@ -255,23 +257,23 @@ class Installer:
         else:
             info = json.loads(lookup.stdout)
         if not info["private"] or not info.get("permissions", {}).get("admin"):
-            raise SetupError("Control must be PRIVATE and your account must administer it / control 必须为私有仓库，当前账号需有管理权限。")
+            raise SetupError("Deployment management repository must be PRIVATE and your account must administer it / 部署管理仓库必须是私有仓库，当前账号需有管理权限。")
         if info.get("default_branch") != "main" and not self.state.get("created_control"):
-            raise SetupError("Control default branch must be main / control 默认分支必须为 main。")
+            raise SetupError("Deployment management default branch must be main / 部署管理仓库的默认分支必须为 main。")
         self.checkout(self.c.control_dir, self.c.control)
         branch = self.run(["git", "-C", self.c.control_dir, "branch", "--show-current"]).stdout.strip()
         if branch != "main":
-            raise SetupError("Switch the control checkout to main and rerun / 请将 control checkout 切换到 main 后重试。")
+            raise SetupError("Switch the deployment management local directory to main and rerun / 请将部署管理本地目录切换到 main 分支后重试。")
         # Refuse old control code rather than silently deploying it with new settings.
         cli = self.c.control_dir / "cmd/previewmesh/main.go"
         if not cli.exists() or '"domain-suffix"' not in cli.read_text():
-            raise SetupError("Control code predates this installer. Use scripts/update-upstream.sh in control, review and publish that update, then rerun.\ncontrol 代码版本过旧。请在 control 中运行 scripts/update-upstream.sh，审核并发布更新后重新安装。")
+            raise SetupError("Deployment management code predates this installer. Use scripts/update-upstream.sh in its local directory, review and publish that update, then rerun.\n部署管理代码版本过旧。请在部署管理本地目录运行 scripts/update-upstream.sh，审核并发布更新后重新安装。")
         changes = self.run(["git", "-C", self.c.control_dir, "status", "--porcelain"]).stdout.splitlines()
         expected_hash = self.state.get("registry_hash")
         for change in changes:
             if change[3:] == "config/repositories.json" and expected_hash == fingerprint((self.c.control_dir / change[3:]).read_text()):
                 continue
-            raise SetupError("Control checkout has local changes; commit or stash them before installation / control 有本地改动，请先提交或暂存后再安装。")
+            raise SetupError("Deployment management local directory has changes; commit or stash them before installation / 部署管理本地目录有改动，请先提交或暂存后再安装。")
         self.control_id = str(info["id"])
         self.state["control_id"] = self.control_id
         self.save()
@@ -281,7 +283,7 @@ class Installer:
             if info["full_name"] != source.repository:
                 raise SetupError(f"Use canonical GitHub repository name / 请使用 GitHub 的准确仓库名: {info['full_name']}")
             if not info.get("permissions", {}).get("admin"):
-                raise SetupError(f"Source admin access required to upload Actions secrets / 上传 Actions Secrets 需要 source 管理权限: {source.repository}")
+                raise SetupError(f"Application repository admin access required to upload Actions secrets / 上传 Actions Secrets 需要应用源码仓库的管理权限: {source.repository}")
             self.checkout(source.directory, source.repository)
             generated.append({"repository_id": str(info["id"]), "source_repository": source.repository,
                               "port": source.port, "source_secret": "SOURCE_REPO_" + str(info["id"])})
@@ -333,19 +335,19 @@ class Installer:
         fine = "https://github.com/settings/personal-access-tokens/new"
         for source, registration in zip(self.c.sources, self.registrations):
             token = self.credential(source.token_file,
-                f"{source.repository}: create a fine-grained token at {fine}; select only this source. Contents/Metadata: read; Pull requests/Commit statuses: read and write.",
-                f"{source.repository}：在 {fine} 创建 fine-grained Token，仅选此 source。Contents/Metadata 只读；Pull requests/Commit statuses 读写。")
+                f"Application access token for {source.repository}: deployment automation uses it to read this application and update PR feedback. Create a fine-grained token at {fine}; select only this application. Contents/Metadata: read; Pull requests/Commit statuses: read and write.",
+                f"{source.repository} 的应用访问 Token：部署自动化用它读取应用代码并更新 PR 反馈。在 {fine} 创建 fine-grained Token，仅选这个应用仓库。Contents/Metadata 只读；Pull requests/Commit statuses 读写。")
             self.run(["gh", "api", f"repos/{source.repository}"], env={"GH_TOKEN": token})
             self.run(["gh", "secret", "set", registration["source_secret"], "--repo", self.c.control, "--app", "actions"], input=token)
         token = self.credential(self.c.dispatch_file,
-            f"Dispatch: {fine}; select ONLY {self.c.control}. Actions: read/write; Metadata: read.",
-            f"通知 Token：{fine}；仅选 {self.c.control}。Actions 读写；Metadata 只读。")
+            f"Deployment notification token: application workflows use it to start workflows in {self.c.control}. Create it at {fine}; select only that deployment management repository. Actions: read/write; Metadata: read.",
+            f"部署通知 Token：应用工作流用它启动 {self.c.control} 中的部署工作流。在 {fine} 创建，仅选这个部署管理仓库。Actions 读写；Metadata 只读。")
         self.run(["gh", "api", f"repos/{self.c.control}/actions/workflows"], env={"GH_TOKEN": token})
         for source in self.c.sources:
             self.run(["gh", "secret", "set", "PREVIEWMESH_DISPATCH_TOKEN", "--repo", source.repository, "--app", "actions"], input=token)
         token = self.credential(self.c.ghcr_file,
-            "GHCR: https://github.com/settings/tokens/new?scopes=read:packages — use a classic PAT with read:packages and access to the preview packages.",
-            "镜像 Token：https://github.com/settings/tokens/new?scopes=read:packages — 使用 classic PAT，选择 read:packages，账号需能读取预览镜像包。")
+            "Image download token (GHCR): the cluster uses it to pull preview images. At https://github.com/settings/tokens/new?scopes=read:packages create a classic PAT with read:packages and access to the preview packages.",
+            "镜像下载 Token（GHCR）：集群用它拉取预览镜像。在 https://github.com/settings/tokens/new?scopes=read:packages 创建 classic PAT，选择 read:packages，账号需能读取预览镜像包。")
         self.run(["gh", "secret", "set", "GHCR_READ_TOKEN", "--repo", self.c.control, "--app", "actions"], input=token)
 
     def managed(self, path, content, mode=0o644, privileged=False, adopt=None):
@@ -431,7 +433,7 @@ class Installer:
         for target in (self.c.runner_config, self.c.runner_config.parent / ".runner-check"):
             if (self.run(["git", "-C", self.c.control_dir, "ls-files", "--error-unmatch", target], check=False).returncode == 0
                     or self.run(["git", "-C", self.c.control_dir, "check-ignore", "--quiet", target], check=False).returncode != 0):
-                raise SetupError("Runner credentials and temporary files must be Git-ignored; update control .gitignore / Runner 凭据及临时文件必须被 Git 忽略，请更新 control 的 .gitignore。")
+                raise SetupError("Runner credentials and temporary files must be Git-ignored; update the deployment management .gitignore / Runner 凭据及临时文件必须被 Git 忽略，请更新部署管理仓库的 .gitignore。")
         # root must never execute a k3s binary writable by the runner user.
         k3s = Path(self.tool("k3s")).resolve()
         for part in [k3s, *k3s.parents]:
@@ -637,8 +639,8 @@ class Installer:
         self.say("After merging, confirm the notification on the default branch with:",
                  "合并后，用以下命令确认默认分支上的通知工作流：")
         print(self.setup_command("doctor"))
-        self.say("Then open a same-repository test application PR targeting the source default branch. Check source notification Actions → control Preview workflow → preview URL and matching commit SHA. Close the test PR and confirm cleanup. A second LAN machine should also open the preview URL before closing.",
-                 "然后用源仓库内的分支创建一个指向默认分支的测试应用 PR（不要使用 fork）。依次检查 source 通知 Actions → control Preview 工作流 → 预览 URL 与提交 SHA 一致。关闭测试 PR 后确认清理；关闭前还应从另一台局域网机器访问预览 URL。")
+        self.say("Then open a same-repository test application PR targeting the application default branch. Check application notification Actions → deployment management Preview workflow → preview URL and matching commit SHA. Close the test PR and confirm cleanup. A second LAN machine should also open the preview URL before closing.",
+                 "然后用应用源码仓库内的分支创建一个指向默认分支的测试 PR（不要使用 fork）。依次检查应用通知 Actions → 部署管理仓库的 Preview 工作流 → 预览 URL 与提交 SHA 一致。关闭测试 PR 后确认清理；关闭前还应从另一台局域网机器访问预览 URL。")
 
     def completion(self):
         self.say("Installation complete: all 8 infrastructure/setup stages passed.",
@@ -658,8 +660,8 @@ class Installer:
                 self.say(f"{source.repository}: notification merged; test PR verification remains.",
                          f"{source.repository}：通知已合并；仍需测试 PR 验证。")
             else:
-                self.say(f"{source.repository}: source onboarding is NOT complete. Review the diff, then create its PR:",
-                         f"{source.repository}：源仓库尚未接入。请先查看 diff，再创建接入 PR：")
+                self.say(f"{source.repository}: application onboarding is not complete. Review the diff, then create its PR:",
+                         f"{source.repository}：应用尚未接入。请先查看差异，再创建接入 PR：")
                 command = self.setup_command("onboard-source", source.repository)
                 print(command + "\n" + command + " --create-pr")
         self.source_verification()
@@ -673,8 +675,8 @@ class Installer:
                      f"恢复结果 [{number}/8]：{'复用' if result == 'reused' else '重新执行'}：{reason}")
         if len(self.completed_stages) < 8:
             remaining = ", ".join(str(number) for number in range(len(self.completed_stages) + 1, 9))
-            self.say(f"Installation incomplete. Stages still requiring completion: {remaining}. Source onboarding is not yet verified.",
-                     f"安装尚未完成。仍需完成阶段：{remaining}。源仓库接入尚未验证。")
+            self.say(f"Installation incomplete. Stages still requiring completion: {remaining}. Application onboarding is not yet verified.",
+                     f"安装尚未完成。仍需完成阶段：{remaining}。应用接入尚未验证。")
 
     def enable(self):
         self.run(["gh", "variable", "set", "PREVIEWMESH_DOMAIN_SUFFIX", "--repo", self.c.control, "--body", self.c.suffix])
@@ -733,27 +735,27 @@ class Installer:
             check("Windows LAN entry / Windows 局域网入口", windows_check)
         def github_check():
             info = self.api(f"repos/{self.c.control}")
-            require(info["private"], "Control must remain private / control 必须保持私有。")
+            require(info["private"], "Deployment management repository must remain private / 部署管理仓库必须保持私有。")
             require(self.api(f"repos/{self.c.control}/actions/permissions")["enabled"],
-                    "Control Actions disabled / control Actions 未启用。")
+                    "Deployment management Actions disabled / 部署管理仓库的 Actions 未启用。")
             variables = self.api(f"repos/{self.c.control}/actions/variables?per_page=100")["variables"]
             values = {item["name"]: item["value"] for item in variables}
             require(values.get("PREVIEWMESH_ENABLED") == "true" and values.get("PREVIEWMESH_DOMAIN_SUFFIX") == self.c.suffix,
-                    "Control variables differ / control 配置变量不匹配。")
+                    "Deployment management variables differ / 部署管理仓库的配置变量不匹配。")
             registry = json.loads((self.c.control_dir / "config/repositories.json").read_text())
             secrets = self.api(f"repos/{self.c.control}/actions/secrets?per_page=100")["secrets"]
             require({"GHCR_READ_TOKEN", *(item["source_secret"] for item in registry)} <= {item["name"] for item in secrets},
-                    "Control secrets missing / control 缺少 Secrets。")
-        check("Control configuration / Control 配置", github_check)
+                    "Deployment management secrets missing / 部署管理仓库缺少 Secrets。")
+        check("Deployment management configuration / 部署管理配置", github_check)
         self.pending = []
         self.source_status = {}
         for source in self.c.sources:
             def source_check(source=source):
                 values = self.api(f"repos/{source.repository}/actions/secrets?per_page=100")["secrets"]
                 require("PREVIEWMESH_DISPATCH_TOKEN" in {item["name"] for item in values},
-                        "Source dispatch secret missing / source 缺少通知 Secret。")
+                        "Application notification secret missing / 应用源码仓库缺少通知 Secret。")
                 require(self.api(f"repos/{source.repository}/actions/permissions")["enabled"],
-                        "Source Actions disabled / source Actions 未启用。")
+                        "Application Actions disabled / 应用源码仓库的 Actions 未启用。")
             check(source.repository + " Actions", source_check)
             result = self.run(["gh", "api", f"repos/{source.repository}/contents/.github/workflows/previewmesh-notify.yml"], check=False)
             if result.returncode and "HTTP 404" not in result.stderr:
@@ -806,28 +808,46 @@ class Installer:
             except BlockingIOError:
                 raise SetupError("Another installer is running / 另一个安装进程正在运行。")
             stages = [
-                ("Prepare tools so this computer can install PreviewMesh.", "准备工具，让这台电脑能安装 PreviewMesh。", self.dependencies),
-                ("Prepare the private control repository that coordinates builds and deployments.", "准备私有 control 仓库，用来协调构建和部署。", self.control),
-                ("Save access tokens so GitHub and the cluster can access the right repositories and images.", "保存访问凭据，让 GitHub 与集群能访问指定仓库和镜像。", self.secrets_step),
-                ("Prepare the local cluster and renewable, restricted deployment access.", "准备本机集群和可自动续期的受限部署权限。", self.cluster),
-                ("Connect the deployment assistant to GitHub.", "将本机部署助手连接到 GitHub。", self.runner),
-                ("Make the preview entry reachable on your LAN.", "配置局域网入口，让同事能访问预览。", self.network),
-                ("Prepare application notification files for review.", "生成应用通知文件，供后续审核。", self.sources),
-                ("Enable control automation and check infrastructure readiness.", "启用 control 自动化，并检查基础环境是否就绪。", self.enable),
+                ("Prepare installation tools.", "准备安装工具。",
+                 "Check this computer's requirements, install missing tools and complete GitHub login so later steps can create repositories and configure services.",
+                 "检查本机环境、补齐所需工具并完成 GitHub 登录，让后续步骤能创建仓库和配置服务。", self.dependencies),
+                ("Prepare the private deployment management repository.", "准备私有部署管理仓库。",
+                 f"Use {self.c.control} to store application registrations and deployment automation. If it is new, create it from {self.c.public}; if it exists, check its PreviewMesh deployment tools. Register the configured applications and publish the management configuration.",
+                 f"使用 {self.c.control} 保存应用登记和部署自动化。新仓库会以 {self.c.public} 的代码为基础创建；已有仓库会检查 PreviewMesh 部署工具。随后登记配置中的应用，并发布部署管理配置。", self.control),
+                ("Configure repository and image access tokens.", "配置仓库与镜像访问 Token。",
+                 "Application access tokens let automation read applications and update PR feedback. The notification token lets applications start deployment workflows. The GHCR token lets the cluster pull images. The next prompts explain each token's target and permissions.",
+                 "应用访问 Token 用于读取应用和更新 PR 反馈；部署通知 Token 用于从应用触发部署工作流；GHCR Token 用于让集群拉取镜像。接下来的提示会逐个说明授权目标和权限。", self.secrets_step),
+                ("Prepare the local preview cluster.", "准备本机预览集群。",
+                 "Set up K3s, the Kubernetes service that runs preview containers, and limited deployment access for automation. Configure automatic renewal of that cluster access so deployments can continue.",
+                 "配置 K3s（运行预览容器的 Kubernetes 服务），为部署自动化提供受限的集群访问权限，并配置这项权限的自动续期。", self.cluster),
+                ("Connect the deployment runner to GitHub.", "连接 GitHub 部署执行程序。",
+                 "Register and start a GitHub Actions Runner on this computer. It receives jobs from the deployment management repository and deploys previews into the local cluster.",
+                 "在本机注册并启动 GitHub Actions Runner。这个程序接收部署管理仓库的任务，将预览部署到本机集群。", self.runner),
+                ("Configure LAN preview access.", "配置局域网预览访问。",
+                 f"Check DNS for {self.c.suffix} and configure the preview entry on {self.c.lan_ip}:18080 for the allowed client subnet. Requests are routed to each application's configured container HTTP port. WSL also needs Windows forwarding and firewall rules.",
+                 f"检查 {self.c.suffix} 的 DNS，并在 {self.c.lan_ip}:18080 配置预览入口，供允许网段内的客户端访问。请求会转发到各应用配置的容器内 HTTP 端口；WSL 还需配置 Windows 转发和防火墙规则。", self.network),
+                ("Prepare application notification workflows.", "准备应用通知工作流。",
+                 "Generate notification workflow files in the application directories for review. Once merged into each application's default branch, they notify deployment management when PRs change. Use onboard-source to review the diff or open an onboarding PR, then review and merge it on GitHub.",
+                 "在应用目录生成通知工作流文件供审核。文件合并到应用默认分支后，会在 PR 发生变化时通知部署管理仓库。使用 onboard-source 查看差异或创建接入 PR，再到 GitHub 审核并合并。", self.sources),
+                ("Enable automation and check infrastructure readiness.", "启用自动化并检查基础环境。",
+                 "Enable the required GitHub Actions workflows and check the cluster, runner, credentials and preview entry. After installation, onboard each application and open a test PR to verify a real preview.",
+                 "启用所需的 GitHub Actions 工作流，并检查集群、执行程序、凭据和预览入口。安装完成后，还需接入各应用并创建测试 PR，验证实际预览。", self.enable),
             ]
-            for number, (en, zh, action) in enumerate(stages, 1):
-                self.step(number, en, zh, action)
+            for number, (en, zh, detail_en, detail_zh, action) in enumerate(stages, 1):
+                self.step(number, en, zh, action, detail=(detail_en, detail_zh))
             self.completion()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Guided PreviewMesh setup / PreviewMesh 安装")
-    parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor", "onboard-source"), default="install")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor", "onboard-source"), default="install",
+                        help="init: write configuration; check: validate it; install: set up services; doctor: inspect readiness; onboard-source: review an application notification workflow / init 写入配置；check 检查配置；install 安装服务；doctor 检查就绪状态；onboard-source 审核应用通知工作流")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Configuration INI file path / 配置 INI 文件路径")
     parser.add_argument("--language", choices=("en", "zh-CN"), help="Prompt language / 提示语言")
     parser.add_argument("--verbose", action="store_true", help="Show redacted tool output / 显示脱敏工具输出")
     parser.add_argument("--template", action="store_true", help="init: copy a template instead of the interactive wizard / 仅复制配置模板")
-    parser.add_argument("--source", help="onboard-source: configured OWNER/REPO / 配置中的源仓库")
+    parser.add_argument("--source", help="onboard-source: configured application OWNER/REPO / 配置中的应用源码仓库")
     parser.add_argument("--create-pr", action="store_true", help="onboard-source: review diff and confirm PR creation / 审阅 diff 后确认创建 PR")
     args = parser.parse_args()
     if args.template and args.command != "init":

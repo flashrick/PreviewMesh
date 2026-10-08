@@ -147,6 +147,59 @@ token_file = {self.secrets / 'app.token'}
         self.assertIn("1. English", output.getvalue())
         self.assertIn("2. 中文", output.getvalue())
 
+    def test_single_candidate_shows_actual_default_and_enter_selects_it(self):
+        output = io.StringIO()
+        prompts = []
+
+        def accept_default(prompt):
+            prompts.append(prompt)
+            return ""
+
+        with patch("builtins.input", side_effect=accept_default), \
+             contextlib.redirect_stdout(output):
+            value = wizard.choose(
+                "PreviewMesh code repository (public)",
+                ["flashrick/PreviewMesh"],
+                config.validate_repo,
+                language="zh-CN",
+            )
+
+        self.assertEqual(value, "flashrick/PreviewMesh")
+        self.assertIn("1. flashrick/PreviewMesh", output.getvalue())
+        self.assertEqual(
+            prompts,
+            ["PreviewMesh code repository (public) (编号或直接填写) [flashrick/PreviewMesh]: "],
+        )
+
+    def test_english_and_chinese_wizards_preserve_same_configuration_values(self):
+        answers = [
+            str(self.control_dir), "owner/control", "", "192.168.1.20", "auto", "auto",
+            str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
+            str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
+            "no", "yes",
+        ]
+        snapshots = {}
+        for language in ("en", "zh-CN"):
+            with self.subTest(language=language):
+                self.config_path = self.work / language / "setup.ini"
+                result, _ = self.run_manual_wizard(answers, language=language)
+                self.assertTrue(result)
+                value = config.load_config(self.config_path, ROOT)
+                snapshots[language] = (
+                    value.control,
+                    value.control_dir,
+                    value.public,
+                    value.lan_ip,
+                    value.subnet,
+                    value.domain_suffix,
+                    value.dispatch_file,
+                    value.ghcr_file,
+                    [(source.repository, source.directory, source.port, source.token_file)
+                     for source in value.sources],
+                )
+
+        self.assertEqual(snapshots["en"], snapshots["zh-CN"])
+
     def test_existing_configuration_can_be_reviewed_and_reused(self):
         self.config_path.parent.mkdir(parents=True)
         original = self.config_text("8081").replace("language = auto", "language = zh-CN")

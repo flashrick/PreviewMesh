@@ -157,7 +157,7 @@ def load_config(path, root, *, content=None):
             continue
         name = section.split(":", 1)[1]
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
-            raise SetupError("Invalid source section name / source 配置段名称无效。")
+            raise SetupError("Invalid application section name / 应用配置段 source 的名称无效。")
         try:
             port = int(value(section, "port"))
             if not 1 <= port <= 65535:
@@ -167,17 +167,17 @@ def load_config(path, root, *, content=None):
         sources.append(Source(name, validate_repo(value(section, "repository")),
                               location(section, "directory"), port, location(section, "token_file")))
     if not sources:
-        raise SetupError("Add at least one [source:name] / 至少填写一个 source 配置段。")
+        raise SetupError("Add at least one application [source:name] / 至少填写一个应用配置段 [source:name]。")
     repos = [control, public] + [source.repository for source in sources]
     if len({repo.lower() for repo in repos}) != len(repos):
-        raise SetupError("Control, template and sources must differ / control、模板与各 source 仓库不能重复。")
+        raise SetupError("Deployment management, PreviewMesh code and application repositories must differ / 部署管理仓库、PreviewMesh 代码仓库与各应用源码仓库不能重复。")
     directories = [Path(root).resolve(), control_dir] + [source.directory for source in sources]
     # Running the same installer inside control is supported after initial creation.
     if directories[0] == control_dir:
         directories = directories[1:]
     for index, directory in enumerate(directories):
         if any(overlaps(directory, other) for other in directories[index + 1:]):
-            raise SetupError("Checkout directories must not overlap / 仓库目录不能相同或互相包含。")
+                raise SetupError("Repository local directories must not overlap / 各仓库的本地目录不能相同或互相包含。")
     dispatch = location("credentials", "dispatch_token_file")
     ghcr = location("credentials", "ghcr_token_file")
     credentials = [dispatch, ghcr] + [source.token_file for source in sources]
