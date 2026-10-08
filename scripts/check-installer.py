@@ -10,6 +10,7 @@ from pathlib import Path
 import pty
 import select
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -95,6 +96,36 @@ class InstallerTests(unittest.TestCase):
         }
         release.update(extra)
         return release
+
+    def network_app(self, values, *, payload=None):
+        """Build a network fixture that stops at kubectl apply before any host side effect."""
+        app = self.instance()
+        app.check_dns = lambda: None
+        calls = []
+        get_args = ("-n", "kube-system", "get", "helmchartconfig", "traefik",
+                    "--ignore-not-found", "-o", "json")
+
+        def kube(*args, **kwargs):
+            calls.append(args)
+            if args == get_args:
+                response = payload if payload is not None else {"spec": {"valuesContent": values}}
+                return subprocess.CompletedProcess(args, 0, json.dumps(response), "")
+            if args[:2] == ("apply", "-f"):
+                raise config.SetupError("APPLY_BOUNDARY")
+            self.fail("unexpected network fixture kube call: " + repr(args))
+
+        app.kube = kube
+        app.run = lambda *args, **kwargs: self.fail("unexpected network fixture run side effect")
+        app.managed = lambda *args, **kwargs: self.fail("unexpected network fixture managed side effect")
+        app.http_probe = lambda *args, **kwargs: self.fail("unexpected network fixture HTTP side effect")
+        return app, calls
+
+    @staticmethod
+    def traefik_values(values):
+        manifest = (ROOT / "ops/kubernetes/traefik-helmchartconfig.yaml").read_text()
+        expected = manifest.split("  valuesContent: |-\n", 1)[1]
+        expected = "\n".join(line[4:] for line in expected.splitlines())
+        return expected if values is None else values
 
     def run_tty(self, arguments, input_text="", timeout=5):
         """Run the shell entry point with a PTY so its TTY-only language menu is exercised."""
@@ -322,6 +353,72 @@ class InstallerTests(unittest.TestCase):
         (self.work / ".git/HEAD").write_text("ref: refs/heads/main\n")
         with self.assertRaises(config.SetupError):
             config.read_token(token)
+
+    def test_dependencies_installs_missing_pyyaml_and_rechecks_import(self):
+        app = self.instance()
+        app.preflight = Mock()
+        app.tool = lambda name: "/usr/bin/" + name
+        calls = []
+        probes = 0
+
+        def run(args, **kwargs):
+            nonlocal probes
+            args = [str(item) for item in args]
+            calls.append((args, kwargs))
+            if args == [sys.executable, "-c", "import yaml"]:
+                probes += 1
+                return subprocess.CompletedProcess(args, 1 if probes == 1 else 0, "", "")
+            if args == ["go", "version"]:
+                return subprocess.CompletedProcess(args, 0, "go version go1.25.0 linux/amd64", "")
+            if args == ["helm", "version", "--short"]:
+                return subprocess.CompletedProcess(args, 0, "v3.17.0+g123", "")
+            if args == ["gh", "auth", "status", "--hostname", "github.com"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        app.run = run
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.dependencies()
+
+        self.assertEqual(probes, 2)
+        installs = [args for args, _ in calls if args[:4] == ["sudo", "apt-get", "install", "-y"]]
+        self.assertEqual(len(installs), 1)
+        self.assertIn("python3-yaml", installs[0])
+        app.preflight.assert_called_once_with()
+
+    def test_dependencies_reports_pyyaml_still_unavailable_after_apt(self):
+        app = self.instance()
+        app.preflight = Mock()
+        app.tool = lambda name: "/usr/bin/" + name
+        calls = []
+        probes = 0
+
+        def run(args, **kwargs):
+            nonlocal probes
+            args = [str(item) for item in args]
+            calls.append((args, kwargs))
+            if args == [sys.executable, "-c", "import yaml"]:
+                probes += 1
+                return subprocess.CompletedProcess(args, 1, "", "missing")
+            if args == ["go", "version"]:
+                return subprocess.CompletedProcess(args, 0, "go version go1.25.0 linux/amd64", "")
+            if args == ["helm", "version", "--short"]:
+                return subprocess.CompletedProcess(args, 0, "v3.17.0+g123", "")
+            if args == ["gh", "auth", "status", "--hostname", "github.com"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        app.run = run
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(config.SetupError) as error:
+            app.dependencies()
+
+        self.assertEqual(probes, 2)
+        self.assertIn("PyYAML", str(error.exception))
+        self.assertIn("python3-yaml", str(error.exception))
+        installs = [args for args, _ in calls if args[:4] == ["sudo", "apt-get", "install", "-y"]]
+        self.assertEqual(len(installs), 1)
+        self.assertIn("python3-yaml", installs[0])
+        app.preflight.assert_called_once_with()
 
     def test_registry_merge_preserves_unrelated_and_names(self):
         original = [{"repository_id": "12", "source_repository": "owner/app", "port": 80, "source_secret": "ESTABLISHED"},
@@ -827,6 +924,120 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(str(error.exception), "DOWNLOAD_BOUNDARY")
         self.assertEqual(calls, ["repos/owner/control/actions/runners?per_page=100&page=1"])
         self.assertEqual(archive.call_args.args[0:2], (cached["url"], cached["sha256"]))
+
+    def test_network_accepts_historic_traefik_profiles_at_apply_boundary(self):
+        profiles = {
+            "service-only": "service:\n  spec:\n    type: ClusterIP",
+            "ingress-before-published-service": (
+                "providers:\n  kubernetesIngress:\n    ingressEndpoint:\n"
+                "      ip: \"127.0.0.1\"\nservice:\n  spec:\n    type: ClusterIP"
+            ),
+        }
+        for label, values in profiles.items():
+            with self.subTest(profile=label):
+                app, calls = self.network_app(values)
+                with self.assertRaises(config.SetupError) as error:
+                    app.network()
+                self.assertEqual(str(error.exception), "APPLY_BOUNDARY")
+                self.assertTrue(any(args[:2] == ("apply", "-f") for args in calls))
+
+    def test_network_accepts_semantically_equivalent_traefik_yaml_at_apply_boundary(self):
+        values = (
+            "# harmless formatting-only comment\n"
+            "service:\n"
+            "  spec:\n"
+            "    type: 'ClusterIP'\n"
+            "providers:\n"
+            "  kubernetesIngress:\n"
+            "    ingressEndpoint:\n"
+            "      ip: '127.0.0.1'  # loopback remains required\n"
+            "    publishedService:\n"
+            "      enabled: false\n"
+        )
+        app, calls = self.network_app(values)
+        with self.assertRaises(config.SetupError) as error:
+            app.network()
+        self.assertEqual(str(error.exception), "APPLY_BOUNDARY")
+        self.assertTrue(any(args[:2] == ("apply", "-f") for args in calls))
+
+    def test_network_rejects_unsafe_traefik_customizations_before_apply(self):
+        expected = self.traefik_values(None)
+        cases = {
+            "extra field": expected + "\ncustomSetting: true",
+            "load balancer": expected.replace("type: ClusterIP", "type: LoadBalancer"),
+            "non-loopback endpoint": expected.replace("ip: \"127.0.0.1\"", "ip: \"192.168.1.20\""),
+            "published service enabled": expected.replace("enabled: false", "enabled: true"),
+            "published service numeric": expected.replace("enabled: false", "enabled: 0"),
+            "malformed yaml": "service:\n  spec:\n    type: [ClusterIP\n",
+            "unsafe yaml tag": "!!python/object/apply:os.system ['echo unsafe']\n",
+        }
+        for label, values in cases.items():
+            with self.subTest(case=label):
+                app, calls = self.network_app(values)
+                if label == "unsafe yaml tag":
+                    with patch.object(os, "system") as system, self.assertRaises(config.SetupError) as error:
+                        app.network()
+                    system.assert_not_called()
+                else:
+                    with self.assertRaises(config.SetupError) as error:
+                        app.network()
+                self.assertTrue(str(error.exception))
+                self.assertFalse(any(args[:2] == ("apply", "-f") for args in calls))
+
+        app, calls = self.network_app("", payload={"spec": {}})
+        with self.assertRaises(config.SetupError) as error:
+            app.network()
+        self.assertTrue(str(error.exception))
+        self.assertFalse(any(args[:2] == ("apply", "-f") for args in calls))
+
+    def test_network_repeat_after_legacy_upgrade_is_idempotent(self):
+        legacy = "service:\n  spec:\n    type: ClusterIP"
+        expected = self.traefik_values(None)
+        app = self.instance()
+        app.check_dns = lambda: None
+        app.wsl = False
+        socket_path = "/etc/systemd/system/previewmesh-ingress.socket"
+        app.state.setdefault("files", {})[socket_path] = "synthetic-managed-file"
+        kube_calls = []
+        run_calls = []
+        probes = []
+        current = [legacy]
+        get_args = ("-n", "kube-system", "get", "helmchartconfig", "traefik",
+                    "--ignore-not-found", "-o", "json")
+        service_args = ("-n", "kube-system", "get", "service", "traefik", "-o", "json")
+        rollout_args = ("-n", "kube-system", "rollout", "status", "deployment/traefik",
+                        "--timeout=180s")
+
+        def kube(*args, **kwargs):
+            kube_calls.append(args)
+            if args == get_args:
+                payload = {"spec": {"valuesContent": current[0]}}
+                return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+            if args[:2] == ("apply", "-f"):
+                current[0] = expected
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args == service_args:
+                payload = {"spec": {"type": "ClusterIP", "clusterIP": "10.0.0.10"}}
+                return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+            if args == rollout_args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            self.fail("unexpected repeat network kube call: " + repr(args))
+
+        app.kube = kube
+        app.run = lambda args, **kwargs: (run_calls.append(args)
+                                           or subprocess.CompletedProcess(args, 0, "", ""))
+        app.managed = lambda *args, **kwargs: False
+        app.http_probe = lambda address: probes.append(address)
+
+        app.network()
+        app.network()
+
+        self.assertEqual(sum(args == get_args for args in kube_calls), 2)
+        self.assertGreaterEqual(sum(args[:2] == ("apply", "-f") for args in kube_calls), 1)
+        self.assertEqual(sum(args == service_args for args in kube_calls), 2)
+        self.assertEqual(sum(args == rollout_args for args in kube_calls), 2)
+        self.assertEqual(probes, ["127.0.0.1", "192.168.1.20"] * 2)
+        self.assertTrue(any(args[-1:] == ["--refresh-ingress"] for args in run_calls))
 
     def test_redact_masks_json_token_fields_while_api_payload_stays_parseable(self):
         app = self.instance("install")

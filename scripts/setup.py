@@ -178,9 +178,15 @@ class Installer:
                     "tar": "tar", "iptables": "iptables", "systemd-socket-proxyd": "systemd"}
         packages = {package for tool, package in required.items() if not self.tool(tool)
                     and not (tool == "systemd-socket-proxyd" and Path("/usr/lib/systemd/systemd-socket-proxyd").exists())}
+        yaml_check = [sys.executable, "-c", "import yaml"]
+        needs_yaml = self.run(yaml_check, check=False).returncode != 0
+        if needs_yaml:
+            packages.add("python3-yaml")
         if packages:
             self.run(["sudo", "apt-get", "update"], timeout=600)
             self.run(["sudo", "apt-get", "install", "-y", "ca-certificates", *sorted(packages)], timeout=900)
+        if needs_yaml and self.run(yaml_check, check=False).returncode:
+            raise SetupError("PyYAML is unavailable to the installer Python. Use Ubuntu's /usr/bin/python3 with python3-yaml installed, then rerun / 安装器使用的 Python 无法导入 PyYAML。请确认已安装 python3-yaml，并使用 Ubuntu 的 /usr/bin/python3 重新运行。")
         for name in ("gh", "go", "helm"):
             if not self.tool(name):
                 spec = self.state.setdefault("downloads", {}).get(name)
@@ -557,6 +563,44 @@ class Installer:
         return self.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", *args],
                         interactive=interactive, timeout=600)
 
+    def check_traefik_values(self, current, expected):
+        # Import after dependency installation so a clean Ubuntu host can bootstrap.
+        try:
+            import yaml
+        except ImportError:
+            raise SetupError("PyYAML is required; install python3-yaml or rerun install to prepare dependencies / 需要 PyYAML；请安装 python3-yaml，或重新运行 install 自动补齐依赖。")
+        if not isinstance(current, str) or not isinstance(expected, str):
+            raise SetupError("Traefik valuesContent must be YAML text; inspect the HelmChartConfig / Traefik 的 valuesContent 必须是 YAML 文本，请检查 HelmChartConfig。")
+        try:
+            observed, required = yaml.safe_load(current), yaml.safe_load(expected)
+        except yaml.YAMLError:
+            raise SetupError("Invalid Traefik YAML; inspect the HelmChartConfig and required template / Traefik YAML 格式无效，请检查 HelmChartConfig 和所需模板。")
+        if not isinstance(required, dict):
+            raise SetupError("Invalid required Traefik template / 所需 Traefik 模板格式无效。")
+
+        def matches(value, profile):
+            # YAML booleans and numbers differ even though Python considers False == 0.
+            if type(value) is not type(profile):
+                return False
+            if isinstance(profile, dict):
+                return value.keys() == profile.keys() and all(matches(value[key], item)
+                                                              for key, item in profile.items())
+            return value == profile
+
+        if matches(observed, required):
+            return
+        # Only complete, previously shipped profiles are safe to migrate automatically.
+        service = {"service": {"spec": {"type": "ClusterIP"}}}
+        legacy = (service, dict(service, providers={"kubernetesIngress": {
+            "ingressEndpoint": {"ip": "127.0.0.1"}}}))
+        if any(matches(observed, profile) for profile in legacy):
+            self.say("Existing Traefik values match a supported previous PreviewMesh template; upgrading local Ingress readiness settings.",
+                     "现有 Traefik 配置与 PreviewMesh 支持的旧模板一致，将补齐本地预览所需的入口状态设置。")
+            return
+        raise SetupError("Existing Traefik customization differs from supported PreviewMesh profiles. Compare it with the required template before installing / 现有 Traefik 配置含有与 PreviewMesh 支持模板不同的设置，请对照所需模板审核后重试。\n"
+                         "Inspect / 查看现有配置: sudo k3s kubectl -n kube-system get helmchartconfig traefik -o yaml\n"
+                         f"Required template / 所需模板: {ROOT / 'ops/kubernetes/traefik-helmchartconfig.yaml'}")
+
     def network(self):
         # Validate DNS before changing routing. DNS rebinding protection is not bypassed.
         self.check_dns()
@@ -565,8 +609,11 @@ class Installer:
         manifest = (ROOT / "ops/kubernetes/traefik-helmchartconfig.yaml").read_text()
         expected_values = manifest.split("  valuesContent: |-\n", 1)[1]
         expected_values = "\n".join(line[4:] for line in expected_values.splitlines())
-        if current and json.loads(current)["spec"]["valuesContent"].strip() != expected_values.strip():
-            raise SetupError("Existing Traefik customization differs; review it before installing / 现有 Traefik 自定义配置不同，请先审核。")
+        if current:
+            chart = json.loads(current)
+            spec = chart.get("spec") if isinstance(chart, dict) else None
+            self.check_traefik_values(spec.get("valuesContent") if isinstance(spec, dict) else None,
+                                      expected_values)
         self.kube("apply", "-f", ROOT / "ops/kubernetes/traefik-helmchartconfig.yaml")
         for _ in range(60):
             service = json.loads(self.kube("-n", "kube-system", "get", "service", "traefik", "-o", "json").stdout)

@@ -61,6 +61,6 @@ if ! command -v python3 >/dev/null 2>&1; then
   fi
   say 'Installing Python to read your configuration.' '安装 Python，用来读取你的配置文件。'
   sudo apt-get update
-  sudo apt-get install -y python3 ca-certificates
+  sudo apt-get install -y python3 python3-yaml ca-certificates
 fi
 exec python3 "$root/scripts/setup.py" "$@"

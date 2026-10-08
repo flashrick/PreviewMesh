@@ -10,6 +10,8 @@
 
 本地检查需要 Git、Go 1.25 或更高版本、Python 3、Bash 和 GitHub CLI。真实预览还需要 Linux 或 WSL2 机器上的 K3s、Traefik、Helm 3 和 kubectl。运行 `onboard-source` 时，`gh auth login` 使用的 classic PAT 需要 `repo` 和 `workflow` scope；fine-grained PAT 需要对目标仓库有访问权，并授予 **Contents: Read and write**、**Workflows: Read and write**、**Pull requests: Read and write** 权限，参见 GitHub 的[细粒度个人访问令牌权限说明](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)。
 
+自动安装器会在第 1 阶段检查 Ubuntu 的 `python3-yaml`，缺少时才安装，已有兼容模块会继续复用。独立运行安装器测试或会执行 Traefik 配置比较的本地检查也需要这个包：`sudo apt-get update && sudo apt-get install -y python3-yaml`。
+
 ### 一次设置项目变量
 
 下面的路径、仓库名称和默认分支只需在当前终端设置一次。把示例值改成你自己的；`SOURCE_DEFAULT_BRANCH` 是应用仓库的默认分支。后续步骤直接复用这些值。设置变量不会创建目录、文件或仓库。
@@ -362,6 +364,15 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get servi
 ```bash
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system rollout status deployment/traefik --timeout=120s
 ```
+
+自动安装的第 6 阶段按 YAML 语义比较这个 `valuesContent`。它接受随项目发布的两个旧配置（只有 `ClusterIP` Service 的配置，或在此基础上增加 `providers.kubernetesIngress.ingressEndpoint.ip: 127.0.0.1`），并将它们升级到当前 manifest。出现其他字段或本地自定义内容时，阶段会在 apply 前停止。请用下面的命令审核现有对象：
+
+```bash
+sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
+  -n kube-system get helmchartconfig traefik --ignore-not-found -o yaml
+```
+
+审核并处理后，再重新运行同一条自动 `install` 命令。
 
 再次读取地址，并创建本地代理配置文件：
 

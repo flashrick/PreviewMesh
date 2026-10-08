@@ -10,6 +10,8 @@ This document is the manual path. The guided `install` command may prepare a loc
 
 For local checks, install Git, Go 1.25 or newer, Python 3, Bash, and the GitHub CLI. For real previews, also install K3s with Traefik, Helm 3, and `kubectl` on a Linux or WSL2 machine. For `onboard-source`, a classic PAT used by `gh auth login` needs the `repo` and `workflow` scopes. A fine-grained PAT needs access to the target repository plus **Contents: Read and write**, **Workflows: Read and write**, and **Pull requests: Read and write** permissions; see GitHub's [permissions required for fine-grained personal access tokens](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
 
+The guided installer checks for Ubuntu's `python3-yaml` package during its first stage and installs it only when missing; an existing compatible module is reused. Standalone installer tests and local checks that exercise the Traefik comparison need it too: `sudo apt-get update && sudo apt-get install -y python3-yaml`.
+
 ### Set project variables once
 
 Set these paths, repository names, and the source default branch once in the current terminal. Replace the examples with your own values. Later steps reuse them. Setting variables does not create directories, files, or repositories.
@@ -403,6 +405,15 @@ The HelmChartConfig keeps Traefik's Service internal, disables `publishedService
 ```bash
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system rollout status deployment/traefik --timeout=120s
 ```
+
+During guided installation, stage 6 compares this `valuesContent` as YAML. It accepts the two shipped legacy profiles (service-only `ClusterIP`, or that profile plus `providers.kubernetesIngress.ingressEndpoint.ip: 127.0.0.1`) and upgrades either to the current manifest. Any other field or local customization stops the stage before apply. Review the existing object with:
+
+```bash
+sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
+  -n kube-system get helmchartconfig traefik --ignore-not-found -o yaml
+```
+
+After reviewing the setting, rerun the same guided `install` command.
 
 Read the address again and create the local proxy configuration:
 

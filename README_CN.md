@@ -151,6 +151,8 @@ bash scripts/setup.sh install --language en
 
 `install` 会先解释当前步骤，再修改本机。八个阶段依次涵盖本机工具、私有部署管理仓库、三类访问 Token、本机 K3s 和受限部署权限、自托管 Runner、`18080` LAN/WSL 预览入口、应用通知工作流和基础环境就绪检查。每个阶段提示都会说明动作及用途；最后的就绪检查不会创建应用预览。结束时会显示摘要并逐个应用报告通知工作流是否仍待接入。需要创建经过审核的应用接入 PR 时，使用显式的 `onboard-source` 命令，然后创建测试应用 PR 验证真实预览链路。安装完成后继续查看[预览访问说明](ops/install/access.md)。
 
+`install` 的第 1 阶段会检查 Ubuntu 的 `python3-yaml`，缺少时才安装，已有兼容模块会继续复用。独立运行安装器测试或会执行 Traefik 配置比较的本地检查也需要这个包；请执行 `sudo apt-get update && sudo apt-get install -y python3-yaml`。第 6 阶段按 YAML 语义比较 Traefik 的 `valuesContent`，会识别两个随项目发布的旧配置（只有 `ClusterIP` Service 的配置，以及另外设置 `ingressEndpoint.ip` 为 `127.0.0.1` 的配置），并将它们升级到当前 manifest。出现其他字段或自定义内容时，阶段会在 apply 前停止；先用排错表中的命令审核对象，再决定如何处理并重新运行同一条 `install` 命令。
+
 仍需你完成浏览器登录和 GitHub Token 的创建。安装器会展示每个 Token 的创建页面、准确的目标仓库和所需权限。缺少 Token 文件时，可以在隐藏输入提示中粘贴，安装器会保存为仅当前用户可读写的文件。组织审批、SSO 和 Token 到期时间由你的 GitHub 账号管理。这些个人 Token 不会自动续期；到期前更新相应文件并重新安装即可。
 
 WSL 安装期间，Windows 会请求管理员权限来配置局域网转发。当前连接需为“专用”或“域”网络；安装器不会关闭防火墙，也不会把“公用”网络自动改为受信任网络。
@@ -461,6 +463,7 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 | Kubernetes 返回 Unauthorized 或无法读取配置 | 检查 Runner 服务环境中的 `KUBECONFIG`、文件归属和 Token 有效期。先运行 `setup.sh doctor` 并检查 `previewmesh-maintenance.service`；手工安装可按[Runner 说明](ops/install/manual_CN.md#5-配置-k3s-和-runner)续期。 |
 | 镜像推送或拉取失败 | 推送失败时检查部署管理仓库工作流对 Package 的写权限，尤其是已存在的 Package；拉取失败时检查 classic `GHCR_READ_TOKEN`、其用户的 Package 读取权限，以及预览 Namespace 中的 `ghcr-pull` Secret。 |
 | 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress status 中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后按[预览访问说明](ops/install/access.md)检查配置的 DNS/hosts 探测、生成的 URL 和 `/health`。 |
+| Traefik 自定义配置不匹配 | 修改前先查看现有对象：`sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get helmchartconfig traefik --ignore-not-found -o yaml`。安装器遇到未识别字段时会在 apply 前停止；审核并处理后重新运行同一条 `install` 命令。 |
 | Runner 验证通过，但浏览器打不开 | 从浏览器所在机器按[预览访问说明](ops/install/access.md)检查，再运行 `setup.sh doctor`。如果局域网地址或后缀改变，请重新安装并重新部署开放的 PR；旧 URL 不会迁移。 |
 | PR 关闭后预览仍存在 | 找到 `closed` 通知并等待对应部署管理仓库运行完成。如果通知失败，修复后手动触发这个已关闭 PR，重试清理。 |
 | 更新工作流无法创建 PR | 检查更新章节中的 Actions PR 创建权限，或者自行推送生成的分支并创建 PR。 |

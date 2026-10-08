@@ -37,6 +37,13 @@ if not match or tuple(map(int, match.groups())) < (1, 25):
     raise SystemExit('Go 1.25 or newer is required.')
 PY
   python3 --version
+  if [[ "$mode" == local || "$mode" == development ]]; then
+    if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+      echo 'Missing Python module: PyYAML. Install python3-yaml for Ubuntu Python, or install PyYAML in your active Python environment, then rerun.' >&2
+      exit 1
+    fi
+    echo 'Found Python module: PyYAML'
+  fi
 fi
 if [[ "$mode" != local ]]; then
   helm_version=$(helm version --short)
