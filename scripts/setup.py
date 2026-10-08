@@ -33,6 +33,16 @@ DEFAULT_CONFIG = Path.home() / ".config/previewmesh/setup.ini"
 SYSTEM_CONFIG = Path("/etc/previewmesh/installation.json")
 
 
+def suggested_token_name(role, repository):
+    """Keep token names tied to the configured repository and their purpose."""
+    name = f"previewmesh-{role}-{repository.replace('/', '-').lower()}"
+    if len(name) <= 40:
+        return name
+    # Keep names compact while distinguishing repositories with the same long prefix.
+    suffix = "-" + fingerprint(name)[:8]
+    return name[:40 - len(suffix)].rstrip("._-") + suffix
+
+
 class Installer:
     def __init__(self, config, command, verbose=False):
         self.c, self.command, self.verbose = config, command, verbose
@@ -359,20 +369,67 @@ class Installer:
     def secrets_step(self):
         fine = "https://github.com/settings/personal-access-tokens/new"
         for source, registration in zip(self.c.sources, self.registrations):
+            name = suggested_token_name("source", source.repository)
             token = self.credential(source.token_file,
-                f"Application access token for {source.repository}: deployment automation uses it to read this application and update PR feedback. Create a fine-grained token at {fine}; select only this application.\nRequired repository permissions:\n  Contents: Read-only\n  Metadata: Read-only\n  Pull requests: Read and write\n  Commit statuses: Read and write (publishes the PreviewMesh commit status).",
-                f"{source.repository} 的应用访问 Token：部署自动化用它读取应用代码并更新 PR 反馈。在 {fine} 创建 fine-grained Token，仅选这个应用仓库。\n所需仓库权限（Repository permissions）：\n  Contents：Read-only（只读）\n  Metadata：Read-only（只读）\n  Pull requests：Read and write（读写）\n  Commit statuses：Read and write（读写，用于回写 PreviewMesh 提交状态）。")
+                f"Application access token: {source.repository}\n"
+                "Deployment automation uses it to read this application and update PR feedback.\n"
+                f"Create a fine-grained token:\n  {fine}\n"
+                f"Recommended Token name: {name}\n"
+                f"Repository access: select only {source.repository}.\n"
+                "Required repository permissions:\n"
+                "  Contents: Read-only\n"
+                "  Metadata: Read-only\n"
+                "  Pull requests: Read and write\n"
+                "  Commit statuses: Read and write (publishes the PreviewMesh commit status).",
+                f"应用访问 Token：{source.repository}\n"
+                "部署自动化用它读取应用代码并更新 PR 反馈。\n"
+                f"创建 fine-grained Token：\n  {fine}\n"
+                f"推荐 Token name（名称）：{name}\n"
+                f"仓库访问范围（Repository access）：仅选 {source.repository}。\n"
+                "所需仓库权限（Repository permissions）：\n"
+                "  Contents：Read-only（只读）\n"
+                "  Metadata：Read-only（只读）\n"
+                "  Pull requests：Read and write（读写）\n"
+                "  Commit statuses：Read and write（读写，用于回写 PreviewMesh 提交状态）。")
             self.check_source_token(source, token)
             self.run(["gh", "secret", "set", registration["source_secret"], "--repo", self.c.control, "--app", "actions"], input=token)
+        name = suggested_token_name("dispatch", self.c.control)
         token = self.credential(self.c.dispatch_file,
-            f"Deployment notification token: application workflows use it to start workflows in {self.c.control}. Create it at {fine}; select only that deployment management repository. Actions: read/write; Metadata: read.",
-            f"部署通知 Token：应用工作流用它启动 {self.c.control} 中的部署工作流。在 {fine} 创建，仅选这个部署管理仓库。Actions 读写；Metadata 只读。")
+            "Deployment notification token\n"
+            f"Application workflows use it to start deployment workflows in {self.c.control}.\n"
+            f"Create a fine-grained token:\n  {fine}\n"
+            f"Recommended Token name: {name}\n"
+            f"Repository access: select only {self.c.control}.\n"
+            "Required repository permissions:\n"
+            "  Actions: Read and write\n"
+            "  Metadata: Read-only",
+            "部署通知 Token\n"
+            f"应用工作流用它启动 {self.c.control} 中的部署工作流。\n"
+            f"创建 fine-grained Token：\n  {fine}\n"
+            f"推荐 Token name（名称）：{name}\n"
+            f"仓库访问范围（Repository access）：仅选 {self.c.control}。\n"
+            "所需仓库权限（Repository permissions）：\n"
+            "  Actions：Read and write（读写）\n"
+            "  Metadata：Read-only（只读）")
         self.run(["gh", "api", f"repos/{self.c.control}/actions/workflows"], env={"GH_TOKEN": token})
         for source in self.c.sources:
             self.run(["gh", "secret", "set", "PREVIEWMESH_DISPATCH_TOKEN", "--repo", source.repository, "--app", "actions"], input=token)
+        name = suggested_token_name("ghcr-read", self.c.control)
         token = self.credential(self.c.ghcr_file,
-            "Image download token (GHCR): the cluster uses it to pull preview images. At https://github.com/settings/tokens/new?scopes=read:packages create a classic PAT with read:packages and access to the preview packages.",
-            "镜像下载 Token（GHCR）：集群用它拉取预览镜像。在 https://github.com/settings/tokens/new?scopes=read:packages 创建 classic PAT，选择 read:packages，账号需能读取预览镜像包。")
+            "Image download token (GHCR)\n"
+            "The cluster uses it to pull preview images.\n"
+            "Create a classic PAT:\n"
+            "  https://github.com/settings/tokens/new?scopes=read:packages\n"
+            f"Recommended Note (name): {name}\n"
+            "Required scope: read:packages\n"
+            "The token's account must have access to the preview packages.",
+            "镜像下载 Token（GHCR）\n"
+            "集群用它拉取预览镜像。\n"
+            "创建 classic PAT：\n"
+            "  https://github.com/settings/tokens/new?scopes=read:packages\n"
+            f"推荐 Note（名称）：{name}\n"
+            "所需权限（scope）：read:packages\n"
+            "Token 所属账号需能读取预览镜像包。")
         self.run(["gh", "secret", "set", "GHCR_READ_TOKEN", "--repo", self.c.control, "--app", "actions"], input=token)
 
     def managed(self, path, content, mode=0o644, privileged=False, adopt=None):
@@ -896,29 +953,64 @@ class Installer:
                 raise SetupError("Another installer is running / 另一个安装进程正在运行。")
             stages = [
                 ("Prepare installation tools.", "准备安装工具。",
-                 "Check this computer's requirements, install missing tools and complete GitHub login so later steps can create repositories and configure services.",
-                 "检查本机环境、补齐所需工具并完成 GitHub 登录，让后续步骤能创建仓库和配置服务。", self.dependencies),
+                 "Check this computer's requirements, install missing tools and complete GitHub login\n"
+                 "so later steps can create repositories and configure services.",
+                 "检查本机环境、补齐所需工具并完成 GitHub 登录，\n"
+                 "让后续步骤能创建仓库和配置服务。", self.dependencies),
                 ("Prepare the private deployment management repository.", "准备私有部署管理仓库。",
-                 f"Use {self.c.control} to store application registrations and deployment automation. If it is new, create it from {self.c.public}; if it exists, check its PreviewMesh deployment tools. Register the configured applications and publish the management configuration.",
-                 f"使用 {self.c.control} 保存应用登记和部署自动化。新仓库会以 {self.c.public} 的代码为基础创建；已有仓库会检查 PreviewMesh 部署工具。随后登记配置中的应用，并发布部署管理配置。", self.control),
+                 f"Use {self.c.control} to store application registrations and deployment automation.\n"
+                 f"If it is new, create it from {self.c.public};\n"
+                 "if it exists, check its PreviewMesh deployment tools.\n"
+                 "Register the configured applications and publish the management configuration.",
+                 f"使用 {self.c.control} 保存应用登记和部署自动化。\n"
+                 f"新仓库会以 {self.c.public} 的代码为基础创建；\n"
+                 "已有仓库会检查 PreviewMesh 部署工具。\n"
+                 "随后登记配置中的应用，并发布部署管理配置。", self.control),
                 ("Configure repository and image access tokens.", "配置仓库与镜像访问 Token。",
-                 "Application access tokens let automation read applications and update PR feedback. The notification token lets applications start deployment workflows. The GHCR token lets the cluster pull images. The next prompts explain each token's target and permissions.",
-                 "应用访问 Token 用于读取应用和更新 PR 反馈；部署通知 Token 用于从应用触发部署工作流；GHCR Token 用于让集群拉取镜像。接下来的提示会逐个说明授权目标和权限。", self.secrets_step),
+                 "Application access tokens let automation read applications and update PR feedback.\n"
+                 "The notification token lets applications start deployment workflows.\n"
+                 "The GHCR token lets the cluster pull images.\n"
+                 "The next prompts explain each token's target and permissions.",
+                 "应用访问 Token 用于读取应用和更新 PR 反馈。\n"
+                 "部署通知 Token 用于从应用触发部署工作流。\n"
+                 "GHCR Token 用于让集群拉取镜像。\n"
+                 "接下来的提示会逐个说明授权目标和权限。", self.secrets_step),
                 ("Prepare the local preview cluster.", "准备本机预览集群。",
-                 "Set up K3s, the Kubernetes service that runs preview containers, and limited deployment access for automation. Configure automatic renewal of that cluster access so deployments can continue.",
-                 "配置 K3s（运行预览容器的 Kubernetes 服务），为部署自动化提供受限的集群访问权限，并配置这项权限的自动续期。", self.cluster),
+                 "Set up K3s, the Kubernetes service that runs preview containers,\n"
+                 "and limited deployment access for automation.\n"
+                 "Configure automatic renewal of that cluster access so deployments can continue.",
+                 "配置 K3s（运行预览容器的 Kubernetes 服务）。\n"
+                 "为部署自动化提供受限的集群访问权限，并配置这项权限的自动续期。", self.cluster),
                 ("Connect the deployment runner to GitHub.", "连接 GitHub 部署执行程序。",
-                 "Register and start a GitHub Actions Runner on this computer. It receives jobs from the deployment management repository and deploys previews into the local cluster.",
-                 "在本机注册并启动 GitHub Actions Runner。这个程序接收部署管理仓库的任务，将预览部署到本机集群。", self.runner),
+                 "Register and start a GitHub Actions Runner on this computer.\n"
+                 "It receives jobs from the deployment management repository\n"
+                 "and deploys previews into the local cluster.",
+                 "在本机注册并启动 GitHub Actions Runner。\n"
+                 "这个程序接收部署管理仓库的任务，将预览部署到本机集群。", self.runner),
                 ("Configure LAN preview access.", "配置局域网预览访问。",
-                 f"Check DNS for {self.c.suffix} and configure the preview entry on {self.c.lan_ip}:18080 for the allowed client subnet. Requests are routed to each application's configured container HTTP port. WSL also needs Windows network-mode checks and the required firewall rules.",
-                 f"检查 {self.c.suffix} 的 DNS，并在 {self.c.lan_ip}:18080 配置预览入口，供允许网段内的客户端访问。请求会转发到各应用配置的容器内 HTTP 端口；WSL 还需检查 Windows 网络模式并配置必要的防火墙规则。", self.network),
+                 f"Check DNS for {self.c.suffix}.\n"
+                 f"Configure the preview entry on {self.c.lan_ip}:18080 for the allowed client subnet.\n"
+                 "Requests are routed to each application's configured container HTTP port.\n"
+                 "WSL also needs Windows network-mode checks and the required firewall rules.",
+                 f"检查 {self.c.suffix} 的 DNS。\n"
+                 f"在 {self.c.lan_ip}:18080 配置预览入口，供允许网段内的客户端访问。\n"
+                 "请求会转发到各应用配置的容器内 HTTP 端口。\n"
+                 "WSL 还需检查 Windows 网络模式并配置必要的防火墙规则。", self.network),
                 ("Prepare application notification workflows.", "准备应用通知工作流。",
-                 "Generate notification workflow files in the application directories for review. Once merged into each application's default branch, they notify deployment management when PRs change. Use onboard-source to review the diff or open an onboarding PR, then review and merge it on GitHub.",
-                 "在应用目录生成通知工作流文件供审核。文件合并到应用默认分支后，会在 PR 发生变化时通知部署管理仓库。使用 onboard-source 查看差异或创建接入 PR，再到 GitHub 审核并合并。", self.sources),
+                 "Generate notification workflow files in the application directories for review.\n"
+                 "Once merged into each application's default branch,\n"
+                 "they notify deployment management when PRs change.\n"
+                 "Use onboard-source to review the diff or open an onboarding PR,\n"
+                 "then review and merge it on GitHub.",
+                 "在应用目录生成通知工作流文件供审核。\n"
+                 "文件合并到应用默认分支后，会在 PR 发生变化时通知部署管理仓库。\n"
+                 "使用 onboard-source 查看差异或创建接入 PR，再到 GitHub 审核并合并。", self.sources),
                 ("Enable automation and check infrastructure readiness.", "启用自动化并检查基础环境。",
-                 "Enable the required GitHub Actions workflows and check the cluster, runner, credentials and preview entry. After installation, onboard each application and open a test PR to verify a real preview.",
-                 "启用所需的 GitHub Actions 工作流，并检查集群、执行程序、凭据和预览入口。安装完成后，还需接入各应用并创建测试 PR，验证实际预览。", self.enable),
+                 "Enable the required GitHub Actions workflows\n"
+                 "and check the cluster, runner, credentials and preview entry.\n"
+                 "After installation, onboard each application and open a test PR to verify a real preview.",
+                 "启用所需的 GitHub Actions 工作流，并检查集群、执行程序、凭据和预览入口。\n"
+                 "安装完成后，还需接入各应用并创建测试 PR，验证实际预览。", self.enable),
             ]
             for number, (en, zh, detail_en, detail_zh, action) in enumerate(stages, 1):
                 self.step(number, en, zh, action, detail=(detail_en, detail_zh))
