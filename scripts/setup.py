@@ -498,7 +498,8 @@ class Installer:
         name = "previewmesh-" + self.control_id + "-" + re.sub(r"[^a-zA-Z0-9_-]", "-", socket.gethostname())[:40]
         target = f"https://github.com/{self.c.control}"
         if (directory / ".runner").exists():
-            settings = json.loads((directory / ".runner").read_text())
+            # Runner-generated JSON can carry a UTF-8 BOM after registration.
+            settings = json.loads((directory / ".runner").read_text(encoding="utf-8-sig"))
             if settings.get("gitHubUrl", "").lower().rstrip("/") != target.lower():
                 raise SetupError("Existing runner belongs to another repository / 现有 Runner 属于其他仓库。")
             name = settings["agentName"]

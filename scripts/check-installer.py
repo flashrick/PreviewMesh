@@ -1174,6 +1174,90 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(any("restart" in call for call in calls))
         self.assertFalse(app.state["runner_restart_pending"])
 
+    def existing_runner_app(self, settings, *, label, remote=None, bom=False):
+        """Create a registered-runner fixture without touching the host runner."""
+        app = self.instance()
+        app.control_id = "42"
+        app.home = self.work / "runner-fixtures" / label
+        directory = app.home / "runner"
+        directory.mkdir(parents=True)
+        payload = json.dumps(settings, separators=(",", ":")).encode("utf-8")
+        raw = (b"\xef\xbb\xbf" + payload) if bom else payload
+        path = directory / ".runner"
+        path.write_bytes(raw)
+        if remote is None:
+            remote = [{"id": settings["agentId"], "name": settings["agentName"], "busy": False}]
+        app.all_runners = lambda: remote
+        return app, path, raw
+
+    def test_existing_runner_plain_and_bom_reuse_preserves_bytes_and_skips_registration(self):
+        settings = {
+            "gitHubUrl": "https://github.com/owner/control",
+            "agentName": "runner-fixture",
+            "agentId": 42,
+        }
+        for label, bom in (("plain", False), ("bom", True)):
+            with self.subTest(encoding=label):
+                app, path, raw = self.existing_runner_app(settings, label=label, bom=bom)
+                calls = []
+
+                def boundary(args, **kwargs):
+                    calls.append([str(value) for value in args])
+                    raise config.SetupError("RUNNER_BOUNDARY")
+
+                app.api = lambda *args, **kwargs: self.fail("registered runner unexpectedly called the API")
+                app.run = boundary
+                with patch.object(installer, "download_archive") as archive, self.assertRaises(config.SetupError) as error:
+                    app.runner()
+                self.assertEqual(str(error.exception), "RUNNER_BOUNDARY")
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][1:3], [str(path.parent / "svc.sh"), "install"])
+                self.assertNotIn("config.sh", calls[0])
+                self.assertFalse((path.parent / "config.sh").exists())
+                self.assertEqual(app.secrets, [])
+                self.assertNotIn("runner_download", app.state)
+                archive.assert_not_called()
+
+    def test_existing_runner_bom_guards_repository_and_registration(self):
+        cases = (
+            ("wrong-repository", {
+                "gitHubUrl": "https://github.com/other/control",
+                "agentName": "runner-fixture",
+                "agentId": 42,
+            }, None, "another repository"),
+            ("removed-registration", {
+                "gitHubUrl": "https://github.com/owner/control",
+                "agentName": "runner-fixture",
+                "agentId": 42,
+            }, [], "registration was removed"),
+        )
+        for label, settings, remote, message in cases:
+            with self.subTest(case=label):
+                app, path, raw = self.existing_runner_app(settings, label=label, remote=remote, bom=True)
+                app.run = lambda *args, **kwargs: self.fail("invalid registered runner reached a host command")
+                app.api = lambda *args, **kwargs: self.fail("invalid registered runner unexpectedly called the API")
+                with self.assertRaises(config.SetupError) as error:
+                    app.runner()
+                self.assertIn(message, str(error.exception))
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(app.secrets, [])
+                self.assertFalse((path.parent / "config.sh").exists())
+
+    def test_existing_runner_bom_malformed_json_still_fails_without_side_effects(self):
+        app, path, raw = self.existing_runner_app(
+            {"gitHubUrl": "https://github.com/owner/control", "agentName": "runner-fixture", "agentId": 42},
+            label="malformed")
+        raw = b"\xef\xbb\xbf{\"gitHubUrl\":"
+        path.write_bytes(raw)
+        app.run = lambda *args, **kwargs: self.fail("malformed runner reached a host command")
+        app.all_runners = lambda: self.fail("malformed runner reached the remote registry")
+        with self.assertRaises(json.JSONDecodeError):
+            app.runner()
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertEqual(app.secrets, [])
+        self.assertFalse((path.parent / "config.sh").exists())
+
     def test_partial_control_clone_recovery_does_not_change_source_origin(self):
         app = self.instance()
         self.c.control_dir.mkdir()
