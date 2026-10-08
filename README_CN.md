@@ -107,7 +107,9 @@ bash scripts/setup.sh init
 | Token 文件路径 | 源仓库、通知和镜像读取 Token 各自的独立文件，放在 Git 仓库外；配置中不填写 Token 明文 |
 | 局域网 IP | Ubuntu 服务器的固定局域网 IPv4；WSL 填 **Windows 主机**的局域网 IPv4 |
 | 域名后缀 | `auto` 推荐使用 `<LAN_IP>.sslip.io`；也可以选择小写的内部 DNS 后缀 |
-| 输出语言 | `auto` 跟随系统，`zh-CN` 为中文，`en` 为英文 |
+| 输出语言 | `auto` 跟随系统，`zh-CN` 为中文，`en` 为英文；`init` 会保存所选值 |
+
+`init` 向导开始时会询问输出语言，并把所选值保存到 `setup.ini`。语言输入无效时会重新提示，输入 `q` 或遇到 EOF 会取消且不写入文件。
 
 保存前，向导会显示仓库、目录、局域网地址、端口和 Token 文件路径等非敏感摘要。请审核后确认保存；在任意提示输入 `q` 都会退出且不写入配置。已有配置时，向导会先询问是否载入并审核，再决定是否替换。
 
@@ -121,10 +123,18 @@ bash scripts/setup.sh init --template
 
 它会把[带逐项说明的模板](config/setup.example.ini)复制到 `~/.config/previewmesh/setup.ini`，不会覆盖已有文件。编辑后，安装时继续使用同一个配置路径。
 
+交互式 `install` 启动时会先显示 `1. English` 和 `2. 中文`，之后的安装提示会使用所选语言。也可以使用 `--language en` 或 `--language zh-CN` 直接指定语言并跳过这个问题。语言输入无效时会重新提示，输入 `q` 或遇到 EOF 会在修改系统前停止。`check` 等非交互命令，或使用已有配置且没有交互式语言选择的命令，继续遵循配置中的 `language`；`auto` 会跟随系统 locale。
+
 ### 2. 执行安装
 
 ```bash
 bash scripts/setup.sh install
+```
+
+例如，直接选择英文并跳过启动提问：
+
+```bash
+bash scripts/setup.sh install --language en
 ```
 
 `install` 会先解释当前步骤，再准备工具、私有控制仓库、Secrets、K3s、Runner、凭据自动续期和局域网入口。结束时会显示八个阶段的完成摘要，并逐个源仓库报告通知工作流是否已在源仓库默认分支合并，还是仍待接入。它可能准备一份供审核的通知文件，但不会在**源仓库**中提交、推送、创建 PR 或合并代码，也不会创建测试预览。需要创建经过审核的源仓库接入 PR 时，使用显式的 `onboard-source` 命令。

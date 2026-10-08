@@ -103,7 +103,9 @@ The wizard collects ordinary settings and token file paths separately. Never pas
 | Token file paths | Separate files outside Git for source, dispatch and GHCR tokens; never paste token values into the configuration |
 | LAN IP | The Ubuntu server's stable LAN IPv4, or the **Windows host's** LAN IPv4 when using WSL |
 | Domain suffix | `auto` recommends `<LAN_IP>.sslip.io`; a lowercase private DNS suffix is the manual alternative |
-| Language | `auto`, `en` or `zh-CN` |
+| Language | `auto`, `en` or `zh-CN`; `init` saves the selected value |
+
+At the beginning, the `init` wizard asks for the output language and stores the selected value in `setup.ini`. Invalid language input prompts again; `q` or EOF cancels without writing the file.
 
 Before saving, it prints a non-sensitive summary of the repositories, directories, LAN address, ports and token file paths. Review it and confirm the save. Enter `q` at any prompt to leave without writing a configuration. If a configuration already exists, the wizard asks whether to load it for review before replacing it.
 
@@ -117,10 +119,18 @@ bash scripts/setup.sh init --template
 
 This copies the [commented template](config/setup.example.ini) to `~/.config/previewmesh/setup.ini` and never overwrites an existing file. You can then edit it and pass the same path to `install`.
 
+When an interactive `install` starts, it asks you to choose `1. English` or `2. 中文`; the remaining installer prompts use that language. Use `--language en` or `--language zh-CN` to choose it on the command line and skip this question. Invalid input prompts again; `q` or EOF stops before installation changes anything. Non-interactive commands such as `check`, or commands using an existing configuration without an interactive language choice, continue to use the configured `language` value (`auto` follows the system locale).
+
 ### 2. Run the installer
 
 ```bash
 bash scripts/setup.sh install
+```
+
+To select English without the startup question:
+
+```bash
+bash scripts/setup.sh install --language en
 ```
 
 The `install` command explains each step before preparing tools, the private control repository, Secrets, K3s, the runner, automatic credential renewal and the LAN entry. It finishes with an eight-stage summary, the selected preview access method, and a report for each configured source showing whether its notification workflow is already on the source default branch or still needs onboarding. It may prepare a local notification file for review, but it does not commit, push, create pull requests or merge changes in **source**, and does not create a test preview. Use the explicit `onboard-source` command for a reviewed source onboarding PR. Continue from the [preview access guide](ops/install/access.md) when the installation completes.

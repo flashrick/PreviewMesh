@@ -2,15 +2,19 @@
 """Offline installer checks. Never access GitHub, sudo, a cluster, or Windows settings."""
 import contextlib
 import copy
+import errno
 import io
 import json
 import os
 from pathlib import Path
+import pty
+import select
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import setup as installer
 import setup_config as config
@@ -40,6 +44,39 @@ class InstallerTests(unittest.TestCase):
     def instance(self):
         with patch.object(Path, "home", return_value=self.work):
             return installer.Installer(self.c, "check")
+
+    def run_tty(self, arguments, input_text="", timeout=5):
+        """Run the shell entry point with a PTY so its TTY-only language menu is exercised."""
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            ["bash", str(ROOT / "scripts/setup.sh"), *arguments],
+            cwd=ROOT, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+        os.close(slave)
+        output = bytearray()
+        deadline = time.monotonic() + timeout
+        try:
+            if input_text:
+                os.write(master, input_text.encode())
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.05)
+                if ready:
+                    try:
+                        output.extend(os.read(master, 4096))
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        break
+                if process.poll() is not None and not ready:
+                    break
+            if process.poll() is None:
+                process.kill()
+                self.fail("PTY command timed out: " + repr(arguments))
+            return process.wait(), output.decode(errors="replace")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            os.close(master)
 
     def checkpoint_inputs(self):
         return {
@@ -111,6 +148,112 @@ class InstallerTests(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(destination.read_text(), original)
+
+    def test_template_language_option_writes_selected_language_without_prompt(self):
+        destination = self.work / "zh/setup.ini"
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/setup.sh"), "init", "--template",
+             "--language=zh-CN", "--config", str(destination)],
+            capture_output=True, text=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Select language", result.stdout + result.stderr)
+        self.assertIn("请编辑", result.stdout)
+        self.assertIn("language = zh-CN", destination.read_text())
+
+    def test_tty_init_template_passes_language_once_to_python(self):
+        for choice, language, edit_prompt, next_prompt in (
+                ("1", "en", "Edit:", "Then run:"),
+                ("2", "zh-CN", "请编辑:", "然后执行:")):
+            with self.subTest(language=language):
+                destination = self.work / ("tty-" + language + "/setup.ini")
+                returncode, output = self.run_tty(
+                    ["init", "--template", "--config", str(destination)],
+                    input_text=choice + chr(10))
+
+                self.assertEqual(returncode, 0)
+                self.assertEqual(output.count("Select language / 请选择语言:"), 1)
+                self.assertIn(edit_prompt, output)
+                self.assertIn(next_prompt, output)
+                self.assertIn("language = " + language, destination.read_text())
+
+    def test_tty_entry_prompts_once_before_reading_configuration(self):
+        missing = self.work / "missing.ini"
+        returncode, output = self.run_tty(
+            ["check", "--config", str(missing)], input_text="1" + chr(10))
+
+        self.assertEqual(returncode, 1)
+        menu = "Select language / 请选择语言:"
+        self.assertEqual(output.count(menu), 1)
+        self.assertLess(output.index(menu), output.index("Configuration missing"))
+
+    def test_tty_language_options_skip_prompt_in_both_cli_forms(self):
+        missing = self.work / "missing.ini"
+        for arguments in (
+                ["check", "--language=zh-CN", "--config", str(missing)],
+                ["--language", "zh-CN", "check", "--config", str(missing)]):
+            with self.subTest(arguments=arguments):
+                returncode, output = self.run_tty(arguments)
+                self.assertEqual(returncode, 1)
+                self.assertNotIn("Select language / 请选择语言:", output)
+                self.assertIn("Configuration missing", output)
+
+    def test_tty_help_skips_language_prompt(self):
+        returncode, output = self.run_tty(["--help"])
+
+        self.assertEqual(returncode, 0)
+        self.assertNotIn("Select language / 请选择语言:", output)
+        self.assertIn("--language", output)
+
+    def test_non_tty_check_keeps_config_language_and_does_not_prompt(self):
+        loaded = copy.copy(self.c)
+
+        with (
+                patch.object(installer, "choose_language", side_effect=AssertionError("unexpected prompt")),
+                patch.object(installer, "load_config", return_value=loaded),
+                patch.object(installer, "Installer") as installer_class,
+                patch.object(installer.sys, "stdin", io.StringIO()),
+                patch.object(installer.sys, "argv", [
+                    str(ROOT / "scripts/setup.py"), "check", "--config", str(self.config_path)])):
+            result = installer.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(loaded.language, "auto")
+        installer_class.return_value.check.assert_called_once_with()
+
+    def test_tty_python_entry_language_choice_precedes_configuration_and_runs_once(self):
+        loaded = copy.copy(self.c)
+        events = []
+
+        def choose_language():
+            events.append("choose")
+            return "en"
+
+        def load_config(*args, **kwargs):
+            events.append("load")
+            return loaded
+
+        class FakeInstaller:
+            def __init__(self, config_value, command, verbose):
+                events.append("init")
+
+            def check(self):
+                events.append("check")
+
+        stdin = Mock()
+        stdin.isatty.return_value = True
+        with (
+                patch.object(installer, "choose_language", side_effect=choose_language),
+                patch.object(installer, "load_config", side_effect=load_config),
+                patch.object(installer, "Installer", side_effect=FakeInstaller),
+                patch.object(installer.sys, "stdin", stdin),
+                patch.object(installer.sys, "argv", [
+                    str(ROOT / "scripts/setup.py"), "check", "--config", str(self.config_path)])):
+            result = installer.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events, ["choose", "load", "init", "check"])
+        self.assertEqual(loaded.language, "en")
 
     def test_tokens_must_be_private_regular_files(self):
         token = self.work / "secret.token"

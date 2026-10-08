@@ -24,6 +24,7 @@ import urllib.request
 from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, fingerprint, load_config,
                           merge_registry, read_token)
 from setup_downloads import download_archive, fetch, metadata, runner_release, tool_release
+from setup_language import choose_language
 from setup_resume import Checkpoints, REUSABLE
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -317,7 +318,8 @@ class Installer:
             self.say(f"Token file: {path}", f"Token 文件：{path}")
             if not sys.stdin.isatty():
                 raise SetupError(f"Create token file with mode 600, or rerun in a terminal / 请创建权限为 600 的 Token 文件，或在交互终端重试: {path}")
-            value = getpass.getpass("Paste token (hidden; Enter cancels) / 粘贴 Token（隐藏，直接回车取消）: ").strip()
+            prompt = "粘贴 Token（隐藏，直接回车取消）: " if self.zh else "Paste token (hidden; Enter cancels): "
+            value = getpass.getpass(prompt).strip()
             if not value:
                 raise SetupError("No token supplied; progress retained / 未提供 Token，已保留进度。")
             self.secrets.append(value)
@@ -822,6 +824,7 @@ def main():
     parser = argparse.ArgumentParser(description="Guided PreviewMesh setup / PreviewMesh 安装")
     parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor", "onboard-source"), default="install")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--language", choices=("en", "zh-CN"), help="Prompt language / 提示语言")
     parser.add_argument("--verbose", action="store_true", help="Show redacted tool output / 显示脱敏工具输出")
     parser.add_argument("--template", action="store_true", help="init: copy a template instead of the interactive wizard / 仅复制配置模板")
     parser.add_argument("--source", help="onboard-source: configured OWNER/REPO / 配置中的源仓库")
@@ -835,18 +838,28 @@ def main():
         parser.error("onboard-source requires --source OWNER/REPO")
     installer = None
     try:
+        language = args.language
+        if language is None and sys.stdin.isatty():
+            language = choose_language()
         if args.command == "init":
             if not args.template:
                 from setup_wizard import run_wizard
-                run_wizard(args.config, ROOT)
+                run_wizard(args.config, ROOT, language=language)
                 return 0
             path = args.config.expanduser().absolute()
             if path.exists() or path.is_symlink():
                 raise SetupError(f"Already exists; edit this file / 文件已存在，请直接编辑: {path}")
-            atomic_write(path, (ROOT / "config/setup.example.ini").read_text())
-            print(f"Edit / 请编辑: {path}\nThen / 然后执行: bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(path))}")
+            template = (ROOT / "config/setup.example.ini").read_text()
+            if language:
+                template = template.replace("language = auto", f"language = {language}")
+            atomic_write(path, template)
+            label, next_step = ("请编辑", "然后执行") if language == "zh-CN" else ("Edit", "Then run")
+            print(f"{label}: {path}\n{next_step}: bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(path))}")
             return 0
         config = load_config(args.config, ROOT)
+        # A session choice overrides display preferences without rewriting the INI.
+        if language:
+            config.language = language
         installer = Installer(config, args.command, args.verbose)
         if args.command == "onboard-source":
             from setup_onboard import onboard

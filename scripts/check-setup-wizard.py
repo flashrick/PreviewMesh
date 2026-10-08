@@ -48,7 +48,7 @@ port = {port}
 token_file = {self.secrets / 'app.token'}
 """
 
-    def run_manual_wizard(self, answers):
+    def run_manual_wizard(self, answers, *, language=None):
         output = io.StringIO()
         patches = [
             patch.object(wizard, "discover_repositories", return_value=[]),
@@ -61,7 +61,7 @@ token_file = {self.secrets / 'app.token'}
             for item in patches:
                 stack.enter_context(item)
             with contextlib.redirect_stdout(output):
-                result = wizard.run_wizard(self.config_path, ROOT)
+                result = wizard.run_wizard(self.config_path, ROOT, language=language)
         return result, output.getvalue()
 
     def test_manual_values_when_repository_lan_and_port_are_not_discovered(self):
@@ -69,7 +69,7 @@ token_file = {self.secrets / 'app.token'}
         ghcr = self.secrets / "ghcr.token"
         source_token = self.secrets / "app.token"
         result, output = self.run_manual_wizard([
-            str(self.control_dir), "owner/control", "", "", "192.168.1.20", "",
+            "1", str(self.control_dir), "owner/control", "", "192.168.1.20", "",
             "", str(dispatch), str(ghcr), str(self.source_dir), "owner/app", "8080",
             str(source_token), "", "yes",
         ])
@@ -79,13 +79,14 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(self.config_path.stat().st_mode & 0o777, 0o600)
         value = config.load_config(self.config_path, ROOT)
         self.assertEqual(value.control, "owner/control")
+        self.assertEqual(value.language, "en")
         self.assertEqual(value.lan_ip, "192.168.1.20")
         self.assertEqual(value.domain_suffix, "auto")
         self.assertEqual(value.sources[0].port, 8080)
         self.assertIn("No application port found", output)
         self.assertIn("Recommended: auto uses <LAN IPv4>.sslip.io", output)
         self.assertIn("http://pm-r<repository_id>-pr<PR>.192.168.1.20.sslip.io:18080", output)
-        self.assertIn("Review /", output)
+        self.assertIn("Review:", output)
 
     def test_multiple_candidates_are_explicitly_selected(self):
         output = io.StringIO()
@@ -97,7 +98,7 @@ token_file = {self.secrets / 'app.token'}
                 return []
             return ["owner/app-a", "owner/app-b"]
         answers = [
-            str(self.control_dir), "2", "", "", "2", "", "", str(self.secrets / "dispatch"),
+            "2", str(self.control_dir), "2", "", "2", "", "", str(self.secrets / "dispatch"),
             str(self.secrets / "ghcr"), str(self.source_dir), "2", "2", str(self.secrets / "app"),
             "", "yes",
         ]
@@ -115,10 +116,12 @@ token_file = {self.secrets / 'app.token'}
         self.assertTrue(result)
         value = config.load_config(self.config_path, ROOT)
         self.assertEqual(value.control, "owner/control-b")
+        self.assertEqual(value.language, "zh-CN")
         self.assertEqual(value.lan_ip, "10.0.0.5")
         self.assertEqual(value.sources[0].repository, "owner/app-b")
         self.assertEqual(value.sources[0].port, 8080)
         self.assertEqual(value.domain_suffix, "auto")
+        self.assertIn("确认摘要", output.getvalue())
         self.assertIn("1. owner/control-a", output.getvalue())
         self.assertIn("2. owner/control-b", output.getvalue())
 
@@ -133,12 +136,23 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(value, "8081")
         self.assertIn("occupied", output.getvalue())
 
+    def test_language_choice_retries_and_accepts_aliases(self):
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["invalid", "zh-CN"]), \
+             contextlib.redirect_stdout(output):
+            value = wizard.choose_language()
+
+        self.assertEqual(value, "zh-CN")
+        self.assertIn("Invalid choice", output.getvalue())
+        self.assertIn("1. English", output.getvalue())
+        self.assertIn("2. 中文", output.getvalue())
+
     def test_existing_configuration_can_be_reviewed_and_reused(self):
         self.config_path.parent.mkdir(parents=True)
-        original = self.config_text("8081")
+        original = self.config_text("8081").replace("language = auto", "language = zh-CN")
         self.config_path.write_text(original)
         before = config.load_config(self.config_path, ROOT)
-        answers = ["yes", *([""] * 14), "yes"]
+        answers = ["1", "yes", *([""] * 13), "yes"]
         output = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(wizard, "discover_repositories", side_effect=lambda directory: []))
@@ -156,20 +170,21 @@ token_file = {self.secrets / 'app.token'}
         self.assertEqual(after.lan_ip, before.lan_ip)
         self.assertEqual(after.sources[0].repository, before.sources[0].repository)
         self.assertEqual(after.sources[0].port, before.sources[0].port)
+        self.assertEqual(after.language, "en")
         self.assertIn("Existing configuration found", output.getvalue())
 
     def test_existing_configuration_cancel_does_not_change_file(self):
         self.config_path.parent.mkdir(parents=True)
         original = self.config_text()
         self.config_path.write_text(original)
-        with patch("builtins.input", return_value=""):
+        with patch("builtins.input", side_effect=["1", ""]):
             result = wizard.run_wizard(self.config_path, ROOT)
         self.assertFalse(result)
         self.assertEqual(self.config_path.read_text(), original)
 
     def test_final_decline_leaves_no_file_and_q_can_exit_for_retry(self):
         answers = [
-            str(self.control_dir), "owner/control", "", "", "192.168.1.20", "",
+            "1", str(self.control_dir), "owner/control", "", "192.168.1.20", "",
             "", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "", "no",
@@ -178,13 +193,19 @@ token_file = {self.secrets / 'app.token'}
         self.assertFalse(result)
         self.assertFalse(self.config_path.exists())
         self.assertIn("Cancelled", output)
-        with patch("builtins.input", side_effect=["q"]):
+        with patch("builtins.input", side_effect=["1", "q"]):
             with self.assertRaises(EOFError):
                 wizard.run_wizard(self.config_path, ROOT)
         self.assertFalse(self.config_path.exists())
 
     def test_eof_cancels_before_creating_a_file(self):
         with patch("builtins.input", side_effect=EOFError):
+            with self.assertRaises(EOFError):
+                wizard.run_wizard(self.config_path, ROOT)
+        self.assertFalse(self.config_path.exists())
+
+    def test_language_q_cancels_before_creating_a_file(self):
+        with patch("builtins.input", side_effect=["q"]):
             with self.assertRaises(EOFError):
                 wizard.run_wizard(self.config_path, ROOT)
         self.assertFalse(self.config_path.exists())
@@ -236,7 +257,7 @@ token_file = {self.secrets / 'app.token'}
         for name in ("dispatch.token", "ghcr.token", "app.token"):
             (self.secrets / name).write_text("TOPSECRET_TEST_VALUE")
         result, output = self.run_manual_wizard([
-            str(self.control_dir), "owner/control", "", "", "192.168.1.20", "",
+            "1", str(self.control_dir), "owner/control", "", "192.168.1.20", "",
             "preview.example.internal", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
             str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"),
             "", "yes",
