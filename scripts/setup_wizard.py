@@ -243,7 +243,7 @@ def application_port(directory, previous=None, *, language='en'):
         candidates = []
 
 
-def run_wizard(path, root, *, language=None):
+def run_wizard(path, root, *, language=None, load_existing=None):
     language = language or choose_language()
     ui = Prompts(language)
     path = Path(path).expanduser().absolute()
@@ -268,7 +268,16 @@ def run_wizard(path, root, *, language=None):
     if draft_path.is_symlink():
         raise SetupError(ui.text('Configuration draft must not be a symlink.', '配置草稿不能是符号链接。'))
     previous = None
-    if draft_path.exists():
+    if load_existing is True:
+        if draft_path.exists():
+            try:
+                previous = load_config(draft_path, root)
+            except (SetupError, OSError, ValueError, UnicodeError):
+                raise SetupError(ui.text('The configuration draft is invalid; repair or remove it before resuming.',
+                                         '配置草稿无效，请修复或移除后再恢复。'))
+        elif path.exists():
+            previous = load_config(path, root)
+    elif load_existing is None and draft_path.exists():
         ui.say('An unfinished configuration draft was found.\n'
                'Load it to resume the previous wizard run, or choose no to review another configuration.',
                '发现未完成的配置草稿。\n'
@@ -279,7 +288,7 @@ def run_wizard(path, root, *, language=None):
             except (SetupError, OSError, ValueError, UnicodeError):
                 ui.say('The configuration draft is invalid; enter values manually.',
                        '配置草稿无效，请手动填写。')
-    if previous is None and path.exists():
+    if load_existing is None and previous is None and path.exists():
         ui.say('Existing configuration found.', '发现已有配置。')
         ui.say('Load its settings as defaults for this run.\n'
                'Choose no to configure from scratch.\n'

@@ -43,6 +43,46 @@ def suggested_token_name(role, repository):
     return name[:40 - len(suffix)].rstrip("._-") + suffix
 
 
+def prompt_load_previous_config(path, *, language):
+    """Make interactive installs choose their configuration source explicitly."""
+    if language == "zh-CN":
+        prompt = f"载入已有配置 {path} 吗？(yes/no) [yes]: "
+        invalid = "请输入 yes 或 no。"
+    else:
+        prompt = f"Load existing configuration {path}? (yes/no) [yes]: "
+        invalid = "Enter yes or no."
+    while True:
+        answer = input(prompt).strip().lower()
+        if answer in ("q", "quit"):
+            raise EOFError()
+        if not answer or answer in ("yes", "y", "是"):
+            return True
+        if answer in ("no", "n", "否"):
+            return False
+        print(invalid)
+
+
+def prepare_interactive_install_config(path, language):
+    """Ask before an install uses old settings, then open the wizard if needed."""
+    path = Path(path).expanduser().absolute()
+    draft_path = config_draft_path(path)
+    source_path = draft_path if (draft_path.exists() or draft_path.is_symlink()) else path
+    if not source_path.exists() and not source_path.is_symlink():
+        from setup_wizard import run_wizard
+        if not run_wizard(path, ROOT, language=language, load_existing=False):
+            raise SetupError("Configuration was not saved; run init before install / 配置未保存，请先运行 init 再执行 install。")
+        return
+    if prompt_load_previous_config(source_path, language=language):
+        if draft_path.exists() or draft_path.is_symlink():
+            from setup_wizard import run_wizard
+            if not run_wizard(path, ROOT, language=language, load_existing=True):
+                raise SetupError("Configuration was not saved; run init before install / 配置未保存，请先运行 init 再执行 install。")
+        return
+    from setup_wizard import run_wizard
+    if not run_wizard(path, ROOT, language=language, load_existing=False):
+        raise SetupError("Configuration was not saved; run init before install / 配置未保存，请先运行 init 再执行 install。")
+
+
 class Installer:
     def __init__(self, config, command, verbose=False):
         self.c, self.command, self.verbose = config, command, verbose
@@ -1055,6 +1095,8 @@ def main():
             label, next_step = ("请编辑", "然后执行") if language == "zh-CN" else ("Edit", "Then run")
             print(f"{label}: {path}\n{next_step}: bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(path))}")
             return 0
+        if args.command == "install" and sys.stdin.isatty():
+            prepare_interactive_install_config(args.config, language or "en")
         if args.command == "install":
             draft_path = config_draft_path(args.config)
             if draft_path.exists() or draft_path.is_symlink():

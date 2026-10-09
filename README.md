@@ -119,7 +119,7 @@ The three token files have separate jobs. Each application repository gets its o
 
 At the beginning, the `init` wizard asks for the output language and stores the selected value in `setup.ini`. Invalid language input prompts again; `q` or EOF leaves the active file unchanged. Once the final review is reached, the validated candidate is kept in `setup.ini.draft` if the wizard is interrupted.
 
-Before saving, it prints a non-sensitive summary of the repositories, directories, LAN address, ports and token file paths. Review it and confirm the save. If a configuration already exists, the wizard asks whether to load it for review before replacing it. An unfinished draft is offered first on the next `init`; `install` refuses to use the older active file until the draft is resolved.
+Before saving, it prints a non-sensitive summary of the repositories, directories, LAN address, ports and token file paths. Review it and confirm the save. If a configuration already exists, the wizard asks whether to load it for review before replacing it. An unfinished draft is offered first on the next `init`; an interactive `install` asks which configuration to load and opens the wizard when you choose not to use the existing one.
 
 The wizard defaults to `allowed_subnet = auto`, which derives the client network from the interface and prefix length belonging to the selected LAN address; it is not assumed to be `/24`. It also defaults to `domain_suffix = auto`, which uses the selected LAN address with `sslip.io`. To use a different private client network or a private DNS zone or hosts-file fallback, enter the corresponding private CIDR or lowercase suffix and follow the [preview access guide](ops/install/access.md). The wizard and installer never print token contents.
 
@@ -131,7 +131,7 @@ bash scripts/setup.sh init --template
 
 This copies the [commented template](config/setup.example.ini) to `~/.config/previewmesh/setup.ini` and never overwrites an existing file. You can then edit it and pass the same path to `install`.
 
-When an interactive `install` starts, it asks you to choose `1. English` or `2. 中文`; the remaining installer prompts use that language. Use `--language en` or `--language zh-CN` to choose it on the command line and skip this question. Invalid input prompts again; `q` or EOF stops before installation changes anything. Non-interactive commands such as `check`, or commands using an existing configuration without an interactive language choice, continue to use the configured `language` value (`auto` follows the system locale).
+When an interactive `install` starts, it asks you to choose `1. English` or `2. 中文`, then asks whether to load the existing configuration; the remaining installer prompts use that language. Choose `no` to open the configuration wizard without changing the active file until the final save. Use `--language en` or `--language zh-CN` to choose the language on the command line and skip the first question. Invalid input prompts again; `q` or EOF stops before installation changes anything. Non-interactive commands such as `check`, or commands using an existing configuration without an interactive language choice, continue to use the configured `language` value (`auto` follows the system locale).
 
 ### 2. Run the installer
 

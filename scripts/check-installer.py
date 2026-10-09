@@ -1744,6 +1744,42 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("unfinished configuration draft", stderr.getvalue().lower())
         self.assertIn("resume it with", stderr.getvalue())
 
+    def test_interactive_install_asks_before_loading_existing_config(self):
+        with patch.object(installer.sys.stdin, "isatty", return_value=True), \
+             patch("builtins.input", return_value="yes") as user_input, \
+             patch.object(installer, "load_config", return_value=self.c) as load_config, \
+             patch.object(installer, "Installer") as installer_class, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "install", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            result = installer.main()
+
+        self.assertEqual(result, 0)
+        user_input.assert_called_once()
+        self.assertIn("Load existing configuration", user_input.call_args.args[0])
+        load_config.assert_called_once_with(self.config_path, ROOT)
+        installer_class.assert_called_once()
+        installer_class.return_value.install.assert_called_once_with()
+
+    def test_interactive_install_no_opens_fresh_configuration_wizard(self):
+        with patch.object(installer.sys.stdin, "isatty", return_value=True), \
+             patch("builtins.input", return_value="no") as user_input, \
+             patch("setup_wizard.run_wizard", return_value=True) as run_wizard, \
+             patch.object(installer, "load_config", return_value=self.c) as load_config, \
+             patch.object(installer, "Installer") as installer_class, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "install", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            result = installer.main()
+
+        self.assertEqual(result, 0)
+        user_input.assert_called_once()
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        load_config.assert_called_once_with(self.config_path, ROOT)
+        installer_class.return_value.install.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
