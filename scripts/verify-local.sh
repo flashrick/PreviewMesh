@@ -15,6 +15,7 @@ python3 scripts/check-setup-wizard.py
 python3 scripts/check-installer.py
 python3 scripts/check-cleanup.py
 python3 scripts/check-onboard-source.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/experiment_runner_test.py
 bash -n scripts/setup.sh
 helm lint charts/preview
 actionlint .github/workflows/preview.yml .github/workflows/update-upstream.yml templates/source-notify.yml

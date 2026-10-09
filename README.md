@@ -434,6 +434,28 @@ Node CPU is reported in cores and memory in bytes from recent metrics windows, s
 
 </details>
 
+### Repeatable evaluation runs
+
+The read-only resource collector can be paired with
+[`scripts/experiment_runner.py`](scripts/experiment_runner.py) to execute or
+collect repeated workflow runs. Keep the runner configuration and evidence
+outside this checkout; the configuration contains trusted private-control
+identities and the evidence may contain workflow and Kubernetes output.
+
+```bash
+python3 scripts/experiment_runner.py run \
+  --config /private/config/experiment.json \
+  --evidence-root /private/evidence/previewmesh \
+  --scenario create --repetitions 3 --concurrency 1 --dry-run
+python3 scripts/experiment_runner.py validate /private/evidence/previewmesh
+```
+
+The runner records immutable source and image identities, conditions, stage
+timings, missing-measurement reasons, lifecycle completeness, cleanup status,
+and an evidence manifest. Unsupported or invalid runs remain retained with an
+explicit reason instead of being silently removed from the dataset. Run the
+script with `--help` for the full record and retention workflow.
+
 ### Recover interrupted cleanup
 
 <details>
@@ -613,6 +635,7 @@ explicitly says they require a live cluster.
 | `scripts/cleanup.sh` | Directory-independent Bash wrapper that launches `cleanup.py`. |
 | `scripts/collect-resources.py` | Read-only Kubernetes resource collector for metrics, managed Namespaces, Helm payloads, and PVC measurements; writes private JSONL samples and summaries. |
 | `scripts/collect-resources_test.py` | Tests quantity parsing, metric freshness, Namespace identity changes, storage measurements, concurrent sampling, and private output permissions. |
+| `scripts/experiment_runner.py` | Dispatches or collects repeated workflow runs, archives private artifacts, writes versioned run records, and validates missing measurements and lifecycle completeness. |
 | `scripts/configure-github-secrets.sh` | Reads registrations and collects hidden tokens, routing source tokens to the control repository, dispatch tokens to source repositories, and GHCR tokens to the control repository. |
 | `scripts/configure-runner.py` | Generates/renews a restricted Runner kubeconfig from administrator K3s access, verifies permissions, and atomically replaces the protected file. |
 | `scripts/create-control-repository.sh` | Creates a private control repository from this public checkout, configures remotes, and pushes the initial content. |

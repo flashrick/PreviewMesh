@@ -1,0 +1,15 @@
+{
+  "control_repository": "example/previewmesh-control",
+  "workflow": "preview.yml",
+  "ref": "main",
+  "fixtures": [
+    {
+      "name": "simple-project",
+      "repository_id": "1",
+      "source_repository": "example/preview-fixture",
+      "pr_number": "1",
+      "project_size": "simple",
+      "build_policy": "rebuild"
+    }
+  ]
+}
