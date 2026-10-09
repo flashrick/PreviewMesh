@@ -40,7 +40,7 @@ def _missing_runs(summary, audit):
                 }
             )
     for project in summary.get("project_sizes", []) or []:
-        if project.get("unsupported", 0):
+        if project.get("unsupported", 0) and not project.get("lifecycle_success", 0):
             missing.append(
                 {
                     "area": "resource_efficiency",
