@@ -266,15 +266,17 @@ def run_wizard(path, root, *, language=None):
     if path.exists():
         ui.say('Existing configuration found.', '发现已有配置。')
         ui.say('Load its settings as defaults for this run.\n'
+               'Choose no to configure from scratch.\n'
                'You can change them before the final save, which replaces this file.',
                '可以载入已有设置作为本次填写的默认值，逐项检查或修改。\n'
+               '输入 no 重新填写配置。\n'
                '最后确认保存时会替换这个配置文件。')
-        if not ui.confirm('Load existing settings for review', '载入已有设置进行检查'):
-            return False
-        try:
-            previous = load_config(path, root)
-        except (SetupError, OSError, ValueError, UnicodeError):
-            ui.say('Existing configuration is invalid; enter values manually.', '已有配置无效，请手动填写。')
+        # Reusing defaults is optional; saving is confirmed separately at the end.
+        if ui.confirm('Load existing settings as defaults', '载入已有设置作为默认值'):
+            try:
+                previous = load_config(path, root)
+            except (SetupError, OSError, ValueError, UnicodeError):
+                ui.say('Existing configuration is invalid; enter values manually.', '已有配置无效，请手动填写。')
     data = configparser.ConfigParser(interpolation=None)
     def location(value):
         if '$' in value:

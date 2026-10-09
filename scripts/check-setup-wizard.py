@@ -52,7 +52,7 @@ token_file = {self.secrets / 'app.token'}
     def run_manual_wizard(self, answers, *, language=None):
         output = io.StringIO()
         patches = [
-            patch.object(wizard, "discover_repositories", return_value=[]),
+            patch.object(wizard, "discover_repositories", side_effect=lambda directory: []),
             patch.object(wizard, "discover_lan", return_value=[]),
             patch.object(wizard, "discover_windows_lan", return_value=[]),
             patch.object(wizard, "discover_ports", return_value=[]),
@@ -265,14 +265,46 @@ token_file = {self.secrets / 'app.token'}
         self.assertIn("Previously configured LAN IPv4", output.getvalue())
         self.assertIn("Existing configuration found", output.getvalue())
 
-    def test_existing_configuration_cancel_does_not_change_file(self):
-        self.config_path.parent.mkdir(parents=True)
-        original = self.config_text()
-        self.config_path.write_text(original)
-        with patch("builtins.input", side_effect=["1", ""]):
-            result = wizard.run_wizard(self.config_path, ROOT)
-        self.assertFalse(result)
-        self.assertEqual(self.config_path.read_text(), original)
+    def test_existing_configuration_no_or_default_starts_from_scratch(self):
+        original = self.config_text("8081")
+        for load_answer in ("no", ""):
+            with self.subTest(load_answer=load_answer):
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                self.config_path.write_text(original)
+                answers = [
+                    "1", load_answer, "", "owner/fresh-control", "", "1",
+                    "192.168.1.20", "", "", str(self.secrets / "dispatch-fresh.token"),
+                    str(self.secrets / "ghcr-fresh.token"), str(self.source_dir), "owner/fresh-app",
+                    "8080", str(self.secrets / "fresh-app.token"), "", "yes",
+                ]
+                result, output = self.run_manual_wizard(answers)
+
+                self.assertTrue(result)
+                after = config.load_config(self.config_path, ROOT)
+                self.assertEqual(after.control, "owner/fresh-control")
+                self.assertEqual(after.control_dir, (ROOT.parent / "previewmesh-control").resolve())
+                self.assertNotEqual(after.control_dir, self.control_dir.resolve())
+                self.assertEqual(after.sources[0].repository, "owner/fresh-app")
+                self.assertEqual(after.sources[0].port, 8080)
+                self.assertNotEqual(self.config_path.read_text(), original)
+                self.assertIn("Existing configuration found", output)
+                self.assertNotIn("Previously configured LAN IPv4", output)
+
+    def test_existing_configuration_final_no_and_q_keep_original(self):
+        original = self.config_text("8081")
+        for save_answer in ("no", "q"):
+            with self.subTest(save_answer=save_answer):
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                self.config_path.write_text(original)
+                answers = ["1", "yes", *([""] * 14), save_answer]
+                if save_answer == "q":
+                    with self.assertRaises(EOFError):
+                        self.run_manual_wizard(answers)
+                else:
+                    result, output = self.run_manual_wizard(answers)
+                    self.assertFalse(result)
+                    self.assertIn("Cancelled", output)
+                self.assertEqual(self.config_path.read_text(), original)
 
     def test_final_decline_leaves_no_file_and_q_can_exit_for_retry(self):
         answers = [
