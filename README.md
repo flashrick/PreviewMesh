@@ -465,17 +465,199 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 
 </details>
 
-## Project layout
+## Project map
 
-| Path | Purpose |
+This map covers the project files that are not matched by `.gitignore`. Local-only
+documentation, evidence, credentials, generated binaries, and runtime state are
+intentionally outside the map. It describes the maintained relationships between
+files; it is not a compiler-generated call graph.
+
+The tool investigation behind this map is in
+[`PROJECT_MAP_TOOL_RESEARCH.md`](PROJECT_MAP_TOOL_RESEARCH.md). It found no
+single mature tool that understands all of this repository's languages and
+configuration formats. The practical approach is to combine language- and
+domain-specific analysis with a reviewed file map.
+
+```mermaid
+flowchart LR
+    setup["scripts/setup.sh<br/>scripts/setup.py"] --> config["config/setup.example.ini<br/>config/repositories.json"]
+    setup --> ops["ops/kubernetes<br/>ops/wsl"]
+    setup --> notify["templates/source-notify.yml"]
+    notify --> workflow[".github/workflows/preview.yml"]
+    workflow --> control["cmd/control"]
+    workflow --> local["scripts/local-attempt.sh"]
+    local --> preview["cmd/previewmesh"]
+    preview --> chart["charts/preview"]
+    preview --> k8s["K3s / Helm / Traefik"]
+    control --> record["internal/statusrecord"]
+    preview --> report["scripts/report.py"]
+    verify["scripts/verify-local.sh"] --> checks["Go tests / check-*.py / actionlint / helm lint"]
+```
+
+### Root and automation
+
+| Path | Responsibility and relationships |
 | --- | --- |
-| `cmd/control` | Trusted repository and pull-request validation CLI |
-| `cmd/previewmesh` | Image, Helm, verification, rollback, and cleanup CLI |
-| `charts/preview` | Restricted Deployment, Service, and Ingress chart |
-| `config` | Private application registration and its public example |
-| `templates` | Workflow copied into each application repository |
-| `scripts` | Secret setup, lifecycle orchestration, reports, and offline checks |
-| `ops` | Generic K3s, Linux, and WSL helpers |
+| `.github/actionlint.yaml` | Configuration consumed by `actionlint`; defines the PreviewMesh runner label used by workflow validation. |
+| `.github/workflows/preview.yml` | Main lifecycle workflow. Builds the two Go CLIs, resolves and inspects the registered PR, invokes `scripts/local-attempt.sh`, and runs `scripts/report.py`. |
+| `.github/workflows/update-upstream.yml` | Scheduled/manual upstream-sync workflow. Calls `scripts/update-upstream.sh`, then runs the repository checks and opens an update PR. |
+| `.gitignore` | Defines which local, private, generated, and runtime paths are outside the public project map. |
+| `LICENSE` | MIT license; no runtime dependency. |
+| `README.md` | English product, installation, workflow, CLI, operations, and project-map guide. |
+| `README_CN.md` | Chinese counterpart of `README.md`; it mirrors the same project boundaries and map. |
+| `PROJECT_MAP_TOOL_RESEARCH.md` | First-party-source investigation of mature tools that could help maintain this map. |
+| `go.mod` | Declares the `previewmesh` Go module used by both CLIs and `internal/statusrecord`. |
+
+### `charts/preview/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `charts/preview/Chart.yaml` | Helm chart metadata consumed by the deploy stage in `cmd/previewmesh`. |
+| `charts/preview/values.yaml` | Safe example defaults; real image, commit, port, hostname, and resource values are supplied by `cmd/previewmesh deploy`. |
+| `charts/preview/values.schema.json` | Validates digest-pinned images, full commit SHAs, ports, hostnames, and resource values before Helm renders the chart. |
+| `charts/preview/templates/_helpers.tpl` | Shared chart name, label, and selector helpers used by the resource templates. |
+| `charts/preview/templates/deployment.yaml` | Creates the non-root application Deployment, sets `PREVIEW_COMMIT_SHA`, and probes `/health`. |
+| `charts/preview/templates/service.yaml` | Creates the internal ClusterIP Service that selects the Deployment. |
+| `charts/preview/templates/ingress.yaml` | Creates the Traefik Ingress that maps the preview hostname to the Service. |
+
+### `cmd/control/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `cmd/control/main.go` | Trusted control CLI: `resolve` reads `config/repositories.json`; `inspect` validates the repository, PR, fork status, and author permission through GitHub; `status` publishes commit status and PR feedback. |
+| `cmd/control/report.go` | Converts deployment and cleanup observations into bounded Markdown evidence, using `internal/statusrecord`. |
+| `cmd/control/main_test.go` | Tests exact registration matching, PR policy, repeated notifications, and reporting failures in `main.go`. |
+| `cmd/control/report_test.go` | Tests evidence tables, unknown results, and Markdown escaping in `report.go`. |
+| `cmd/control/statusrecord_test.go` | Tests structured evidence markers and their association with the expected status, SHA, repository, PR, and author. |
+
+### `cmd/previewmesh/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `cmd/previewmesh/main.go` | Preview CLI orchestration: build, deploy, verify, cleanup, cleanup retry/inspection, Namespace ownership, Helm, readiness, HTTP verification, rollback, and structured evidence. It renders `charts/preview`. |
+| `cmd/previewmesh/cleanup.go` | Safe cleanup retry and complete namespaced-resource inspection; records metadata without exposing Secret contents. |
+| `cmd/previewmesh/observations.go` | Read-only Deployment, Pod, Service, and Ingress runtime snapshots used by results and `cmd/control/report.go`. |
+| `cmd/previewmesh/preflight.go` | Application source preflight: Git cleanliness, Dockerfile and contract checks, optional temporary-container verification, and controlled findings. |
+| `cmd/previewmesh/status.go` | Read-only PR status query through `gh`; reads commit statuses, paginated comments, and `internal/statusrecord` evidence to classify running, ready, failure, removed, or expired states. It does not query Kubernetes. |
+| `cmd/previewmesh/main_test.go` | Tests argument safety, health/SHA checks, readiness, deployment failures, rollback, cleanup evidence, and domain constraints. |
+| `cmd/previewmesh/cleanup_test.go` | Tests interrupted cleanup, Namespace replacement, UID conflicts, API/permission failures, and cross-process retry. |
+| `cmd/previewmesh/observations_test.go` | Tests runtime summaries and the distinction between HTTP success and verified commit identity. |
+| `cmd/previewmesh/preflight_test.go` | Tests static blockers/warnings, ignored files, credential redaction, temporary Docker cleanup, and source changes during checks. |
+| `cmd/previewmesh/status_test.go` | Tests complete, failed, missing, pending, expired, closed/merged, paginated, and incorrectly-associated status evidence. |
+
+### `internal/statusrecord/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `internal/statusrecord/record.go` | Shared credential-free schema and marker for PR evidence and stage timings. `cmd/control` writes it; `cmd/previewmesh/status.go` reads it. |
+
+### `config/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `config/repositories.example.json` | Public schema example for private-control registrations: repository ID, source name, application port, and Secret name. |
+| `config/repositories.json` | Current public registry file; it is empty here. A private control checkout supplies real registrations to `cmd/control`, installer checks, and Secret setup. |
+| `config/setup.example.ini` | Commented installer configuration template for control/source repositories, directories, network, domain, ports, and token file paths; it never stores token values. |
+
+### `ops/install/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `ops/install/access.md` | Canonical preview access guide: URL construction, port 18080, DNS/hosts, WSL LAN access, Traefik checks, and `/health`. |
+| `ops/install/manual.md` | English manual installation path connecting RBAC, K3s, Traefik, Secrets, source notification, verification, and cleanup. |
+| `ops/install/manual_CN.md` | Chinese counterpart of `manual.md`. |
+
+### `ops/kubernetes/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `ops/kubernetes/README.md` | Explains the self-hosted Runner's Kubernetes security boundary and restricted kubeconfig; connects `runner-rbac.yaml`, `configure-runner.py`, and the installer. |
+| `ops/kubernetes/runner-rbac.yaml` | Creates the Runner namespace, ServiceAccount, ClusterRole, and binding for preview Namespaces and workloads without cluster-admin, Pod log, or Pod exec access. |
+| `ops/kubernetes/traefik-helmchartconfig.yaml` | Keeps Traefik internal as a ClusterIP and publishes the local Ingress address; applied by the installer and used by the WSL ingress path. |
+
+### `ops/wsl/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `ops/wsl/check-ingress.ps1` | Windows-side diagnostic that verifies the localhost:18080 path returns the expected Traefik 404 for an unknown host. |
+| `ops/wsl/docker-egress-ports.sh` | Adds an idempotent TCP MASQUERADE rule for Docker bridge egress in the supported WSL mirrored-network case. |
+| `ops/wsl/docker-egress.md` | Documents when to install/remove the Docker egress helper and its scope. |
+| `ops/wsl/ingress.env.example` | Placeholder for the Traefik ClusterIP endpoint consumed by the ingress service. |
+| `ops/wsl/previewmesh-docker-egress.service` | One-shot systemd unit that runs the Docker egress helper at boot. |
+| `ops/wsl/previewmesh-ingress.service` | Socket-proxy service that prepares the WSL route and forwards the local entry point to Traefik. |
+| `ops/wsl/previewmesh-ingress.socket` | Listens on `127.0.0.1:18080` and hands connections to the ingress service. |
+| `ops/wsl/setup-lan.ps1` | Windows-side installation, refresh, and check logic for LAN forwarding, firewall rules, WSL networking, and scheduled tasks; invoked by `scripts/setup.py`. |
+
+### `scripts/`
+
+The scripts divide into verification, installation/runtime orchestration, and
+reporting. The `check-*` files use doubles or fixtures unless their description
+explicitly says they require a live cluster.
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `scripts/check-cleanup.py` | Offline regression checks for selectable cleanup, dry-run behavior, token retention, and installation ownership conflicts. |
+| `scripts/check-environment.sh` | Read-only tool/version checks for local, cluster, Runner, and development modes. |
+| `scripts/check-github-secrets.py` | Fake-`gh` checks for Secret routing, duplicate protection, hidden input, and upload failures. |
+| `scripts/check-installer.py` | Large offline installer suite covering configuration, credentials, checkpoints, GitHub/K3s/Traefik/WSL/Runner boundaries, downloads, and maintenance. |
+| `scripts/check-notification.mjs` | Extracts the GitHub Script from `templates/source-notify.yml` and tests repeated event dispatch in memory. |
+| `scripts/check-onboard-source.py` | Mocks GitHub Git/tree/PR APIs to verify that `setup_onboard.py` changes only the notification workflow. |
+| `scripts/check-repeated-deploy.py` | Live-cluster repeated-deployment and missing-resource check; validates ownership, Helm values, resource identity, and recovery. Its repair mode is intentionally destructive to selected preview resources. |
+| `scripts/check-repeated-deploy_test.py` | Offline tests for repeated-resource detection. |
+| `scripts/check-setup-ui.py` | Tests the optional terminal UI, fallback, and bootstrap adapters. |
+| `scripts/check-setup-wizard.py` | Tests wizard discovery, input validation, drafts, language, network, and port handling. |
+| `scripts/check-setup.py` | Fake-tool checks for restricted kubeconfig creation, credential protection, version checks, and exit-code propagation. |
+| `scripts/check-windows-setup.ps1` | PowerShell AST-based offline checks for the real Windows/WSL/UAC, task, network, and result branches in `ops/wsl/setup-lan.ps1`. |
+| `scripts/check-workflow.py` | Workflow-level offline regression suite using real Go builds and doubles for control, Docker, Helm, kubectl, deployment, cleanup, dispatch, and report aggregation. |
+| `scripts/cleanup.py` | Selective cleanup implementation for configuration, tokens, install state, services, Runner traces, and PreviewMesh resources; supports dry-run and confirmation. |
+| `scripts/cleanup.sh` | Directory-independent Bash wrapper that launches `cleanup.py`. |
+| `scripts/collect-resources.py` | Read-only Kubernetes resource collector for metrics, managed Namespaces, Helm payloads, and PVC measurements; writes private JSONL samples and summaries. |
+| `scripts/collect-resources_test.py` | Tests quantity parsing, metric freshness, Namespace identity changes, storage measurements, concurrent sampling, and private output permissions. |
+| `scripts/configure-github-secrets.sh` | Reads registrations and collects hidden tokens, routing source tokens to the control repository, dispatch tokens to source repositories, and GHCR tokens to the control repository. |
+| `scripts/configure-runner.py` | Generates/renews a restricted Runner kubeconfig from administrator K3s access, verifies permissions, and atomically replaces the protected file. |
+| `scripts/create-control-repository.sh` | Creates a private control repository from this public checkout, configures remotes, and pushes the initial content. |
+| `scripts/local-attempt.sh` | Local Runner orchestrator: resolves and inspects the PR, chooses deploy or cleanup, handles superseded SHAs/closed PRs, and publishes final evidence. |
+| `scripts/report.py` | Combines build/local artifacts, stage CSVs, and optional GitHub timing data into `summary.json`, combined CSV, and the workflow summary. |
+| `scripts/setup.py` | Installer core coordinating dependency, private-control checkout, Secret, K3s/RBAC, Runner, network, source notification, GitHub automation, and doctor stages. |
+| `scripts/setup.sh` | Shell entrypoint that dispatches commands, prepares optional UI Python, and enters `setup.py`; cleanup is delegated to `cleanup.sh`. |
+| `scripts/setup_config.py` | INI model and secure I/O: validates repositories, directories, network, ports, and token paths; reads protected tokens and merges registrations. |
+| `scripts/setup_downloads.py` | Resolves official tool/Runner releases, downloads over HTTPS, verifies SHA-256, and safely extracts archives. |
+| `scripts/setup_ingress_route.py` | Privileged WSL mirrored-network helper that waits for the bridge and prepares the private route to Traefik. |
+| `scripts/setup_language.py` | Shared English/Chinese language selection for the installer and wizard. |
+| `scripts/setup_maintenance.py` | Root-owned maintenance process that renews Runner credentials, refreshes Traefik endpoint data, maintains the dedicated firewall path, and drops privileges before writing credentials. |
+| `scripts/setup_onboard.py` | Reads a source repository's default branch, generates the notification workflow diff, and optionally creates a reviewable PR. |
+| `scripts/setup_resume.py` | Checkpoint and digest logic for resumable installation; verifies configuration, scripts, templates, operations files, dependencies, and artifacts before reuse. |
+| `scripts/setup_ui.py` | Optional Rich/Questionary terminal UI with a plain-text fallback that leaves installer behavior unchanged. |
+| `scripts/setup_ui_bootstrap.py` | Creates the optional user-owned UI virtual environment and installs `ui-requirements.txt`. |
+| `scripts/setup_wizard.py` | Credential-free interactive wizard that discovers repositories, LAN address, and application port, then writes a validated configuration draft. |
+| `scripts/ui-requirements.txt` | Optional UI dependency constraints for Rich and Questionary. |
+| `scripts/update-upstream.sh` | Merges public upstream into a private control checkout, preserves its private registry, stops on unrelated conflicts, and creates a local review branch. |
+| `scripts/verify-local.sh` | Development verification entrypoint for environment checks, Go test/vet, Python checks, Bash syntax, Helm lint, and actionlint. |
+
+### `templates/`
+
+| Path | Responsibility and relationships |
+| --- | --- |
+| `templates/source-notify.yml` | Workflow copied into each application repository. It listens for PR changes and forwards only repository ID, full name, and PR number to the control workflow; it never checks out or executes PR code. `setup_onboard.py` fills its control-repository placeholders. |
+
+### Relationship boundaries
+
+The main runtime path is:
+
+`templates/source-notify.yml` → application-repository notification →
+`.github/workflows/preview.yml` → `cmd/control` registration/PR checks →
+`scripts/local-attempt.sh` → `cmd/previewmesh` → `charts/preview` and K3s →
+`scripts/report.py` plus `cmd/control` status/comment reporting.
+
+The setup path is `scripts/setup.sh` → `scripts/setup.py` → configuration,
+checkpoint, download, onboarding, maintenance, Kubernetes, and WSL helpers.
+The validation path is `scripts/verify-local.sh` → the Go tests and `check-*`
+fixtures, plus `helm lint` and `actionlint`.
+
+The map does not claim ownership of external application Dockerfiles, application
+`/health` implementations, GitHub Secrets, Runner registrations, live K3s
+state, or generated runtime evidence; those are inputs or effects at the system
+boundary rather than files in this public project.
 
 ## Troubleshooting
 

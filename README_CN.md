@@ -484,17 +484,195 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 
 </details>
 
-## 项目结构
+## 项目地图
 
-| 路径 | 用途 |
+本地图覆盖没有被 `.gitignore` 匹配的项目文件。仅供本机使用的文档、
+证据、凭据、生成的二进制文件和运行时状态不在地图范围内。地图描述的是
+维护中的文件关系，不是编译器生成的完整调用图。
+
+本地图背后的工具调研见
+[`PROJECT_MAP_TOOL_RESEARCH.md`](PROJECT_MAP_TOOL_RESEARCH.md)。调研结论是：
+没有一个成熟工具能同时理解本项目使用的全部语言和配置格式。实际可行的
+方法是组合语言/领域专用分析工具，再人工审核文件职责和关系。
+
+```mermaid
+flowchart LR
+    setup["scripts/setup.sh<br/>scripts/setup.py"] --> config["config/setup.example.ini<br/>config/repositories.json"]
+    setup --> ops["ops/kubernetes<br/>ops/wsl"]
+    setup --> notify["templates/source-notify.yml"]
+    notify --> workflow[".github/workflows/preview.yml"]
+    workflow --> control["cmd/control"]
+    workflow --> local["scripts/local-attempt.sh"]
+    local --> preview["cmd/previewmesh"]
+    preview --> chart["charts/preview"]
+    preview --> k8s["K3s / Helm / Traefik"]
+    control --> record["internal/statusrecord"]
+    preview --> report["scripts/report.py"]
+    verify["scripts/verify-local.sh"] --> checks["Go tests / check-*.py / actionlint / helm lint"]
+```
+
+### 根目录和自动化
+
+| 路径 | 职责和关系 |
 | --- | --- |
-| `cmd/control` | 可信的仓库和拉取请求验证 CLI |
-| `cmd/previewmesh` | 镜像、Helm、验证、回滚和清理 CLI |
-| `charts/preview` | 受限的 Deployment、Service 和 Ingress Chart |
-| `config` | 私有应用登记及公开示例 |
-| `templates` | 复制到各应用源码仓库的工作流 |
-| `scripts` | Secret 配置、生命周期编排、报告和离线检查 |
-| `ops` | 通用 K3s、Linux 和 WSL 辅助文件 |
+| `.github/actionlint.yaml` | `actionlint` 使用的配置，声明 PreviewMesh 自托管 Runner 标签。 |
+| `.github/workflows/preview.yml` | 主生命周期工作流：编译两个 Go CLI，校验登记和 PR，调用 `scripts/local-attempt.sh`，最后运行 `scripts/report.py`。 |
+| `.github/workflows/update-upstream.yml` | 定时/手动上游同步工作流：调用 `scripts/update-upstream.sh`，运行检查并创建更新 PR。 |
+| `.gitignore` | 定义不属于公开项目地图的本地、私有、生成和运行时路径。 |
+| `LICENSE` | MIT 许可证，不参与运行时。 |
+| `README.md` | 英文产品、安装、工作流、CLI、运维和项目地图说明。 |
+| `README_CN.md` | `README.md` 的中文对应版本，保持相同的项目边界和地图。 |
+| `PROJECT_MAP_TOOL_RESEARCH.md` | 关于成熟项目地图工具的官方资料调研。 |
+| `go.mod` | 声明 `previewmesh` Go 模块，供两个 CLI 和 `internal/statusrecord` 使用。 |
+
+### `charts/preview/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `charts/preview/Chart.yaml` | Helm Chart 元数据，由 `cmd/previewmesh` 的部署阶段使用。 |
+| `charts/preview/values.yaml` | 安全示例默认值；真实镜像、提交 SHA、端口、主机名和资源值由 `cmd/previewmesh deploy` 提供。 |
+| `charts/preview/values.schema.json` | 在 Helm 渲染前校验 digest 镜像、完整提交 SHA、端口、主机名和资源值。 |
+| `charts/preview/templates/_helpers.tpl` | 供资源模板共用的名称、标签和 selector 辅助模板。 |
+| `charts/preview/templates/deployment.yaml` | 创建非 root 应用 Deployment，设置 `PREVIEW_COMMIT_SHA` 并探测 `/health`。 |
+| `charts/preview/templates/service.yaml` | 创建选择 Deployment 的内部 ClusterIP Service。 |
+| `charts/preview/templates/ingress.yaml` | 创建 Traefik Ingress，把预览主机名映射到 Service。 |
+
+### `cmd/control/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `cmd/control/main.go` | 可信控制 CLI：`resolve` 读取 `config/repositories.json`；`inspect` 通过 GitHub 校验仓库、PR、fork 和作者权限；`status` 发布 Commit Status 与 PR 反馈。 |
+| `cmd/control/report.go` | 使用 `internal/statusrecord` 将部署/清理观察结果转换成受控 Markdown 证据。 |
+| `cmd/control/main_test.go` | 测试精确登记匹配、PR 策略、重复通知和报告失败。 |
+| `cmd/control/report_test.go` | 测试证据表、未知结果和 Markdown 转义。 |
+| `cmd/control/statusrecord_test.go` | 测试结构化证据标记与状态、SHA、仓库、PR、作者的关联。 |
+
+### `cmd/previewmesh/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `cmd/previewmesh/main.go` | 预览 CLI 编排：build、deploy、verify、cleanup、清理重试/盘点、Namespace 归属、Helm、就绪检查、HTTP 验证、回滚和结构化证据；渲染 `charts/preview`。 |
+| `cmd/previewmesh/cleanup.go` | 安全清理重试和 namespaced 资源完整盘点；只记录元数据，不暴露 Secret 内容。 |
+| `cmd/previewmesh/observations.go` | 只读采集 Deployment、Pod、Service、Ingress 快照，供结果和 `cmd/control/report.go` 使用。 |
+| `cmd/previewmesh/preflight.go` | 应用源码预检：Git 干净状态、Dockerfile 和契约检查，可选临时容器验证及受控 findings。 |
+| `cmd/previewmesh/status.go` | 通过 `gh` 只读查询 PR、Commit Status、分页评论和 `internal/statusrecord` 证据，计算 running、ready、failure、removed、expired 等状态；不查询 Kubernetes。 |
+| `cmd/previewmesh/main_test.go` | 测试参数安全、健康/SHA、就绪检查、部署失败、回滚、清理证据和域名约束。 |
+| `cmd/previewmesh/cleanup_test.go` | 测试中断清理、Namespace 替换、UID 冲突、API/权限失败和跨进程重试。 |
+| `cmd/previewmesh/observations_test.go` | 测试运行时摘要，以及 HTTP 成功与提交身份已核验的区别。 |
+| `cmd/previewmesh/preflight_test.go` | 测试静态 blocker/warning、忽略文件、凭据脱敏、临时 Docker 清理和检查期间源码变化。 |
+| `cmd/previewmesh/status_test.go` | 测试成功、失败、缺失、pending、过期、关闭/合并、分页和错误关联的状态证据。 |
+
+### `internal/statusrecord/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `internal/statusrecord/record.go` | PR 证据和阶段计时的无凭据共享格式与标记。由 `cmd/control` 写入，由 `cmd/previewmesh/status.go` 读取。 |
+
+### `config/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `config/repositories.example.json` | 私有控制仓库登记格式示例：仓库 ID、源码名称、应用端口和 Secret 名。 |
+| `config/repositories.json` | 当前公开登记文件，内容为空；私有 control checkout 为 `cmd/control`、安装检查和 Secret 配置提供真实登记。 |
+| `config/setup.example.ini` | 安装配置模板，定义 control/source 仓库、目录、网络、域名、端口和 Token 文件路径；不保存 Token 明文。 |
+
+### `ops/install/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `ops/install/access.md` | 预览访问规范：URL、18080 端口、DNS/hosts、WSL LAN、Traefik 检查和 `/health`。 |
+| `ops/install/manual.md` | 英文手工安装路径，串联 RBAC、K3s、Traefik、Secret、源码通知、检查和清理。 |
+| `ops/install/manual_CN.md` | `manual.md` 的中文版本。 |
+
+### `ops/kubernetes/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `ops/kubernetes/README.md` | 解释自托管 Runner 的 Kubernetes 安全边界和受限 kubeconfig，关联 `runner-rbac.yaml`、`configure-runner.py` 和安装器。 |
+| `ops/kubernetes/runner-rbac.yaml` | 创建 Runner Namespace、ServiceAccount、ClusterRole 和绑定；允许管理预览资源，但不允许 cluster-admin、Pod 日志或 Pod exec。 |
+| `ops/kubernetes/traefik-helmchartconfig.yaml` | 让 Traefik 保持 ClusterIP 并发布本地 Ingress 地址；由安装器应用并供 WSL 入口使用。 |
+
+### `ops/wsl/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `ops/wsl/check-ingress.ps1` | Windows 侧诊断，验证 localhost:18080 对未知主机返回预期 Traefik 404。 |
+| `ops/wsl/docker-egress-ports.sh` | 在支持的 WSL mirrored 网络场景为 Docker bridge 出口添加幂等 TCP MASQUERADE 规则。 |
+| `ops/wsl/docker-egress.md` | 说明 Docker 出口辅助脚本的适用条件、安装和移除。 |
+| `ops/wsl/ingress.env.example` | 入口服务使用的 Traefik ClusterIP 占位配置。 |
+| `ops/wsl/previewmesh-docker-egress.service` | 开机运行 Docker 出口辅助脚本的 systemd oneshot 单元。 |
+| `ops/wsl/previewmesh-ingress.service` | 先准备 WSL 路由，再把本地入口转发到 Traefik 的 socket proxy 服务。 |
+| `ops/wsl/previewmesh-ingress.socket` | 监听 `127.0.0.1:18080` 并把连接交给入口服务。 |
+| `ops/wsl/setup-lan.ps1` | Windows 侧 LAN 转发、防火墙、WSL 网络和计划任务的安装/刷新/检查逻辑，由 `scripts/setup.py` 调用。 |
+
+### `scripts/`
+
+这些脚本分为验证、安装/运行编排和报告三类。除非描述明确要求真实集群，
+`check-*` 文件通常使用替身或 fixture。
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `scripts/check-cleanup.py` | 离线回归可选择清理、dry-run、Token 保留和安装归属冲突。 |
+| `scripts/check-environment.sh` | 只读检查本地、集群、Runner 和开发环境工具/版本。 |
+| `scripts/check-github-secrets.py` | 用假 `gh` 检查 Secret 路由、重复保护、隐藏输入和上传失败。 |
+| `scripts/check-installer.py` | 安装器离线测试套件，覆盖配置、凭据、断点、GitHub/K3s/Traefik/WSL/Runner、下载和维护边界。 |
+| `scripts/check-notification.mjs` | 从 `templates/source-notify.yml` 提取 GitHub Script，在内存中测试重复事件派发。 |
+| `scripts/check-onboard-source.py` | 模拟 GitHub API，验证 `setup_onboard.py` 只修改通知工作流。 |
+| `scripts/check-repeated-deploy.py` | 真实集群上的重复部署/缺资源检查，验证归属、Helm values、资源身份和恢复；修复模式会主动删除选定预览资源。 |
+| `scripts/check-repeated-deploy_test.py` | 重复资源检测的离线测试。 |
+| `scripts/check-setup-ui.py` | 测试终端 UI、fallback 和 bootstrap 适配层。 |
+| `scripts/check-setup-wizard.py` | 测试向导发现、输入、草稿、语言、网络和端口逻辑。 |
+| `scripts/check-setup.py` | 用假工具检查受限 kubeconfig、凭据保护、版本检查和退出码传递。 |
+| `scripts/check-windows-setup.ps1` | 用 PowerShell AST 离线检查 `ops/wsl/setup-lan.ps1` 的 Windows/WSL/UAC、计划任务、网络和结果分支。 |
+| `scripts/check-workflow.py` | 工作流级离线回归，使用真实 Go 构建和 Docker/Helm/kubectl/部署/清理/派发/报告替身。 |
+| `scripts/cleanup.py` | 选择性清理实现，处理配置、Token、安装状态、服务、Runner 痕迹和 PreviewMesh 资源，支持 dry-run 和确认。 |
+| `scripts/cleanup.sh` | 不依赖当前目录、启动 `cleanup.py` 的 Bash 包装器。 |
+| `scripts/collect-resources.py` | 只读采集 Kubernetes metrics、托管 Namespace、Helm payload 和 PVC 测量值，写出私有 JSONL 与汇总。 |
+| `scripts/collect-resources_test.py` | 测试数量解析、metric 新鲜度、Namespace 身份变化、存储测量、并发采样和输出权限。 |
+| `scripts/configure-github-secrets.sh` | 读取登记并隐藏收集 Token，把源码 Token 写入 control，把 dispatch Token 写入源码仓库，把 GHCR Token 写入 control。 |
+| `scripts/configure-runner.py` | 从管理员 K3s 权限生成/续期受限 Runner kubeconfig，验证权限并原子替换受保护文件。 |
+| `scripts/create-control-repository.sh` | 从公开 checkout 创建私有 control 仓库、配置 remote 并推送初始内容。 |
+| `scripts/local-attempt.sh` | 本地 Runner 编排器：resolve/inspect PR，选择 deploy 或 cleanup，处理旧 SHA/关闭 PR 并发布最终证据。 |
+| `scripts/report.py` | 合并 build/local 产物、阶段 CSV 和可选 GitHub 时间数据，生成 `summary.json`、合并 CSV 和工作流摘要。 |
+| `scripts/setup.py` | 安装器核心，协调依赖、私有 control checkout、Secret、K3s/RBAC、Runner、网络、源码通知、GitHub 自动化和 doctor 阶段。 |
+| `scripts/setup.sh` | Shell 入口：解析命令、准备可选 UI Python 并进入 `setup.py`；cleanup 转给 `cleanup.sh`。 |
+| `scripts/setup_config.py` | INI 模型和安全 I/O，校验仓库、目录、网络、端口和 Token 路径，读取受保护 Token 并合并登记。 |
+| `scripts/setup_downloads.py` | 解析官方工具/Runner 发行版，HTTPS 下载、SHA-256 校验和安全解包。 |
+| `scripts/setup_ingress_route.py` | 特权 WSL mirrored 网络辅助程序，等待 bridge 并准备到 Traefik 的私有路由。 |
+| `scripts/setup_language.py` | 安装器和向导共用的中英文选择。 |
+| `scripts/setup_maintenance.py` | root 管理的维护进程，续期 Runner 凭据、刷新 Traefik 端点、维护专用防火墙链，并在写凭据前降权。 |
+| `scripts/setup_onboard.py` | 读取源码默认分支，生成通知工作流差异，可选创建可审核 PR。 |
+| `scripts/setup_resume.py` | 安装断点和摘要校验；复用阶段前检查配置、脚本、模板、运维文件、依赖和产物。 |
+| `scripts/setup_ui.py` | 可选 Rich/Questionary 终端 UI 与纯文本 fallback，不改变安装逻辑。 |
+| `scripts/setup_ui_bootstrap.py` | 创建用户目录下的可选 UI 虚拟环境并安装 `ui-requirements.txt`。 |
+| `scripts/setup_wizard.py` | 无凭据交互式向导，发现仓库、LAN 地址和应用端口，写入已校验配置草稿。 |
+| `scripts/ui-requirements.txt` | Rich 和 Questionary 的可选 UI 依赖约束。 |
+| `scripts/update-upstream.sh` | 将公开上游合并到私有 control checkout，保留私有登记，冲突时停止并创建本地审核分支。 |
+| `scripts/verify-local.sh` | 开发验证入口，调用环境检查、Go test/vet、Python 检查、Bash 语法、Helm lint 和 actionlint。 |
+
+### `templates/`
+
+| 路径 | 职责和关系 |
+| --- | --- |
+| `templates/source-notify.yml` | 复制到各应用源码仓库的工作流，监听 PR 变化，只发送仓库 ID、完整名称和 PR 号到 control；不检出或执行 PR 代码。`setup_onboard.py` 填充其 control 占位符。 |
+
+### 关系边界
+
+主运行链路是：
+
+`templates/source-notify.yml` → 应用源码仓库通知 →
+`.github/workflows/preview.yml` → `cmd/control` 登记/PR 检查 →
+`scripts/local-attempt.sh` → `cmd/previewmesh` → `charts/preview` 和 K3s →
+`scripts/report.py` 以及 `cmd/control` 的状态/评论回写。
+
+安装链路是 `scripts/setup.sh` → `scripts/setup.py` → 配置、断点、下载、
+接入、维护、Kubernetes 和 WSL 辅助程序。验证链路是
+`scripts/verify-local.sh` → Go 测试与 `check-*` fixture，再加 `helm lint`
+和 `actionlint`。
+
+地图不把外部应用 Dockerfile、应用 `/health` 实现、GitHub Secrets、Runner
+登记、正在运行的 K3s 状态或生成的运行证据视为本公开项目文件；它们是系统
+边界外的输入或运行结果。
 
 ## 故障排查
 
