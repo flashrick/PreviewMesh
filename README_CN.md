@@ -82,6 +82,24 @@ flowchart LR
 
 `init` 和 `install` 默认使用 `~/.config/previewmesh/setup.ini`；也可以用 `--config /path/to/setup.ini` 指定其他路径。
 
+### 终端界面与自动化
+
+安装器和配置向导使用终端界面。第一次在交互式终端运行 `bash scripts/setup.sh init` 时，脚本会自动在用户缓存目录 `$XDG_CACHE_HOME/previewmesh/ui-venv`（或 `$HOME/.cache/previewmesh/ui-venv`）创建独立虚拟环境，并在其中安装 [Rich](https://github.com/Textualize/rich) 和 [Questionary](https://github.com/tmbo/questionary)。后续运行会复用它，不会修改系统 Python 包。在真实终端中会显示面板、克制的状态颜色、加载指示器和方向键选择。
+
+如果界面环境无法创建或下载，或者 stdin/stdout 被重定向，PreviewMesh 会使用可读的纯文本界面，不会改变校验、断点或安装行为。如需手动准备环境，或指定其他缓存位置，可以执行：
+
+```bash
+python3 -m venv "$HOME/.local/share/previewmesh/ui-venv"
+"$HOME/.local/share/previewmesh/ui-venv/bin/python" -m pip install -r scripts/ui-requirements.txt
+PATH="$HOME/.local/share/previewmesh/ui-venv/bin:$PATH" bash scripts/setup.sh init
+```
+
+如果发行版没有 `venv`，请安装匹配的 Ubuntu `python3-venv` 包后重新运行 `init`；如果无法安装，仍可使用纯文本模式。设置 `PREVIEWMESH_UI=plain` 可强制使用降级界面，设置 `PREVIEWMESH_UI_VENV` 可指定独立虚拟环境路径。
+
+颜色表达语义而不是装饰：蓝色表示当前步骤，绿色表示完成，琥珀色表示警告，珊瑚色表示失败，紫色表示复用断点，灰色表示待处理。每种状态同时保留文字标签和符号，因此关闭颜色后仍然可读。
+
+方向键界面需要 TTY。`init`、交互式 `install`、隐藏输入 Token、首次 `gh auth login` 和 `onboard-source --create-pr` 都需要终端；请在终端中运行。重定向或 CI 执行时必须提供有效的 `--config`、仓库外且权限为 `600` 的 Token 文件、已登录的 `gh` 以及可用的 `sudo`。`init --template`、`check`、`doctor` 和不带 `--create-pr` 的 `onboard-source` 仍适合自动化。`--verbose` 只显示脱敏后的工具输出。
+
 ### 应用要求
 
 每个应用源码仓库的应用代码本地目录根部都需要一个 Dockerfile。它必须构建 `linux/amd64` 镜像，让应用在配置的端口上监听 `0.0.0.0`，并以 UID/GID `65532` 运行且不依赖额外的 Linux 能力（capabilities）。`GET /health` 必须返回 HTTP 200。JSON 中的 `commit_sha` 字段必须使用运行时环境变量 `PREVIEW_COMMIT_SHA` 的实际值，并保留下面的契约：
@@ -112,9 +130,9 @@ bash scripts/setup.sh init
 
 在网络步骤中，向导会让你选择直接在 Ubuntu 上安装，还是在 WSL 中安装。默认值根据当前平台自动检测；这个选择只用于本次向导，不会写入配置，之后的 install 仍按实际平台自动判断。Ubuntu 模式调用本机只读 `ip` 获取私有 global IPv4 候选值，并过滤已知 VPN/容器接口前缀；WSL 模式调用只读 PowerShell，从正在运行的物理 Windows 网卡读取可用 IPv4，因此不会把 WSL guest NAT 地址当成预览局域网地址。
 
-向导会从选定的部署管理本地目录和应用代码本地目录发现 GitHub remote、可用的局域网 IPv4 候选值，以及 Dockerfile `EXPOSE` 中声明的应用端口，并在展示端口前进行检查。单个网络地址会显示为实际默认值，直接回车即可接受；有多个地址时会列出候选并要求输入编号或完整地址，不会静默选择某个网卡。自动发现失败或没有地址时，提示会说明原因并允许手动填写私有局域网 IPv4。
+向导会从选定的部署管理本地目录和应用代码本地目录发现 GitHub remote、可用的局域网 IPv4 候选值，以及 Dockerfile `EXPOSE` 中声明的应用端口，并在展示端口前进行检查。单个网络地址会显示为实际默认值，直接回车即可接受；增强终端中的多个候选可用方向键和 Enter 选择，纯文本界面接受编号或完整地址，不会静默选择某个网卡。自动发现失败或没有地址时，提示会说明原因并允许手动填写私有局域网 IPv4。
 
-对于仓库、目录和端口列表，如果只有一个候选值，提示会直接显示实际默认值，例如 `[flashrick/PreviewMesh]`；直接回车即可接受，也可以输入 `1` 选择第一个编号项。候选值超过一个时可输入编号或完整值；没有候选值时，请按提示填写完整的 `用户名或组织名/仓库名`、路径、地址或端口。
+对于仓库、目录和端口列表，如果只有一个候选值，提示会直接显示实际默认值，例如 `[flashrick/PreviewMesh]`，直接回车即可接受。增强终端中有多个候选时可用方向键选择；纯文本界面接受编号或完整值。没有候选值时，请按提示填写完整的 `用户名或组织名/仓库名`、路径、地址或端口。
 
 向导会分开收集普通配置和 Token 文件路径。不要把 Token 粘贴到向导中；配置文件只保存类似下面的文件引用：
 
@@ -134,7 +152,7 @@ bash scripts/setup.sh init
 
 三个 Token 文件的用途不同。每个应用源码仓库使用独立的应用 Token，用于读取源码和回写状态；通知 Token 只选择部署管理仓库，并复制到每个应用源码仓库的 `PREVIEWMESH_DISPATCH_TOKEN`，让通知工作流派发 control 工作流；GHCR Token 是 classic 包读取 Token，保存到部署管理仓库的 `GHCR_READ_TOKEN`，供集群拉取预览镜像。安装器在 `setup.ini` 中只保存文件路径，不保存 Token 明文。
 
-`init` 向导开始时会询问输出语言，并把所选值保存到 `setup.ini`。语言输入无效时会重新提示，输入 `q` 或遇到 EOF 会保持当前配置不变；完成最终检查后若向导被中断，已校验的候选配置会保存到 `setup.ini.draft`。
+`init` 向导开始时会询问输出语言，并把所选值保存到 `setup.ini`。增强终端使用方向键选择，纯文本界面仍接受原有语言别名。取消或遇到 EOF 会保持当前配置不变；完成最终检查后若向导被中断，已校验的候选配置会保存到 `setup.ini.draft`。
 
 保存前，向导会显示仓库、目录、局域网地址、端口和 Token 文件路径等非敏感摘要。请审核后确认保存。已有配置时，向导会先询问是否载入并审核，再决定是否替换；下次运行 `init` 时会优先提供未完成的草稿。交互式 `install` 会先询问使用哪份配置，选择不使用已有配置时会打开向导。
 
@@ -148,7 +166,7 @@ bash scripts/setup.sh init --template
 
 它会把[带逐项说明的模板](config/setup.example.ini)复制到 `~/.config/previewmesh/setup.ini`，不会覆盖已有文件。编辑后，安装时继续使用同一个配置路径。
 
-交互式 `install` 启动时会先显示 `1. English` 和 `2. 中文`，随后询问是否载入已有配置，之后的安装提示会使用所选语言。选择 `no` 会打开配置向导，当前配置在最终保存前保持不变。也可以使用 `--language en` 或 `--language zh-CN` 直接指定语言并跳过第一个问题。语言输入无效时会重新提示，输入 `q` 或遇到 EOF 会在修改系统前停止。`check` 等非交互命令继续遵循配置中的 `language`；`auto` 会跟随系统 locale。
+交互式 `install` 启动时会先选择 English 或中文，随后询问是否载入已有配置，之后的安装提示会使用所选语言。选择 `no` 会打开配置向导，当前配置在最终保存前保持不变。也可以使用 `--language en` 或 `--language zh-CN` 直接指定语言并跳过第一个问题。语言输入无效时会重新提示，取消或遇到 EOF 会在修改系统前停止。`check` 等非交互命令继续遵循配置中的 `language`；`auto` 会跟随系统 locale。
 
 ### 2. 执行安装
 
@@ -162,7 +180,7 @@ bash scripts/setup.sh install
 bash scripts/setup.sh install --language en
 ```
 
-`install` 会先解释当前步骤，再修改本机。八个阶段依次涵盖本机工具、私有部署管理仓库、三类访问 Token、本机 K3s 和受限部署权限、自托管 Runner、`18080` LAN/WSL 预览入口、应用通知工作流和基础环境就绪检查。每个阶段提示都会说明动作及用途；最后的就绪检查不会创建应用预览。结束时会显示摘要并逐个应用报告通知工作流是否仍待接入。需要创建经过审核的应用接入 PR 时，使用显式的 `onboard-source` 命令，然后创建测试应用 PR 验证真实预览链路。安装完成后继续查看[预览访问说明](ops/install/access.md)。
+`install` 会先解释当前步骤，再修改本机。八个阶段依次涵盖本机工具、私有部署管理仓库、三类访问 Token、本机 K3s 和受限部署权限、自托管 Runner、`18080` LAN/WSL 预览入口、应用通知工作流和基础环境就绪检查。终端会显示完整阶段列表、当前阶段、已完成阶段和剩余阶段；已验证的断点复用、成功、警告、取消和失败会使用不同的文字标签。每个阶段提示都会说明动作及用途；最后的就绪检查不会创建应用预览。结束时会显示摘要并逐个应用报告通知工作流是否仍待接入。需要创建经过审核的应用接入 PR 时，使用显式的 `onboard-source` 命令，然后创建测试应用 PR 验证真实预览链路。安装完成后继续查看[预览访问说明](ops/install/access.md)。
 
 `install` 的第 1 阶段会检查 Ubuntu 的 `python3-yaml`，缺少时才安装，已有兼容模块会继续复用。独立运行安装器测试或会执行 Traefik 配置比较的本地检查也需要这个包；请执行 `sudo apt-get update && sudo apt-get install -y python3-yaml`。第 6 阶段按 YAML 语义比较 Traefik 的 `valuesContent`，会识别两个随项目发布的旧配置（只有 `ClusterIP` Service 的配置，以及另外设置 `ingressEndpoint.ip` 为 `127.0.0.1` 的配置），并将它们升级到当前 manifest。出现其他字段或自定义内容时，阶段会在 apply 前停止；先用排错表中的命令审核对象，再决定如何处理并重新运行同一条 `install` 命令。
 

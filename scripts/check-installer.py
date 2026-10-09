@@ -133,7 +133,8 @@ class InstallerTests(unittest.TestCase):
         master, slave = pty.openpty()
         process = subprocess.Popen(
             ["bash", str(ROOT / "scripts/setup.sh"), *arguments],
-            cwd=ROOT, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+            cwd=ROOT, stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+            env=dict(os.environ, PREVIEWMESH_UI="plain"))
         os.close(slave)
         output = bytearray()
         deadline = time.monotonic() + timeout
@@ -756,6 +757,19 @@ class InstallerTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(config.SetupError):
             app.step(1, "Step", "步骤", lambda: (_ for _ in ()).throw(config.SetupError("failed")))
         self.assertNotIn("1", app.state.get("completed", {}))
+
+    def test_failed_stage_is_reported_without_turning_into_a_completed_checkpoint(self):
+        app = self.instance()
+        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(config.SetupError):
+            app.step(1, "Prepare", "准备", lambda: (_ for _ in ()).throw(config.SetupError("action failed")))
+
+        self.assertEqual(app.stage_results[1][0], "failed")
+        self.assertIn("ERROR", output.getvalue())
+        self.assertIn("action failed", output.getvalue())
+        self.assertNotIn("1", app.state.get("completed", {}))
+        reusable, reason = app.checkpoints.assess(1, app.checkpoints.inputs(1))
+        self.assertFalse(reusable)
+        self.assertIn("interrupted", reason)
 
     def test_secrets_never_in_log_or_verbose_output(self):
         app = self.instance()

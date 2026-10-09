@@ -27,6 +27,7 @@ from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, config_draft_p
 from setup_downloads import download_archive, fetch, metadata, runner_release, tool_release
 from setup_language import choose_language
 from setup_resume import Checkpoints, REUSABLE
+from setup_ui import TerminalUI, prompt_capable
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path.home() / ".config/previewmesh/setup.ini"
@@ -45,21 +46,10 @@ def suggested_token_name(role, repository):
 
 def prompt_load_previous_config(path, *, language):
     """Make interactive installs choose their configuration source explicitly."""
-    if language == "zh-CN":
-        prompt = f"载入已有配置 {path} 吗？(yes/no) [yes]: "
-        invalid = "请输入 yes 或 no。"
-    else:
-        prompt = f"Load existing configuration {path}? (yes/no) [yes]: "
-        invalid = "Enter yes or no."
-    while True:
-        answer = input(prompt).strip().lower()
-        if answer in ("q", "quit"):
-            raise EOFError()
-        if not answer or answer in ("yes", "y", "是"):
-            return True
-        if answer in ("no", "n", "否"):
-            return False
-        print(invalid)
+    ui = TerminalUI()
+    prompt = (f"载入已有配置 {path} 吗？" if language == "zh-CN"
+              else f"Load existing configuration {path}?")
+    return ui.confirm(prompt, default=True)
 
 
 def prepare_interactive_install_config(path, language):
@@ -88,6 +78,7 @@ class Installer:
         self.c, self.command, self.verbose = config, command, verbose
         self.zh = config.language == "zh-CN" or (config.language == "auto" and
                    (os.environ.get("LC_ALL") or os.environ.get("LANG") or "").lower().startswith("zh"))
+        self.ui = TerminalUI()
         self.home = Path.home() / ".local/share/previewmesh"
         self.state_path = self.home / "install-state.json"
         self.log_path = self.home / "setup.log"
@@ -114,10 +105,11 @@ class Installer:
         self.source_status = {}
         self.completed_stages = []
         self.stage_results = {}
+        self.stage_titles = []
         self.checkpoints = Checkpoints(self, ROOT)
 
     def say(self, en, zh):
-        print(zh if self.zh else en, flush=True)
+        self.ui.message(zh if self.zh else en)
 
     def redact(self, value):
         for secret in self.secrets:
@@ -150,7 +142,7 @@ class Installer:
             with self.log_path.open("a", encoding="utf-8") as log:
                 log.write(self.redact(shlex.join(args)) + "\n" + safe + "\n")
         if self.verbose and safe:
-            print(safe, end="" if safe.endswith("\n") else "\n")
+            self.ui.message(safe.rstrip("\n"))
         if check and completed.returncode:
             raise SetupError(self.redact(
                 f"Command failed / 命令失败: {shlex.join(args)}\n{safe[-1600:]}"))
@@ -178,26 +170,50 @@ class Installer:
             page += 1
 
     def step(self, number, en, zh, action, *, detail=None):
-        self.say(f"\n[{number}/8] {en}", f"\n[{number}/8] {zh}")
-        if detail:
-            self.say(*detail)
+        title = zh if self.zh else en
+        description = (detail[1] if self.zh else detail[0]) if detail else ""
+        if description and not self.verbose:
+            # Keep the default view scannable; --verbose retains the full stage brief.
+            description = description.splitlines()[0]
+        label = f"阶段 {number}/8  {title}" if self.zh else f"Stage {number} of 8  {title}"
+        self.ui.stage(number, 8, title, description, label=label)
+        self.ui.progress_line(8, [item[0] for item in self.completed_stages], current=number,
+                               chinese=self.zh)
         inputs = self.checkpoints.inputs(number)
         reuse, reason = self.checkpoints.assess(number, inputs)
         self.stage_results[number] = ("reused" if reuse else "rerun", reason)
-        self.say(f"{'Reusing' if reuse else 'Running'}: {reason}",
-                 f"{'复用' if reuse else '重新执行'}：{reason}")
+        self.ui.status("reused" if reuse else "running",
+                       (f"Reusing: {reason}" if not self.zh else f"复用：{reason}")
+                       if reuse else
+                       (f"Running: {reason}" if not self.zh else f"重新执行：{reason}"),
+                       chinese=self.zh)
         if reuse:
             self.completed_stages.append((number, en, zh))
+            self.ui.status("reused", "Stage reused from a verified checkpoint." if not self.zh
+                           else "已复用经过验证的安装断点。", chinese=self.zh)
             return
         # Invalidate before side effects so an interrupted repair cannot retain success.
         self.checkpoints.record(number, "running", inputs)
-        action()
+        try:
+            with self.ui.activity("Working / 执行中" if not self.zh else "执行中 / Working"):
+                action()
+        except (SetupError, OSError, ValueError, KeyError, StopIteration) as error:
+            reason = self.redact(str(error))
+            self.stage_results[number] = ("failed", reason)
+            self.ui.status("error", reason, chinese=self.zh)
+            raise
+        except (KeyboardInterrupt, EOFError):
+            self.stage_results[number] = ("cancelled", "stage interrupted")
+            self.ui.status("warning", "Stage cancelled; progress was retained." if not self.zh
+                           else "阶段已取消；已保留安装进度。", chinese=self.zh)
+            raise
         artifacts = self.checkpoints.artifacts(number) if number in REUSABLE else {}
         self.checkpoints.record(number, "complete", self.checkpoints.inputs(number), artifacts)
         self.state.setdefault("completed", {})[str(number)] = int(time.time())
         self.save()
         self.completed_stages.append((number, en, zh))
-        self.say("Done.", "完成。")
+        self.ui.status("success", "Stage completed." if not self.zh else "阶段完成。", chinese=self.zh)
+        self.ui.progress_line(8, [item[0] for item in self.completed_stages], chinese=self.zh)
 
     def preflight(self):
         system = {}
@@ -827,6 +843,16 @@ class Installer:
                  "然后用应用源码仓库内的分支创建一个指向默认分支的测试 PR（不要使用 fork）。依次检查应用通知 Actions → 部署管理仓库的 Preview 工作流 → 预览 URL 与提交 SHA 一致。关闭测试 PR 后确认清理；关闭前还应从另一台局域网机器访问预览 URL。")
 
     def completion(self):
+        self.ui.summary(
+            "Installation summary" if not self.zh else "安装摘要",
+            [
+                ("Stages" if not self.zh else "阶段", "8/8 passed" if not self.zh else "8/8 阶段通过"),
+                ("Deployment management" if not self.zh else "部署管理仓库", self.c.control),
+                ("Preview entry" if not self.zh else "预览入口", f"{self.c.lan_ip}:18080"),
+                ("Applications" if not self.zh else "应用数量", str(len(self.c.sources))),
+            ],
+            success=True,
+        )
         self.say("Installation complete: all 8 infrastructure/setup stages passed.",
                  "安装完成：8 个基础环境与配置阶段均已通过。")
         self.installation_progress()
@@ -852,15 +878,23 @@ class Installer:
 
     def installation_progress(self):
         # Include reuse only after current-run validation has succeeded.
+        if self.stage_titles:
+            self.ui.installation_plan(self.stage_titles,
+                                      completed=[item[0] for item in self.completed_stages],
+                                      results=self.stage_results,
+                                      chinese=self.zh)
         for number, en, zh in self.completed_stages:
             self.say(f"Completed [{number}/8]: {en}", f"已完成 [{number}/8]：{zh}")
         for number, (result, reason) in self.stage_results.items():
+            localized = {"reused": "复用", "rerun": "重新执行", "failed": "失败", "cancelled": "已取消"}.get(result, result)
             self.say(f"Recovery [{number}/8]: {result}: {reason}",
-                     f"恢复结果 [{number}/8]：{'复用' if result == 'reused' else '重新执行'}：{reason}")
+                     f"恢复结果 [{number}/8]：{localized}：{reason}")
         if len(self.completed_stages) < 8:
-            remaining = ", ".join(str(number) for number in range(len(self.completed_stages) + 1, 9))
+            completed = {item[0] for item in self.completed_stages}
+            remaining = ", ".join(str(number) for number in range(1, 9) if number not in completed)
             self.say(f"Installation incomplete. Stages still requiring completion: {remaining}. Application onboarding is not yet verified.",
                      f"安装尚未完成。仍需完成阶段：{remaining}。应用接入尚未验证。")
+            self.ui.progress_line(8, [item[0] for item in self.completed_stages], chinese=self.zh)
 
     def enable(self):
         self.run(["gh", "variable", "set", "PREVIEWMESH_DOMAIN_SUFFIX", "--repo", self.c.control, "--body", self.c.suffix])
@@ -1054,6 +1088,10 @@ class Installer:
                  "启用所需的 GitHub Actions 工作流，并检查集群、执行程序、凭据和预览入口。\n"
                  "安装完成后，还需接入各应用并创建测试 PR，验证实际预览。", self.enable),
             ]
+            self.stage_titles = [(number, zh if self.zh else en)
+                                 for number, (en, zh, _detail_en, _detail_zh, _action)
+                                 in enumerate(stages, 1)]
+            self.ui.installation_plan(self.stage_titles, chinese=self.zh)
             for number, (en, zh, detail_en, detail_zh, action) in enumerate(stages, 1):
                 self.step(number, en, zh, action, detail=(detail_en, detail_zh))
             self.completion()
@@ -1082,7 +1120,7 @@ def main():
     installer = None
     try:
         language = args.language
-        if language is None and sys.stdin.isatty():
+        if language is None and prompt_capable():
             language = choose_language()
         if args.command == "init":
             if not args.template:
@@ -1099,7 +1137,7 @@ def main():
             label, next_step = ("请编辑", "然后执行") if language == "zh-CN" else ("Edit", "Then run")
             print(f"{label}: {path}\n{next_step}: bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(path))}")
             return 0
-        if args.command == "install" and sys.stdin.isatty():
+        if args.command == "install" and prompt_capable():
             prepare_interactive_install_config(args.config, language or "en")
         if args.command == "install":
             draft_path = config_draft_path(args.config)

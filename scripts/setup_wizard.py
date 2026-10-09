@@ -13,6 +13,7 @@ import subprocess
 from setup_config import (ACCESS_GUIDE, SetupError, RFC1918, atomic_write, config_draft_path,
                           load_config, validate_domain_suffix, validate_repo)
 from setup_language import choose_language
+from setup_ui import TerminalUI
 
 
 def safe(value):
@@ -129,9 +130,10 @@ def port_available(port):
         return False
 
 
-def ask(label, default='', validate=None, *, language='en'):
+def ask(label, default='', validate=None, *, language='en', ui=None):
+    ui = ui or TerminalUI()
     while True:
-        answer = input(f'{label}' + (f' [{safe(str(default))}]' if default else '') + ': ').strip()
+        answer = ui.line(label, safe(str(default)))
         if answer.lower() == 'q':
             raise EOFError()
         answer = answer or str(default)
@@ -141,29 +143,39 @@ def ask(label, default='', validate=None, *, language='en'):
                 raise ValueError()
             return validate(answer) if validate else answer
         except (SetupError, ValueError, OSError):
-            print('输入无效，请重试或输入 q 退出。' if language == 'zh-CN'
-                  else 'Invalid value; retry or q to exit.')
+            ui.message('输入无效，请重试或输入 q 退出。' if language == 'zh-CN'
+                       else 'Invalid value; retry or q to exit.')
 
 
-def confirm(label, *, language='en'):
-    suffix = ' (yes=是 / no=否)' if language == 'zh-CN' else ' (yes/no)'
-    return ask(label + suffix, 'no', lambda v: v if v in ('yes', 'no') else int('invalid'),
-               language=language) == 'yes'
+def confirm(label, *, language='en', default=False, ui=None):
+    ui = ui or TerminalUI()
+    return ui.confirm(label, default=default)
 
 
-def choose(label, candidates, validate=None, *, language='en'):
+def choose(label, candidates, validate=None, *, language='en', default=None, ui=None):
+    ui = ui or TerminalUI()
     candidates = list(dict.fromkeys(candidates))
-    for number, value in enumerate(candidates, 1):
-        print(f'  {number}. {safe(str(value))}')
-    def selected(value):
-        if value.isdigit() and 1 <= int(value) <= len(candidates):
-            value = str(candidates[int(value) - 1])
-        return validate(value) if validate else value
     suffix = ' (编号或直接填写)' if language == 'zh-CN' else ' (number or value)'
     # Show the actual default so Enter's meaning is clear without decoding an index.
-    default = str(candidates[0]) if len(candidates) == 1 else ''
-    return ask(label + suffix, default, selected,
-               language=language)
+    if default is None and len(candidates) == 1:
+        default = str(candidates[0])
+    manual = 'Enter another value / 输入其他值' if language == 'zh-CN' else 'Enter another value'
+    while True:
+        value = ui.select(label + suffix, [safe(str(item)) for item in candidates],
+                          default=default, manual_label=manual)
+        if value is None:
+            value = ui.line(label + suffix)
+        value = str(value).strip()
+        if value.lower() == 'q':
+            raise EOFError()
+        try:
+            safe(value)
+            if not value:
+                raise ValueError()
+            return validate(value) if validate else value
+        except (SetupError, ValueError, OSError):
+            ui.message('输入无效，请重试或输入 q 退出。' if language == 'zh-CN'
+                       else 'Invalid value; retry or q to exit.')
 
 
 class Prompts:
@@ -171,40 +183,49 @@ class Prompts:
 
     def __init__(self, language):
         self.language = language
+        self.ui = TerminalUI()
 
     def text(self, en, zh):
         return zh if self.language == 'zh-CN' else en
 
     def say(self, en, zh):
-        print(self.text(en, zh))
+        self.ui.message(self.text(en, zh))
+
+    def section(self, number, en_title, zh_title, en_body='', zh_body=''):
+        self.ui.section(number, 5, self.text(en_title, zh_title), self.text(en_body, zh_body))
 
     def ask(self, en, zh, default='', validate=None):
-        return ask(self.text(en, zh), default, validate, language=self.language)
+        return ask(self.text(en, zh), default, validate, language=self.language, ui=self.ui)
 
-    def choose(self, en, zh, candidates, validate=None):
-        return choose(self.text(en, zh), candidates, validate, language=self.language)
+    def choose(self, en, zh, candidates, validate=None, default=None):
+        return choose(self.text(en, zh), candidates, validate, language=self.language,
+                      default=default, ui=self.ui)
 
-    def confirm(self, en, zh):
-        return confirm(self.text(en, zh), language=self.language)
+    def confirm(self, en, zh, default=False):
+        return confirm(self.text(en, zh), language=self.language, default=default, ui=self.ui)
+
+    def summary(self, en_title, zh_title, rows):
+        self.ui.summary(self.text(en_title, zh_title),
+                        [(self.text(en, zh), value) for en, zh, value in rows])
 
 
 def choose_network_environment(ui):
     ui.say('Choose where PreviewMesh will run; the default is detected from this session.\n'
            'The wizard will query that environment for LAN addresses.\n'
-           '  1. Ubuntu directly (outside WSL): use this Ubuntu machine\'s address.\n'
-           '  2. Inside WSL: use the Windows host\'s address.',
+           'Ubuntu directly (outside WSL) uses this Ubuntu machine\'s address.\n'
+           'Inside WSL uses the Windows host\'s address.',
            '选择 PreviewMesh 的运行方式，默认值根据当前环境检测。\n'
            '向导会自动获取对应环境的局域网地址。\n'
-           '  1. Ubuntu 直接安装（非 WSL）：使用这台 Ubuntu 机器的地址。\n'
-           '  2. WSL 内安装：使用 Windows 主机的地址。')
+           'Ubuntu 直接安装（非 WSL）使用这台 Ubuntu 机器的地址。\n'
+           'WSL 内安装使用 Windows 主机的地址。')
     default = 'WSL' if 'microsoft' in platform.release().lower() else 'Ubuntu'
     def selected(value):
         choices = {'1': 'ubuntu', 'ubuntu': 'ubuntu', '2': 'wsl', 'wsl': 'wsl'}
         if value.lower() not in choices:
             raise ValueError()
         return choices[value.lower()]
-    return ui.ask('Installation environment (1/2 or Ubuntu/WSL)', '安装运行方式（1/2 或 Ubuntu/WSL）',
-                  default, selected)
+    return ui.choose('Installation environment', '安装运行方式', ['Ubuntu', 'WSL'], selected,
+                     default=default)
 
 
 def private_ip(value):
@@ -232,7 +253,8 @@ def application_port(directory, previous=None, *, language='en'):
                '未发现应用端口，请查看 Dockerfile 或监听配置并填写 HTTP 端口。')
     while True:
         port = int(ui.choose('Application HTTP port inside the container', '容器内应用 HTTP 端口', candidates,
-                          lambda value: int(value) if 1 <= int(value) <= 65535 else int('invalid')))
+                          lambda value: int(value) if 1 <= int(value) <= 65535 else int('invalid'),
+                          default=str(candidates[0]) if candidates else None))
         if port_available(port):
             ui.say(f'Port {port}: local bind check passed.', f'端口 {port}：本机端口检查通过。')
             return str(port)
@@ -252,14 +274,14 @@ def run_wizard(path, root, *, language=None, load_existing=None):
     ui.say('Configuration wizard: choose repositories, network settings and credential file paths,\n'
            'then review and save. Run install afterwards to set up PreviewMesh.\n'
            'Press Enter to accept a value in brackets.\n'
-           'For a numbered list, enter a number or your own value.\n'
+           'Use the arrow keys for selections in a terminal; the plain fallback accepts a number or your own value.\n'
            'GitHub repositories use OWNER/NAME, such as your-name/your-app.\n'
            'q exits without replacing the active configuration. A draft is kept after the final review.\n'
            'Do not paste tokens here; only token file paths.',
            '配置向导：依次选择仓库、网络设置和凭据文件路径，最后检查并保存。\n'
            '保存后再运行 install，开始安装 PreviewMesh。\n'
            '提示中有 [默认值] 时可直接回车。\n'
-           '有编号列表时可输入编号，也可直接填写实际值。\n'
+           '在终端中可用方向键选择；纯文本界面可输入编号或直接填写实际值。\n'
            'GitHub 仓库填写“用户名或组织名/仓库名”，例如 your-name/your-app。\n'
            '输入 q 退出且不替换当前配置；完成最终检查后会保留一份草稿。\n'
            '请勿粘贴 Token，仅填写文件路径。')
@@ -312,16 +334,17 @@ def run_wizard(path, root, *, language=None, load_existing=None):
         if not value.startswith(('/', '~/', './', '../')):
             raise ValueError()
         return location(value)
-    ui.say('\n[1/5] Repositories:\n'
-           'PreviewMesh code, deployment management and applications have separate roles.\n'
-           'The public PreviewMesh code repository supplies the initial tools.\n'
-           'Your private deployment management repository stores application registrations\n'
-           'and runs deployment automation.\n'
-           'Application repositories contain the applications you want to preview.',
-           '\n[1/5] 仓库角色：PreviewMesh 代码、部署管理和应用源码各有用途。\n'
-           '公开的 PreviewMesh 代码仓库提供初始工具。\n'
-           '你的私有部署管理仓库保存应用登记并运行部署自动化。\n'
-           '应用源码仓库保存需要预览的实际应用。')
+    ui.section(1,
+               'Repositories', '仓库角色',
+               'PreviewMesh code, deployment management and applications have separate roles.\n'
+               'The public PreviewMesh code repository supplies the initial tools.\n'
+               'Your private deployment management repository stores application registrations\n'
+               'and runs deployment automation.\n'
+               'Application repositories contain the applications you want to preview.',
+               'PreviewMesh 代码、部署管理和应用源码各有用途。\n'
+               '公开的 PreviewMesh 代码仓库提供初始工具。\n'
+               '你的私有部署管理仓库保存应用登记并运行部署自动化。\n'
+               '应用源码仓库保存需要预览的实际应用。')
     ui.say('This local directory holds your deployment management repository.\n'
            'Use a separate path, such as ~/workspace/previewmesh-control;\n'
            'it can be a new directory or a checkout of that same repository.',
@@ -364,8 +387,9 @@ def run_wizard(path, root, *, language=None, load_existing=None):
     data['project'] = dict(control_repository=control, control_directory=control_dir,
                            public_repository=ui.choose('PreviewMesh code repository (public)', 'PreviewMesh 代码仓库（公开）', template_repos, validate_repo),
                            language=language)
-    ui.say('\n[2/5] Preview access: choose the server address, allowed client network and preview domain.',
-           '\n[2/5] 预览访问：确定服务器地址、允许访问的网段和预览域名。')
+    ui.section(2, 'Preview access', '预览访问',
+               'Choose the server address, allowed client network and preview domain.',
+               '确定服务器地址、允许访问的网段和预览域名。')
     environment = choose_network_environment(ui)
     ips = discover_windows_lan() if environment == 'wsl' else discover_lan()
     if ips:
@@ -425,12 +449,11 @@ def run_wizard(path, root, *, language=None, load_existing=None):
     data['network']['domain_suffix'] = ui.ask('Preview domain suffix', '预览域名后缀',
                                           previous.domain_suffix if previous else 'auto', validate_domain_suffix)
     secrets = Path.home() / '.config/previewmesh/secrets'
-    ui.say('\n[3/5] Shared credentials:\n'
-           'Choose separate token file paths outside your Git directories.\n'
-           'install explains how to create each token\n'
-           'and offers a hidden input when its file is missing.',
-           '\n[3/5] 共用凭据：为每种 Token 指定独立文件路径，放在 Git 仓库目录之外。\n'
-           'install 会说明 Token 的创建方式，文件缺失时提供隐藏输入。')
+    ui.section(3, 'Shared credentials', '共用凭据',
+               'Choose separate token file paths outside your Git directories.\n'
+               'install explains how to create each token and offers hidden input when a file is missing.',
+               '为每种 Token 指定独立文件路径，放在 Git 仓库目录之外。\n'
+               'install 会说明 Token 的创建方式，文件缺失时提供隐藏输入。')
     ui.say('The deployment notification token lets application workflows start deployment\n'
            'workflows in your private deployment management repository.\n'
            'This token is authorized for that management repository;\n'
@@ -446,11 +469,9 @@ def run_wizard(path, root, *, language=None, load_existing=None):
            '包括私有镜像。\n'
            '请为这个 read:packages Token 填写另一个文件路径。')
     data['credentials']['ghcr_token_file'] = ui.ask('Image download token file (GHCR)', '镜像下载 Token 文件路径（GHCR）', previous.ghcr_file if previous else secrets / 'ghcr.token', token_location)
-    ui.say('\n[4/5] Applications:\n'
-           'Register each application you want PreviewMesh to build\n'
-           'and preview for pull requests.',
-           '\n[4/5] 应用：\n'
-           '逐个登记需要由 PreviewMesh 为拉取请求（PR）构建和部署预览的应用。')
+    ui.section(4, 'Applications', '应用',
+               'Register each application you want PreviewMesh to build and preview for pull requests.',
+               '逐个登记需要由 PreviewMesh 为拉取请求（PR）构建和部署预览的应用。')
     sources = previous.sources if previous else [None]
     index = 0
     while True:
@@ -517,27 +538,37 @@ def run_wizard(path, root, *, language=None, load_existing=None):
     # Preserve the fully validated candidate before the final review so Ctrl+C
     # cannot make a later install silently fall back to an older configuration.
     atomic_write(draft_path, content.getvalue())
-    ui.say('\n[5/5] Review and save:\n'
-           'Check the repository roles and access settings\n'
-           'before writing the configuration.',
-           '\n[5/5] 检查并保存：确认仓库角色与访问设置，再写入配置文件。')
-    ui.say(f'Review:\nConfiguration: {path}\nDeployment management repository (private): {config.control}\nDeployment management local directory: {config.control_dir}\nPreviewMesh code repository (public): {config.public}\nLanguage: {config.language}\nPreview server LAN IPv4: {config.lan_ip}\nAllowed client subnet: {config.subnet}\nPreview domain suffix: {config.suffix}',
-           f'确认摘要：\n配置文件：{path}\n部署管理仓库（私有）：{config.control}\n部署管理本地目录：{config.control_dir}\nPreviewMesh 代码仓库（公开）：{config.public}\n语言：{config.language}\n预览服务器的局域网 IPv4：{config.lan_ip}\n允许访问的客户端网段：{config.subnet}\n预览域名后缀：{config.suffix}')
+    ui.section(5, 'Review and save', '检查并保存',
+               'Check the repository roles and access settings before writing the configuration.',
+               '确认仓库角色与访问设置，再写入配置文件。')
+    ui.summary('Review:', '确认摘要：', [
+        ('Configuration', '配置文件', path),
+        ('Deployment management repository (private)', '部署管理仓库（私有）', config.control),
+        ('Deployment management local directory', '部署管理本地目录', config.control_dir),
+        ('PreviewMesh code repository (public)', 'PreviewMesh 代码仓库（公开）', config.public),
+        ('Language', '语言', config.language),
+        ('Preview server LAN IPv4', '预览服务器的局域网 IPv4', config.lan_ip),
+        ('Allowed client subnet', '允许访问的客户端网段', config.subnet),
+        ('Preview domain suffix', '预览域名后缀', config.suffix),
+    ])
     for source in config.sources:
-        ui.say(f'Application repository: {source.repository}\n'
-               f'Local directory: {source.directory}\n'
-               f'Container HTTP port: {source.port}',
-               f'应用源码仓库：{source.repository}\n'
-               f'代码本地目录：{source.directory}\n'
-               f'容器内 HTTP 端口：{source.port}')
+        ui.summary('Application ' + source.name, '应用 ' + source.name, [
+            ('Application repository', '应用源码仓库', source.repository),
+            ('Local directory', '代码本地目录', source.directory),
+            ('Container HTTP port', '容器内 HTTP 端口', source.port),
+        ])
     url = f'http://pm-r<repository_id>-pr<PR>.{config.suffix}:18080'
     ui.say('Preview URL format: ' + url, '预览地址格式：' + url)
     ui.say('18080 is the preview entry port; application HTTP ports remain separate.', '18080 为预览入口端口，与应用 HTTP 端口不同。')
     ui.say('Credentials: separate file references only; values never read.', '凭据：仅保存独立文件引用，不读取凭据内容。')
-    ui.say(f'Deployment notification token file: {config.dispatch_file}\nImage download token file (GHCR): {config.ghcr_file}',
-           f'部署通知 Token 文件：{config.dispatch_file}\n镜像下载 Token 文件（GHCR）：{config.ghcr_file}')
+    ui.summary('Credential file references', '凭据文件引用', [
+        ('Deployment notification token file', '部署通知 Token 文件', config.dispatch_file),
+        ('Image download token file (GHCR)', '镜像下载 Token 文件（GHCR）', config.ghcr_file),
+    ])
     for source in config.sources:
-        ui.say(f'{source.name} application access token file: {source.token_file}', f'{source.name} 应用访问 Token 文件：{source.token_file}')
+        ui.summary(source.name + ' application access token file',
+                   source.name + ' 应用访问 Token 文件',
+                   [('Path', '路径', source.token_file)])
     ui.say('Saving writes these settings to the configuration file.\n'
            'The next install command uses them to install services\n'
            'and configure the GitHub repositories.',

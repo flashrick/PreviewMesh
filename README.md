@@ -75,6 +75,24 @@ Use **Ubuntu 22.04 or 24.04 x64**, including those distributions on **WSL2 with 
 
 Download and extract this repository's ZIP into your Linux home directory, or clone it if Git is installed. Open a terminal in that directory. The public PreviewMesh code directory, deployment management local directory, and every application code local directory must be different and must not overlap. Git and other missing tools can be installed by the installer, so downloading the ZIP does not require a Git installation.
 
+### Terminal UI and automation
+
+The setup wizard and installer use a terminal UI. On the first interactive run, `bash scripts/setup.sh init` automatically creates a user-owned virtual environment under `$XDG_CACHE_HOME/previewmesh/ui-venv` (or `$HOME/.cache/previewmesh/ui-venv`) and installs [Rich](https://github.com/Textualize/rich) and [Questionary](https://github.com/tmbo/questionary) there. Later runs reuse it, so the system Python packages are not modified. A real terminal then gets panels, restrained status colours, spinners and arrow-key selections.
+
+If the optional UI environment cannot be created or downloaded, or stdin/stdout is redirected, PreviewMesh uses readable line-based plain text without changing validation, checkpoints or installation behavior. To prepare the environment manually, or to choose another cache location, use:
+
+```bash
+python3 -m venv "$HOME/.local/share/previewmesh/ui-venv"
+"$HOME/.local/share/previewmesh/ui-venv/bin/python" -m pip install -r scripts/ui-requirements.txt
+PATH="$HOME/.local/share/previewmesh/ui-venv/bin:$PATH" bash scripts/setup.sh init
+```
+
+If the distribution does not include `venv`, install Ubuntu's matching `python3-venv` package and rerun `init`; the installer remains fully usable in plain mode if that is not possible. Set `PREVIEWMESH_UI=plain` to explicitly use the fallback, or set `PREVIEWMESH_UI_VENV` to control the isolated environment path.
+
+Colours are semantic rather than decorative: blue marks the current step, green completion, amber warnings, coral failures, violet checkpoint reuse, and gray pending work. Each state also has a text label and symbol, so the interface remains understandable without colour.
+
+The arrow-key UI requires a TTY. `init`, an interactive `install`, hidden token entry, first-time `gh auth login`, and `onboard-source --create-pr` are interactive operations; use a terminal for them. Redirected or CI execution must provide an existing valid `--config`, owner-only mode `600` token files outside Git checkouts, authenticated `gh`, and usable `sudo`. `init --template`, `check`, `doctor`, and `onboard-source` without `--create-pr` remain suitable for automation. `--verbose` exposes only redacted tool output.
+
 ### Application requirements
 
 Each source application must provide a root `Dockerfile` that builds for `linux/amd64`, listens on `0.0.0.0` at the configured application port, runs as UID/GID `65532` without extra capabilities, and returns HTTP 200 from `GET /health`:
@@ -107,9 +125,9 @@ bash scripts/setup.sh init
 
 At the network step, the wizard asks whether this installation runs directly on Ubuntu or inside WSL. It recommends the mode detected from the current platform; the choice is used only for this wizard and is not saved as a configuration setting. Ubuntu mode reads private global IPv4 candidates from the local `ip` command and filters known VPN/container interface prefixes. WSL mode uses read-only PowerShell to read preferred IPv4 addresses on active physical Windows adapters, so the WSL guest NAT address is never used as the preview LAN address.
 
-The wizard discovers GitHub remotes in the selected deployment management and application checkouts, private LAN IPv4 candidates, and application ports declared by `Dockerfile` `EXPOSE` lines. It checks each port before presenting it. A single discovered network address is shown as the actual default; press Enter to accept it. When several addresses are available, it lists them and requires a number or full address, so it never silently chooses a network interface. If discovery is unavailable or finds no address, the prompt explains the fallback and lets you enter a private LAN IPv4 manually.
+The wizard discovers GitHub remotes in the selected deployment management and application checkouts, private LAN IPv4 candidates, and application ports declared by `Dockerfile` `EXPOSE` lines. It checks each port before presenting it. A single discovered network address is shown as the actual default; press Enter to accept it. When several addresses are available in an enhanced terminal, use the arrow keys and Enter; the plain-text fallback accepts a number or full address, so it never silently chooses a network interface. If discovery is unavailable or finds no address, the prompt explains the fallback and lets you enter a private LAN IPv4 manually.
 
-For repository, directory, and port lists, when exactly one candidate is available, the prompt shows its actual value as the default, for example `[flashrick/PreviewMesh]`; press Enter to accept that value, or enter `1` to select the first numbered item. With multiple candidates, enter the number or the full value. With no candidate, enter the full `OWNER/NAME`, path, address, or port requested by the prompt.
+For repository, directory, and port lists, when exactly one candidate is available, the prompt shows its actual value as the default, for example `[flashrick/PreviewMesh]`; press Enter to accept it. In an enhanced terminal, move through multiple candidates with the arrow keys; the fallback accepts a number or the full value. With no candidate, enter the full `OWNER/NAME`, path, address, or port requested by the prompt.
 
 The wizard collects ordinary settings and token file paths separately. Never paste a token into the wizard; it only writes references such as these:
 
@@ -129,7 +147,7 @@ The repository choices have one direction: the public PreviewMesh code repositor
 
 The three token files have separate jobs. Each application repository gets its own application token for application code checkout and status/reporting calls. The dispatch token is selected for only the deployment management repository and is copied to each application repository as `PREVIEWMESH_DISPATCH_TOKEN`, so its notification workflow can start the deployment management workflow. The GHCR token is a classic package-read token stored in the deployment management repository as `GHCR_READ_TOKEN`, so the cluster can pull preview images. The installer stores file references in `setup.ini`; it never stores token values there.
 
-At the beginning, the `init` wizard asks for the output language and stores the selected value in `setup.ini`. Invalid language input prompts again; `q` or EOF leaves the active file unchanged. Once the final review is reached, the validated candidate is kept in `setup.ini.draft` if the wizard is interrupted.
+At the beginning, the `init` wizard asks for the output language and stores the selected value in `setup.ini`. In an enhanced terminal this is an arrow-key selection; the plain fallback accepts the existing language aliases. Cancellation or EOF leaves the active file unchanged. Once the final review is reached, the validated candidate is kept in `setup.ini.draft` if the wizard is interrupted.
 
 Before saving, it prints a non-sensitive summary of the repositories, directories, LAN address, ports and token file paths. Review it and confirm the save. If a configuration already exists, the wizard asks whether to load it for review before replacing it. An unfinished draft is offered first on the next `init`; an interactive `install` asks which configuration to load and opens the wizard when you choose not to use the existing one.
 
@@ -143,7 +161,7 @@ bash scripts/setup.sh init --template
 
 This copies the [commented template](config/setup.example.ini) to `~/.config/previewmesh/setup.ini` and never overwrites an existing file. You can then edit it and pass the same path to `install`.
 
-When an interactive `install` starts, it asks you to choose `1. English` or `2. 中文`, then asks whether to load the existing configuration; the remaining installer prompts use that language. Choose `no` to open the configuration wizard without changing the active file until the final save. Use `--language en` or `--language zh-CN` to choose the language on the command line and skip the first question. Invalid input prompts again; `q` or EOF stops before installation changes anything. Non-interactive commands such as `check`, or commands using an existing configuration without an interactive language choice, continue to use the configured `language` value (`auto` follows the system locale).
+When an interactive `install` starts, it asks you to choose English or 中文, then asks whether to load the existing configuration; the remaining installer prompts use that language. Choose `no` to open the configuration wizard without changing the active file until the final save. Use `--language en` or `--language zh-CN` to choose the language on the command line and skip the first question. Invalid input prompts again; cancellation or EOF stops before installation changes anything. Non-interactive commands such as `check`, or commands using an existing configuration without an interactive language choice, continue to use the configured `language` value (`auto` follows the system locale).
 
 ### 2. Run the installer
 
@@ -157,7 +175,7 @@ To select English without the startup question:
 bash scripts/setup.sh install --language en
 ```
 
-The `install` command explains each step before changing the machine. The eight stages cover local tools, the private deployment management repository, the three access-token roles, K3s and restricted deployment access, the self-hosted runner, the LAN/WSL preview entry on port `18080`, application notification workflows, and infrastructure readiness. The stage descriptions explain the action and its purpose; the final readiness check does not create an application preview. The command finishes with a summary and a report for each configured application. Use the explicit `onboard-source` command for a reviewed application onboarding PR, then create a test application PR to verify the real preview flow. Continue from the [preview access guide](ops/install/access.md) when the installation completes.
+The `install` command explains each step before changing the machine. The eight stages cover local tools, the private deployment management repository, the three access-token roles, K3s and restricted deployment access, the self-hosted runner, the LAN/WSL preview entry on port `18080`, application notification workflows, and infrastructure readiness. The terminal shows the complete stage list, current stage, completed stages and remaining stages; verified checkpoint reuse, successful completion, warnings, cancellations and failures have distinct text labels. The stage descriptions explain the action and its purpose; the final readiness check does not create an application preview. The command finishes with a summary and a report for each configured application. Use the explicit `onboard-source` command for a reviewed application onboarding PR, then create a test application PR to verify the real preview flow. Continue from the [preview access guide](ops/install/access.md) when the installation completes.
 
 Stage 1 of `install` checks for Ubuntu's `python3-yaml` package and installs it only when it is missing; an existing compatible module is reused. Standalone installer tests or local checks that exercise the Traefik comparison need the same package; install it manually with `sudo apt-get update && sudo apt-get install -y python3-yaml`. Stage 6 compares Traefik's `valuesContent` as YAML. It recognizes the two shipped legacy profiles (the service-only `ClusterIP` profile and the profile that also sets `ingressEndpoint.ip` to `127.0.0.1`) and upgrades either to the current manifest. Any other field or customization stops the stage before it applies changes; review the object with the command in the troubleshooting table, then rerun the same `install` command after deciding how to handle it.
 

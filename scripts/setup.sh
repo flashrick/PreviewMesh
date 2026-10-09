@@ -6,9 +6,9 @@ unset BASH_ENV ENV GH_DEBUG GIT_TRACE GIT_CURL_VERBOSE
 root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 command_name=install
 language=
-language_option=false
-help_requested=false
 next_value=
+template_mode=0
+help_mode=0
 for argument in "$@"; do
   if [ -n "$next_value" ]; then
     if [ "$next_value" = --language ]; then language=$argument; fi
@@ -17,34 +17,20 @@ for argument in "$@"; do
   fi
   case "$argument" in
     init|check|install|doctor|onboard-source|cleanup) command_name=$argument ;;
-    --language) language_option=true; next_value=--language ;;
-    --language=*) language_option=true; language=${argument#--language=} ;;
+    --template) template_mode=1 ;;
+    -h|--help) help_mode=1 ;;
+    --language) next_value=--language ;;
+    --language=*) language=${argument#--language=} ;;
     --config|--source) next_value=$argument ;;
-    -h|--help) help_requested=true ;;
   esac
 done
 # Cleanup has its own dependency-light menu and must not load a setup.ini first.
 if [ "$command_name" = cleanup ]; then
   exec bash "$root/scripts/cleanup.sh" "$@"
 fi
-# Select before bootstrapping Python, and pass the choice on without a second prompt.
-if [ -t 0 ] && [ "$language_option" = false ] && [ "$help_requested" = false ]; then
-  printf 'Select language / 请选择语言:\n  1. English\n  2. 中文\n'
-  while :; do
-    printf 'Choice / 请选择 (1/2, q to exit / 退出): '
-    if ! IFS= read -r answer; then
-      printf '\nStopped / 已停止。\n' >&2
-      exit 130
-    fi
-    case "${answer,,}" in
-      1|en|english) language=en; break ;;
-      2|zh|zh-cn|中文) language=zh-CN; break ;;
-      q) exit 130 ;;
-      *) printf 'Invalid choice; enter 1 or 2 / 选择无效，请输入 1 或 2。\n' ;;
-    esac
-  done
-  set -- --language "$language" "$@"
-fi
+# Keep this shell layer limited to argument parsing and Python bootstrapping.
+# The Python UI owns language selection so it can use the same terminal fallback
+# and interactive controls as the configuration wizard.
 say() {
   case "$language" in
     zh-CN) printf '%s\n' "$2" ;;
@@ -67,4 +53,39 @@ if ! command -v python3 >/dev/null 2>&1; then
   sudo apt-get update
   sudo apt-get install -y python3 python3-yaml ca-certificates
 fi
-exec python3 "$root/scripts/setup.py" "$@"
+
+# Prepare the optional UI in a user-owned virtual environment only when the
+# caller can actually use interactive terminal controls. This keeps CI and
+# redirected commands offline and leaves the system Python installation alone.
+setup_python=python3
+ui_mode=${PREVIEWMESH_UI:-auto}
+ui_disabled=0
+case "$ui_mode" in
+  plain|off|false|0) ui_disabled=1 ;;
+esac
+ci_interactive=0
+if [ "${PREVIEWMESH_INTERACTIVE:-}" = 1 ]; then ci_interactive=1; fi
+if [ "$template_mode" -eq 0 ] && [ "$help_mode" -eq 0 ] \
+  && [ "$ui_disabled" -eq 0 ] && [ -t 0 ] && [ -t 1 ] \
+  && [ "${TERM:-}" != dumb ] \
+  && { [ -z "${CI:-}" ] || [ "$ci_interactive" -eq 1 ]; }; then
+  if ! python3 -c 'import rich, questionary' >/dev/null 2>&1; then
+    if [ -n "${PREVIEWMESH_UI_VENV:-}" ]; then
+      ui_venv=$PREVIEWMESH_UI_VENV
+    elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+      ui_venv="$XDG_CACHE_HOME/previewmesh/ui-venv"
+    else
+      ui_venv="${HOME:-$root}/.cache/previewmesh/ui-venv"
+    fi
+    say 'Preparing the enhanced terminal UI (one-time setup).' '正在准备增强终端界面（首次运行一次）。'
+    if ui_python=$(python3 "$root/scripts/setup_ui_bootstrap.py" \
+      --root "$root" --venv "$ui_venv" 2>/dev/null); then
+      setup_python=$ui_python
+      say 'Enhanced terminal UI is ready.' '增强终端界面已准备好。'
+    else
+      say 'UI dependencies unavailable; continuing with plain text. Retry after checking network or python3-venv.' \
+        '界面依赖不可用，将使用纯文本继续。请检查网络或 python3-venv 后重试。' >&2
+    fi
+  fi
+fi
+exec "$setup_python" "$root/scripts/setup.py" "$@"

@@ -1,0 +1,4 @@
+# Optional only: install these in a dedicated virtual environment for the
+# enhanced arrow-key and styled terminal experience.
+rich>=13.7,<15
+questionary>=2,<3
