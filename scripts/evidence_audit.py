@@ -254,12 +254,16 @@ def audit(paths):
         item["record_ordinal"] = ordinal
         audited.append(item)
     statuses = {}
+    reason_counts = {}
     for item in audited:
         statuses[item["audit_status"]] = statuses.get(item["audit_status"], 0) + 1
+        for reason in item["missing_or_unavailable_reason_categories"]:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
     return {
         "schema_version": AUDIT_SCHEMA_VERSION,
         "records_found": len(audited),
         "status_counts": statuses,
+        "reason_category_counts": reason_counts,
         "records": audited,
     }
 
