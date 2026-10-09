@@ -1,0 +1,73 @@
+{
+  "schema_version": "previewmesh-matrix-v1",
+  "revision": {
+    "public_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "control_revision": "unavailable",
+    "cluster_version": "record-at-evaluation-time",
+    "image_storage_method": "ghcr"
+  },
+  "planned_concurrency_levels": [1, 5, 10, 20],
+  "defaults": {
+    "build_policy": "rebuild",
+    "metric_interval_seconds": 10,
+    "operation_timeout_seconds": 300,
+    "http_timeout_seconds": 60
+  },
+  "fixtures": [
+    {
+      "name": "simple-project",
+      "project_size": "simple",
+      "source_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "frontend-backend-project",
+      "project_size": "frontend-backend",
+      "source_commit_sha": "unavailable"
+    },
+    {
+      "name": "multi-service-project",
+      "project_size": "multi-service",
+      "source_commit_sha": "unavailable"
+    }
+  ],
+  "conditions": [
+    {
+      "id": "simple-create-baseline",
+      "fixture": "simple-project",
+      "project_size": "simple",
+      "scenario": "create",
+      "commit_version": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "concurrency": 1,
+      "failure_type": "none",
+      "repetitions": 3,
+      "build_policy": "rebuild",
+      "support": "supported"
+    },
+    {
+      "id": "frontend-backend-feasibility",
+      "fixture": "frontend-backend-project",
+      "project_size": "frontend-backend",
+      "scenario": "create",
+      "commit_version": "unavailable",
+      "concurrency": 1,
+      "failure_type": "unsupported",
+      "repetitions": 0,
+      "build_policy": "rebuild",
+      "support": "unsupported",
+      "unsupported_reason": "fixture and environment must be registered before execution"
+    },
+    {
+      "id": "multi-service-feasibility",
+      "fixture": "multi-service-project",
+      "project_size": "multi-service",
+      "scenario": "create",
+      "commit_version": "unavailable",
+      "concurrency": 1,
+      "failure_type": "unsupported",
+      "repetitions": 0,
+      "build_policy": "rebuild",
+      "support": "unsupported",
+      "unsupported_reason": "multi-service support is not established by the single-service chart"
+    }
+  ]
+}

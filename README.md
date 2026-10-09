@@ -448,6 +448,7 @@ python3 scripts/experiment_runner.py run \
   --evidence-root /private/evidence/previewmesh \
   --scenario create --repetitions 3 --concurrency 1 --dry-run
 python3 scripts/experiment_runner.py validate /private/evidence/previewmesh
+python3 scripts/evaluation_matrix.py /private/config/evaluation-matrix.json
 ```
 
 The runner records immutable source and image identities, conditions, stage
@@ -642,6 +643,7 @@ explicitly says they require a live cluster.
 | `scripts/collect-resources.py` | Read-only Kubernetes resource collector for metrics, managed Namespaces, Helm payloads, and PVC measurements; writes private JSONL samples and summaries. |
 | `scripts/collect-resources_test.py` | Tests quantity parsing, metric freshness, Namespace identity changes, storage measurements, concurrent sampling, and private output permissions. |
 | `scripts/experiment_runner.py` | Dispatches or collects repeated workflow runs, archives private artifacts, writes versioned run records, and validates missing measurements and lifecycle completeness. |
+| `scripts/evaluation_matrix.py` | Validates project-size, revision, failure, repetition, image-policy, and stepped-concurrency conditions before evaluation runs begin. |
 | `scripts/configure-github-secrets.sh` | Reads registrations and collects hidden tokens, routing source tokens to the control repository, dispatch tokens to source repositories, and GHCR tokens to the control repository. |
 | `scripts/configure-runner.py` | Generates/renews a restricted Runner kubeconfig from administrator K3s access, verifies permissions, and atomically replaces the protected file. |
 | `scripts/create-control-repository.sh` | Creates a private control repository from this public checkout, configures remotes, and pushes the initial content. |
