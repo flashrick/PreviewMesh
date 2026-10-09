@@ -456,6 +456,12 @@ and an evidence manifest. Unsupported or invalid runs remain retained with an
 explicit reason instead of being silently removed from the dataset. Run the
 script with `--help` for the full record and retention workflow.
 
+Use [`scripts/evaluation_freeze.py`](scripts/evaluation_freeze.py) after
+verifying the runner to capture the public/control revisions, tool versions,
+resource defaults, image-storage method, experiment-project versions, and
+read-only cluster capacity in a new private freeze directory. Missing cluster
+permissions produce a partial freeze with an explicit limitation.
+
 ### Recover interrupted cleanup
 
 <details>
