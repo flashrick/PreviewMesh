@@ -1726,6 +1726,24 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("Installation incomplete", stdout.getvalue())
                 self.assertIn("Stopped; rerun the same command", stderr.getvalue())
 
+    def test_install_refuses_to_use_active_config_when_unfinished_draft_exists(self):
+        draft_path = self.config_path.with_name(self.config_path.name + ".draft")
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        draft_path.write_text(self.text)
+        with patch.object(installer, "load_config", return_value=self.c) as load_config, \
+             patch.object(installer, "Installer") as installer_class, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "install", "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()) as stdout, \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            result = installer.main()
+
+        self.assertEqual(result, 1)
+        load_config.assert_not_called()
+        installer_class.assert_not_called()
+        self.assertIn("unfinished configuration draft", stderr.getvalue().lower())
+        self.assertIn("resume it with", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

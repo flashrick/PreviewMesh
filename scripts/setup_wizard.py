@@ -10,8 +10,8 @@ import re
 import socket
 import subprocess
 
-from setup_config import (ACCESS_GUIDE, SetupError, RFC1918, atomic_write, load_config,
-                          validate_domain_suffix, validate_repo)
+from setup_config import (ACCESS_GUIDE, SetupError, RFC1918, atomic_write, config_draft_path,
+                          load_config, validate_domain_suffix, validate_repo)
 from setup_language import choose_language
 
 
@@ -247,23 +247,39 @@ def run_wizard(path, root, *, language=None):
     language = language or choose_language()
     ui = Prompts(language)
     path = Path(path).expanduser().absolute()
+    draft_path = config_draft_path(path)
     safe(str(path))
     ui.say('Configuration wizard: choose repositories, network settings and credential file paths,\n'
            'then review and save. Run install afterwards to set up PreviewMesh.\n'
            'Press Enter to accept a value in brackets.\n'
            'For a numbered list, enter a number or your own value.\n'
            'GitHub repositories use OWNER/NAME, such as your-name/your-app.\n'
-           'q exits without saving. Do not paste tokens here; only token file paths.',
+           'q exits without replacing the active configuration. A draft is kept after the final review.\n'
+           'Do not paste tokens here; only token file paths.',
            '配置向导：依次选择仓库、网络设置和凭据文件路径，最后检查并保存。\n'
            '保存后再运行 install，开始安装 PreviewMesh。\n'
            '提示中有 [默认值] 时可直接回车。\n'
            '有编号列表时可输入编号，也可直接填写实际值。\n'
            'GitHub 仓库填写“用户名或组织名/仓库名”，例如 your-name/your-app。\n'
-           '输入 q 退出且不保存。请勿粘贴 Token，仅填写文件路径。')
+           '输入 q 退出且不替换当前配置；完成最终检查后会保留一份草稿。\n'
+           '请勿粘贴 Token，仅填写文件路径。')
     if path.is_symlink():
         raise SetupError(ui.text('Configuration must not be a symlink.', '配置不能是符号链接。'))
+    if draft_path.is_symlink():
+        raise SetupError(ui.text('Configuration draft must not be a symlink.', '配置草稿不能是符号链接。'))
     previous = None
-    if path.exists():
+    if draft_path.exists():
+        ui.say('An unfinished configuration draft was found.\n'
+               'Load it to resume the previous wizard run, or choose no to review another configuration.',
+               '发现未完成的配置草稿。\n'
+               '选择 yes 可恢复上次向导，选择 no 可改为检查其他配置。')
+        if ui.confirm('Load unfinished configuration draft', '载入未完成的配置草稿'):
+            try:
+                previous = load_config(draft_path, root)
+            except (SetupError, OSError, ValueError, UnicodeError):
+                ui.say('The configuration draft is invalid; enter values manually.',
+                       '配置草稿无效，请手动填写。')
+    if previous is None and path.exists():
         ui.say('Existing configuration found.', '发现已有配置。')
         ui.say('Load its settings as defaults for this run.\n'
                'Choose no to configure from scratch.\n'
@@ -489,6 +505,9 @@ def run_wizard(path, root, *, language=None):
     except (SetupError, OSError, ValueError):
         raise SetupError(ui.text('Configuration validation failed. Check distinct repositories/directories, subnet and separate token paths outside checkouts; rerun init.',
                                  '配置校验失败，请检查仓库和目录不重复、网段有效、各 Token 路径独立且在仓库外，再运行 init。'))
+    # Preserve the fully validated candidate before the final review so Ctrl+C
+    # cannot make a later install silently fall back to an older configuration.
+    atomic_write(draft_path, content.getvalue())
     ui.say('\n[5/5] Review and save:\n'
            'Check the repository roles and access settings\n'
            'before writing the configuration.',
@@ -516,10 +535,13 @@ def run_wizard(path, root, *, language=None):
            '保存会把以上设置写入配置文件。\n'
            '随后运行 install，才会使用这些设置安装服务并配置 GitHub 仓库。')
     if not ui.confirm('Save configuration (replace existing file if present)', '保存配置（若已存在则替换）'):
-        ui.say('Cancelled; no file changed.', '已取消，未修改文件。')
+        ui.say(f'Cancelled; no active configuration changed. Draft saved at {draft_path}.',
+               f'已取消；当前配置未修改。草稿已保存到 {draft_path}。')
         return False
     try:
         atomic_write(path, content.getvalue())
+        if draft_path.exists():
+            draft_path.unlink()
     except OSError:
         raise SetupError(ui.text('Cannot save configuration; check destination permissions and rerun init.', '无法保存，请检查目标目录权限后重新运行 init。'))
     ui.say('Configuration saved. Run setup.sh install with the same --config.', '配置已保存，请使用相同 --config 运行 setup.sh install。')

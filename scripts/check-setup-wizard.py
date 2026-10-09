@@ -306,6 +306,63 @@ token_file = {self.secrets / 'app.token'}
                     self.assertIn("Cancelled", output)
                 self.assertEqual(self.config_path.read_text(), original)
 
+    def test_final_review_interrupt_keeps_active_config_and_saves_resume_draft(self):
+        original = self.config_text("8081")
+        self.config_path.parent.mkdir(parents=True)
+        self.config_path.write_text(original)
+        new_control = self.work / "new-control"
+        new_source = self.work / "new-source"
+        new_dispatch = self.secrets / "new-dispatch.token"
+        new_ghcr = self.secrets / "new-ghcr.token"
+        new_app_token = self.secrets / "new-app.token"
+        answers = iter([
+            "no", str(new_control), "owner/new-control", "", "1", "192.168.1.20", "",
+            "", str(new_dispatch), str(new_ghcr), str(new_source), "owner/new-app",
+            "8080", str(new_app_token), "",
+        ])
+
+        def input_until_interrupt(_prompt):
+            try:
+                return next(answers)
+            except StopIteration:
+                raise KeyboardInterrupt()
+
+        patches = [
+            patch.object(wizard, "discover_repositories", side_effect=lambda directory: []),
+            patch.object(wizard, "discover_lan", return_value=[]),
+            patch.object(wizard, "discover_windows_lan", return_value=[]),
+            patch.object(wizard, "discover_ports", return_value=[]),
+            patch.object(wizard, "port_available", return_value=True),
+            patch("builtins.input", side_effect=input_until_interrupt),
+        ]
+        with contextlib.ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            with self.assertRaises(KeyboardInterrupt):
+                wizard.run_wizard(self.config_path, ROOT, language="en")
+
+        self.assertEqual(self.config_path.read_text(), original)
+        draft_path = self.config_path.with_name(self.config_path.name + ".draft")
+        self.assertTrue(draft_path.exists())
+        draft = config.load_config(draft_path, ROOT)
+        self.assertEqual(draft.control, "owner/new-control")
+        self.assertEqual(draft.sources[0].repository, "owner/new-app")
+        self.assertEqual(draft.sources[0].port, 8080)
+
+    def test_saved_draft_is_loaded_and_removed_after_resume(self):
+        self.config_path.parent.mkdir(parents=True)
+        self.config_path.write_text(self.config_text("8081"))
+        draft_path = self.config_path.with_name(self.config_path.name + ".draft")
+        draft_path.write_text(self.config_text("8080"))
+
+        result, output = self.run_manual_wizard(["yes", *( [""] * 14), "yes"], language="en")
+
+        self.assertTrue(result)
+        self.assertFalse(draft_path.exists())
+        resumed = config.load_config(self.config_path, ROOT)
+        self.assertEqual(resumed.sources[0].port, 8080)
+        self.assertIn("unfinished configuration draft", output.lower())
+
     def test_final_decline_leaves_no_file_and_q_can_exit_for_retry(self):
         answers = [
             "1", str(self.control_dir), "owner/control", "", "1", "192.168.1.20", "",

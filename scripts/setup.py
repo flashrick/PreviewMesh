@@ -22,8 +22,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote
 
-from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, fingerprint, load_config,
-                          merge_registry, read_token)
+from setup_config import (ACCESS_GUIDE, SetupError, atomic_write, config_draft_path,
+                          fingerprint, load_config, merge_registry, read_token)
 from setup_downloads import download_archive, fetch, metadata, runner_release, tool_release
 from setup_language import choose_language
 from setup_resume import Checkpoints, REUSABLE
@@ -1055,6 +1055,15 @@ def main():
             label, next_step = ("请编辑", "然后执行") if language == "zh-CN" else ("Edit", "Then run")
             print(f"{label}: {path}\n{next_step}: bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(path))}")
             return 0
+        if args.command == "install":
+            draft_path = config_draft_path(args.config)
+            if draft_path.exists() or draft_path.is_symlink():
+                raise SetupError(
+                    f"Unfinished configuration draft found at {draft_path}; "
+                    f"resume it with bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} init "
+                    f"--config {shlex.quote(str(args.config))} before running install / "
+                    f"发现未完成的配置草稿：{draft_path}；请先运行上述 init 恢复配置，再执行 install。"
+                )
         config = load_config(args.config, ROOT)
         # A session choice overrides display preferences without rewriting the INI.
         if language:
@@ -1073,8 +1082,13 @@ def main():
         if args.command == "install":
             if installer:
                 installer.installation_progress()
-            print(f"Fix the issue, then rerun the SAME command / 处理问题后重新运行同一命令:\n"
-                  f"bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(args.config))}", file=sys.stderr)
+            draft_path = config_draft_path(args.config)
+            if draft_path.exists() or draft_path.is_symlink():
+                print(f"Resume the draft with / 恢复草稿请执行:\n"
+                      f"bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} init --config {shlex.quote(str(args.config))}", file=sys.stderr)
+            else:
+                print(f"Fix the issue, then rerun the SAME command / 处理问题后重新运行同一命令:\n"
+                      f"bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(args.config))}", file=sys.stderr)
             if installer:
                 print(f"Redacted log / 脱敏日志: {installer.log_path}", file=sys.stderr)
         elif args.command == "onboard-source":

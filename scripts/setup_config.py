@@ -46,6 +46,12 @@ def atomic_write(path, content, mode=0o600):
             os.unlink(temporary)
 
 
+def config_draft_path(path):
+    """Keep an interrupted wizard draft beside its active configuration."""
+    path = Path(path).expanduser().absolute()
+    return path.with_name(path.name + ".draft")
+
+
 def fingerprint(content):
     return hashlib.sha256(content.encode()).hexdigest()
 
