@@ -209,6 +209,23 @@ def _safe_group_value(value, fallback="unknown"):
     return text if text in {"simple", "frontend-backend", "multi-service", "unknown"} else fallback
 
 
+def _failure_scenario(record):
+    """Return a bounded aggregate label for an observed failure scenario."""
+    conditions = record.get("conditions") or {}
+    failure_type = conditions.get("failure_type")
+    if isinstance(failure_type, str) and failure_type and failure_type != "none":
+        return failure_type[:40]
+    trigger = record.get("failure_trigger")
+    if (
+        record.get("outcome") == "failure"
+        and isinstance(trigger, str)
+        and trigger
+        and trigger != "none"
+    ):
+        return trigger[:40]
+    return "none"
+
+
 def _record_entries(paths):
     """Load and validate records, returning accepted records and safe counts."""
     candidates = find_records(paths)
@@ -257,12 +274,20 @@ def _timing_buckets(entries):
     overall = {phase: _new_bucket() for phase in TIMING_PHASES}
     by_project = {}
     by_concurrency = {}
+    by_outcome = {}
+    by_failure_scenario = {}
     for _, record in entries:
         project = _safe_group_value((record.get("conditions") or {}).get("project_size"))
         concurrency_value = (record.get("conditions") or {}).get("concurrency")
         concurrency = str(int(concurrency_value)) if isinstance(concurrency_value, int) and concurrency_value > 0 else "unknown"
+        outcome = record.get("outcome") if record.get("outcome") in {"success", "failure"} else "unknown"
+        failure_scenario = _failure_scenario(record)
         project_buckets = by_project.setdefault(project, {phase: _new_bucket() for phase in TIMING_PHASES})
         concurrency_buckets = by_concurrency.setdefault(concurrency, {phase: _new_bucket() for phase in TIMING_PHASES})
+        outcome_buckets = by_outcome.setdefault(outcome, {phase: _new_bucket() for phase in TIMING_PHASES})
+        failure_scenario_buckets = by_failure_scenario.setdefault(
+            failure_scenario, {phase: _new_bucket() for phase in TIMING_PHASES}
+        )
         phases = (record.get("timings") or {}).get("phases") or {}
         for phase in TIMING_PHASES:
             phase_entries = phases.get(phase)
@@ -276,7 +301,9 @@ def _timing_buckets(entries):
                 _add_bucket(overall[phase], value, availability)
                 _add_bucket(project_buckets[phase], value, availability)
                 _add_bucket(concurrency_buckets[phase], value, availability)
-    return overall, by_project, by_concurrency
+                _add_bucket(outcome_buckets[phase], value, availability)
+                _add_bucket(failure_scenario_buckets[phase], value, availability)
+    return overall, by_project, by_concurrency, by_outcome, by_failure_scenario
 
 
 def _resource_buckets(entries):
@@ -412,12 +439,17 @@ def _stats_row(metric, unit, bucket, threshold, **extra):
     return row
 
 
-def _timing_rows(overall, by_project, by_concurrency, threshold):
+def _timing_rows(overall, by_project, by_concurrency, by_outcome, by_failure_scenario, threshold):
     rows = []
     for phase in TIMING_PHASES:
         rows.append(_stats_row(f"phase:{phase}", "second", overall[phase], threshold))
     comparisons = []
-    for dimension, groups in (("project_size", by_project), ("concurrency", by_concurrency)):
+    for dimension, groups in (
+        ("project_size", by_project),
+        ("concurrency", by_concurrency),
+        ("outcome", by_outcome),
+        ("failure_scenario", by_failure_scenario),
+    ):
         for group, phase_buckets in sorted(groups.items()):
             for phase in TIMING_PHASES:
                 comparisons.append(
@@ -499,9 +531,20 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
         timing_entries = []
     else:
         timing_entries = considered
-    overall_timing, project_timing, concurrency_timing = _timing_buckets(timing_entries)
+    (
+        overall_timing,
+        project_timing,
+        concurrency_timing,
+        outcome_timing,
+        failure_scenario_timing,
+    ) = _timing_buckets(timing_entries)
     timing_rows, timing_comparisons = _timing_rows(
-        overall_timing, project_timing, concurrency_timing, small_sample_threshold
+        overall_timing,
+        project_timing,
+        concurrency_timing,
+        outcome_timing,
+        failure_scenario_timing,
+        small_sample_threshold,
     )
     resources, project_resources, concurrency_resources = _resource_buckets(timing_entries)
     resource_rows, resource_comparisons = _resource_rows(
@@ -538,6 +581,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
             {"path": "charts/timing-phases.svg", "title": "Observed timing phases"},
             {"path": "charts/project-size-total-feedback.svg", "title": "Total feedback by project size"},
             {"path": "charts/concurrency-total-feedback.svg", "title": "Total feedback by concurrency"},
+            {"path": "charts/failure-scenarios-total-feedback.svg", "title": "Total feedback by failure scenario"},
         ],
         "warnings": sorted(set(warnings)),
     }
@@ -721,6 +765,14 @@ def write_outputs(report, output_dir):
         _chart_svg(
             "Total feedback by concurrency",
             _chart_points(report, "concurrency", "phase:total_feedback"),
+            "mean seconds",
+        ),
+        encoding="utf-8",
+    )
+    (charts_dir / "failure-scenarios-total-feedback.svg").write_text(
+        _chart_svg(
+            "Total feedback by failure scenario",
+            _chart_points(report, "failure_scenario", "phase:total_feedback"),
             "mean seconds",
         ),
         encoding="utf-8",

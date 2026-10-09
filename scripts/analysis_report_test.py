@@ -99,6 +99,8 @@ def run_record(
     build_availability="unavailable",
     build_seconds=None,
     scheduling_availability="unavailable",
+    failure_type="none",
+    failure_trigger=None,
 ):
     timeline, unavailable_reasons = _timeline(outcome)
     unsupported = outcome == "unsupported"
@@ -115,7 +117,7 @@ def run_record(
             "commit_version": SOURCE_SHA,
             "concurrency": 1,
             "build_policy": "rebuild",
-            "failure_type": "none",
+            "failure_type": failure_type,
             "metric_interval_seconds": 10,
             "operation_timeout_seconds": 300,
             "http_timeout_seconds": 60,
@@ -129,7 +131,11 @@ def run_record(
             "final": {"status": "ready"},
         },
         "outcome": outcome,
-        "failure_trigger": "deploy" if outcome == "failure" else "unsupported" if unsupported else "none",
+        "failure_trigger": (
+            failure_trigger
+            if failure_trigger is not None
+            else "deploy" if outcome == "failure" else "unsupported" if unsupported else "none"
+        ),
         "recovery_mode": "manual" if outcome == "failure" else "unavailable" if unsupported else "none",
         "final_served_sha": "unavailable" if unsupported else SOURCE_SHA,
         "cleanup": {
@@ -266,6 +272,44 @@ class AnalysisReportTests(unittest.TestCase):
             self.assertTrue(timing["small_sample"])
             self.assertTrue(any("phase:total_feedback" in item for item in report["warnings"]))
 
+    def test_failure_scenario_group_prefers_failure_type_then_failed_trigger(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_record(
+                root,
+                "typed-failure",
+                run_record(
+                    "typed-failure-id",
+                    outcome="failure",
+                    failure_type="http_verification",
+                    failure_trigger="deploy",
+                ),
+            )
+            write_record(
+                root,
+                "trigger-failure",
+                run_record(
+                    "trigger-failure-id",
+                    outcome="failure",
+                    failure_trigger="build",
+                ),
+            )
+            write_record(root, "success", run_record("success-id"))
+
+            report = REPORT.analyze([root], small_sample_threshold=1)
+            scenario_rows = [
+                item
+                for item in report["tables"]["comparisons"]
+                if item.get("dimension") == "failure_scenario"
+                and item.get("metric") == "phase:total_feedback"
+            ]
+
+            self.assertEqual(
+                [item["group"] for item in scenario_rows],
+                ["build", "http_verification", "none"],
+            )
+            self.assertEqual([item["available_count"] for item in scenario_rows], [1, 1, 1])
+
     def test_report_outputs_are_complete_and_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -279,7 +323,53 @@ class AnalysisReportTests(unittest.TestCase):
                     scheduling_availability="not_applicable",
                 ),
             )
+            write_record(
+                root,
+                "failure",
+                run_record(
+                    "sensitive-failure-id",
+                    outcome="failure",
+                    total_feedback=2.0,
+                    build_availability="observed",
+                    build_seconds=3.0,
+                    scheduling_availability="not_applicable",
+                ),
+            )
+            write_record(
+                root,
+                "typed-failure",
+                run_record(
+                    "sensitive-typed-failure-id",
+                    outcome="failure",
+                    total_feedback=3.0,
+                    build_availability="observed",
+                    build_seconds=4.0,
+                    scheduling_availability="not_applicable",
+                    failure_type="http_verification",
+                    failure_trigger="deploy",
+                ),
+            )
             report = REPORT.analyze([root], small_sample_threshold=1)
+            outcome_rows = [
+                item
+                for item in report["tables"]["comparisons"]
+                if item.get("dimension") == "outcome"
+                and item.get("metric") == "phase:total_feedback"
+            ]
+            self.assertEqual([item["group"] for item in outcome_rows], ["failure", "success"])
+            self.assertEqual([item["available_count"] for item in outcome_rows], [2, 1])
+            self.assertEqual([item["mean"] for item in outcome_rows], [2.5, 1.0])
+            scenario_rows = [
+                item
+                for item in report["tables"]["comparisons"]
+                if item.get("dimension") == "failure_scenario"
+                and item.get("metric") == "phase:total_feedback"
+            ]
+            self.assertEqual(
+                [(item["group"], item["available_count"], item["mean"]) for item in scenario_rows],
+                [("deploy", 1, 2.0), ("http_verification", 1, 3.0), ("none", 1, 1.0)],
+            )
+
             first = Path(temporary) / "first"
             second = Path(temporary) / "second"
             REPORT.write_outputs(report, first)
@@ -295,6 +385,7 @@ class AnalysisReportTests(unittest.TestCase):
                 "charts/timing-phases.svg",
                 "charts/project-size-total-feedback.svg",
                 "charts/concurrency-total-feedback.svg",
+                "charts/failure-scenarios-total-feedback.svg",
             )
             for relative in relative_files:
                 first_path = first / relative
@@ -305,6 +396,12 @@ class AnalysisReportTests(unittest.TestCase):
             document = json.loads((first / "analysis.json").read_text(encoding="utf-8"))
             self.assertEqual(document["schema_version"], REPORT.ANALYSIS_SCHEMA_VERSION)
             self.assertNotIn("sensitive-run-id", json.dumps(document))
+            self.assertNotIn("sensitive-failure-id", json.dumps(document))
+            self.assertNotIn("sensitive-typed-failure-id", json.dumps(document))
+            self.assertEqual(
+                document["charts"][-1]["path"],
+                "charts/failure-scenarios-total-feedback.svg",
+            )
             self.assertIn("phase:build", (first / "report.md").read_text(encoding="utf-8"))
 
 
