@@ -37,6 +37,20 @@ TIMELINE_FIELDS = (
     "cleanup_started_at_utc",
     "cleanup_absent_at_utc",
 )
+TIMING_SCHEMA_VERSION = 1
+TIMING_PHASES = (
+    "queueing",
+    "build",
+    "scheduling",
+    "image_pull",
+    "container_start",
+    "pod_readiness",
+    "service_ingress_readiness",
+    "http_verification",
+    "total_feedback",
+    "cleanup",
+)
+TIMING_AVAILABILITIES = {"observed", "partial", "unavailable", "not_applicable"}
 EXPECTED_STAGES = {
     "create": ("event", "build", "deploy", "readiness", "http_verify", "report"),
     "update": ("event", "build", "deploy", "readiness", "http_verify", "report"),
@@ -291,6 +305,242 @@ def timing_for(outputs, stage, last=False):
     if not matching:
         return None
     return matching[-1 if last else 0]
+
+
+def _unavailable_timing(availability, reason, raw_stage=None, source=None):
+    entry = {
+        "started_at_utc": None,
+        "ended_at_utc": None,
+        "duration_seconds": None,
+        "availability": availability,
+        "result": "not_applicable" if availability == "not_applicable" else "unavailable",
+        "raw_stage": raw_stage,
+        "source": source,
+        "unavailable_reason": reason,
+    }
+    return entry
+
+
+def _timing_entry(output, availability="observed", reason=""):
+    raw_stage = output.get("raw_stage") or output.get("stage")
+    source = output.get("source")
+    started = output.get("started_at_utc")
+    ended = output.get("ended_at_utc")
+    try:
+        started_at = parse_timestamp(started)
+        ended_at = parse_timestamp(ended)
+    except (TypeError, ValueError):
+        return _unavailable_timing(
+            "unavailable",
+            f"stage {raw_stage or 'unknown'} did not include valid UTC boundaries",
+            raw_stage,
+            source,
+        )
+    duration = output.get("duration_seconds")
+    try:
+        duration = float(duration) if duration is not None else (ended_at - started_at).total_seconds()
+    except (TypeError, ValueError):
+        duration = None
+    if duration is None or duration < 0 or ended_at < started_at:
+        return _unavailable_timing(
+            "unavailable",
+            f"stage {raw_stage or 'unknown'} did not include a non-negative duration",
+            raw_stage,
+            source,
+        )
+    entry = {
+        "started_at_utc": started,
+        "ended_at_utc": ended,
+        "duration_seconds": duration,
+        "availability": availability,
+        "result": output.get("result") or "unavailable",
+        "raw_stage": raw_stage,
+        "source": source,
+    }
+    if reason:
+        entry["unavailable_reason"] = reason
+    return entry
+
+
+def _phase_from_outputs(outputs, predicate, missing_reason, availability="observed", reason=""):
+    matching = [item for item in outputs if predicate(item)]
+    if not matching:
+        return [_unavailable_timing("unavailable", missing_reason)]
+    return [_timing_entry(item, availability=availability, reason=reason) for item in matching]
+
+
+def _workflow_interval(workflow_metadata):
+    started = workflow_metadata.get("createdAt") or workflow_metadata.get("created_at")
+    ended = workflow_metadata.get("updatedAt") or workflow_metadata.get("updated_at")
+    try:
+        started_at = parse_timestamp(started)
+        ended_at = parse_timestamp(ended)
+    except (TypeError, ValueError):
+        return _unavailable_timing(
+            "unavailable",
+            "workflow metadata did not include valid created and updated timestamps",
+            "workflow_lifecycle",
+            "workflow.json",
+        )
+    duration = (ended_at - started_at).total_seconds()
+    if duration < 0:
+        return _unavailable_timing(
+            "unavailable",
+            "workflow metadata updated timestamp precedes created timestamp",
+            "workflow_lifecycle",
+            "workflow.json",
+        )
+    return {
+        "started_at_utc": started,
+        "ended_at_utc": ended,
+        "duration_seconds": duration,
+        "availability": "observed",
+        "result": workflow_metadata.get("conclusion") or "unavailable",
+        "raw_stage": "workflow_lifecycle",
+        "source": "workflow.json",
+    }
+
+
+def timing_record(scenario, outputs, workflow_metadata):
+    """Summarise raw workflow timings without turning absent boundaries into zeroes."""
+    phases = {}
+    phases["queueing"] = _phase_from_outputs(
+        outputs,
+        lambda item: str(item.get("raw_stage", "")).startswith("queue:"),
+        "workflow did not emit queue stage timing",
+    )
+
+    deployment_phases = {
+        "build": (
+            lambda item: item.get("stage") == "build"
+            and not str(item.get("raw_stage", "")).startswith("queue:"),
+            "workflow did not emit image build timing",
+        ),
+        "scheduling": (
+            lambda item: False,
+            "workflow artifacts did not include a Kubernetes scheduling transition",
+        ),
+        "image_pull": (
+            lambda item: False,
+            "workflow artifacts did not include image-pull timing",
+        ),
+        "container_start": (
+            lambda item: False,
+            "workflow artifacts did not include container-start timing",
+        ),
+        "pod_readiness": (
+            lambda item: item.get("stage") == "readiness",
+            "workflow did not emit Pod readiness timing",
+        ),
+        "service_ingress_readiness": (
+            lambda item: item.get("stage") == "readiness",
+            "workflow did not emit Service or Ingress readiness timing",
+        ),
+        "http_verification": (
+            lambda item: item.get("stage") == "http_verify",
+            "workflow did not emit HTTP verification timing",
+        ),
+    }
+    if scenario == "close":
+        not_applicable = "close scenario does not build or deploy a preview"
+        for phase in deployment_phases:
+            phases[phase] = [_unavailable_timing("not_applicable", not_applicable)]
+    else:
+        phases["build"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["build"],
+        )
+        phases["scheduling"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["scheduling"],
+        )
+        phases["image_pull"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["image_pull"],
+        )
+        phases["container_start"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["container_start"],
+        )
+        readiness_reason = "workflow combines Pod, Service, and Ingress readiness"
+        phases["pod_readiness"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["pod_readiness"],
+            availability="partial",
+            reason=readiness_reason,
+        )
+        phases["service_ingress_readiness"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["service_ingress_readiness"],
+            availability="partial",
+            reason=readiness_reason,
+        )
+        phases["http_verification"] = _phase_from_outputs(
+            outputs,
+            *deployment_phases["http_verification"],
+        )
+
+    phases["total_feedback"] = [_workflow_interval(workflow_metadata)]
+    if scenario == "close":
+        phases["cleanup"] = _phase_from_outputs(
+            outputs,
+            lambda item: item.get("stage") == "cleanup",
+            "close workflow did not emit cleanup timing",
+        )
+    else:
+        phases["cleanup"] = [
+            _unavailable_timing(
+                "not_applicable",
+                "cleanup is not part of an open preview workflow record",
+            )
+        ]
+    return {"schema_version": TIMING_SCHEMA_VERSION, "phases": phases}
+
+
+def validate_timings(timings):
+    errors = []
+    if not isinstance(timings, dict):
+        return ["timings must be an object"]
+    if timings.get("schema_version") != TIMING_SCHEMA_VERSION:
+        errors.append("unsupported timings.schema_version")
+    phases = timings.get("phases")
+    if not isinstance(phases, dict):
+        return errors + ["timings.phases must be an object"]
+    for phase in TIMING_PHASES:
+        entries = phases.get(phase)
+        if not isinstance(entries, list) or not entries:
+            errors.append(f"timings missing phase {phase}")
+            continue
+        for index, entry in enumerate(entries):
+            prefix = f"timings.{phase}[{index}]"
+            if not isinstance(entry, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            availability = entry.get("availability")
+            if availability not in TIMING_AVAILABILITIES:
+                errors.append(f"{prefix}.availability is invalid")
+                continue
+            reason = entry.get("unavailable_reason")
+            if availability in {"unavailable", "not_applicable"}:
+                if not isinstance(reason, str) or not reason:
+                    errors.append(f"{prefix} missing unavailable reason")
+                if any(entry.get(field) is not None for field in ("started_at_utc", "ended_at_utc", "duration_seconds")):
+                    errors.append(f"{prefix} has values for an unavailable phase")
+                continue
+            try:
+                started = parse_timestamp(entry.get("started_at_utc"))
+                ended = parse_timestamp(entry.get("ended_at_utc"))
+            except (TypeError, ValueError):
+                errors.append(f"{prefix} is missing valid UTC boundaries")
+                continue
+            duration = entry.get("duration_seconds")
+            if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
+                errors.append(f"{prefix}.duration_seconds is invalid")
+            if ended < started:
+                errors.append(f"{prefix} ends before it starts")
+            if availability == "partial" and (not isinstance(reason, str) or not reason):
+                errors.append(f"{prefix} missing partial-coverage reason")
+    return errors
 
 
 def infer_timeline(scenario, outputs, workflow_metadata):
@@ -550,6 +800,7 @@ def build_record(spec, archive, results, outputs, workflow_metadata, unsupported
         "cleanup": cleanup,
         "metrics": metrics,
         "stage_outputs": outputs,
+        "timings": timing_record(scenario, outputs, workflow_metadata),
         "lifecycle": lifecycle_record(scenario, conditions, outputs, workflow_metadata, outcome),
         "workflow": {
             "run_id": workflow_metadata.get("databaseId") or workflow_metadata.get("database_id") or "unavailable",
@@ -691,6 +942,11 @@ def validate_record(record, require_measurements=True):
                 errors.append("failed run has no failure trigger")
             if not isinstance(timeline, dict) or not timeline.get("failure_observed_at_utc"):
                 errors.append("failed run has no failure_observed_at_utc")
+
+    if "timings" in record:
+        errors.extend(validate_timings(record["timings"]))
+    else:
+        warnings.append("stage timings are not recorded")
 
     evidence = record.get("evidence")
     if not isinstance(evidence, dict):

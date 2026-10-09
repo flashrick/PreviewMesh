@@ -221,6 +221,102 @@ class EvidenceManifestTests(unittest.TestCase):
             self.assertEqual(RUNNER.evidence_manifest(archive)["sha256"], manifest["sha256"])
 
 
+class TimingRecordTests(unittest.TestCase):
+    def test_timing_record_maps_observed_partial_and_unavailable_phases(self):
+        outputs = [
+            {
+                "stage": "build",
+                "raw_stage": "queue:build",
+                "started_at_utc": "2026-10-09T00:00:00Z",
+                "ended_at_utc": "2026-10-09T00:00:01Z",
+                "duration_seconds": 1.0,
+                "result": "success",
+                "source": "combined.csv",
+            },
+            {
+                "stage": "build",
+                "raw_stage": "build_push",
+                "started_at_utc": "2026-10-09T00:00:01Z",
+                "ended_at_utc": "2026-10-09T00:00:03Z",
+                "duration_seconds": 2.0,
+                "result": "success",
+                "source": "combined.csv",
+            },
+            {
+                "stage": "readiness",
+                "raw_stage": "readiness",
+                "started_at_utc": "2026-10-09T00:00:03Z",
+                "ended_at_utc": "2026-10-09T00:00:04Z",
+                "duration_seconds": 1.0,
+                "result": "success",
+                "source": "combined.csv",
+            },
+            {
+                "stage": "http_verify",
+                "raw_stage": "http_verify",
+                "started_at_utc": "2026-10-09T00:00:04Z",
+                "ended_at_utc": "2026-10-09T00:00:05Z",
+                "duration_seconds": 1.0,
+                "result": "success",
+                "source": "combined.csv",
+            },
+        ]
+        timings = RUNNER.timing_record(
+            "create",
+            outputs,
+            {
+                "createdAt": "2026-10-09T00:00:00Z",
+                "updatedAt": "2026-10-09T00:00:06Z",
+                "conclusion": "success",
+            },
+        )
+
+        self.assertEqual(timings["phases"]["queueing"][0]["availability"], "observed")
+        self.assertEqual(timings["phases"]["build"][0]["duration_seconds"], 2.0)
+        self.assertEqual(timings["phases"]["pod_readiness"][0]["availability"], "partial")
+        self.assertEqual(timings["phases"]["scheduling"][0]["availability"], "unavailable")
+        self.assertEqual(timings["phases"]["total_feedback"][0]["duration_seconds"], 6.0)
+        self.assertEqual(timings["phases"]["cleanup"][0]["availability"], "not_applicable")
+        self.assertEqual(RUNNER.validate_timings(timings), [])
+
+    def test_close_timing_record_keeps_cleanup_and_marks_deploy_phases_not_applicable(self):
+        outputs = [
+            {
+                "stage": "cleanup",
+                "raw_stage": "cleanup",
+                "started_at_utc": "2026-10-09T00:00:01Z",
+                "ended_at_utc": "2026-10-09T00:00:02Z",
+                "duration_seconds": 1.0,
+                "result": "success",
+                "source": "cleanup.json",
+            }
+        ]
+        timings = RUNNER.timing_record(
+            "close",
+            outputs,
+            {
+                "createdAt": "2026-10-09T00:00:00Z",
+                "updatedAt": "2026-10-09T00:00:03Z",
+                "conclusion": "success",
+            },
+        )
+
+        self.assertEqual(timings["phases"]["build"][0]["availability"], "not_applicable")
+        self.assertEqual(timings["phases"]["cleanup"][0]["availability"], "observed")
+        self.assertEqual(RUNNER.validate_timings(timings), [])
+
+    def test_timing_validation_requires_reasons_for_unavailable_phases(self):
+        timings = RUNNER.timing_record("create", [], {})
+        timings["phases"]["scheduling"][0].pop("unavailable_reason")
+
+        errors = RUNNER.validate_timings(timings)
+
+        self.assertIn(
+            "timings.scheduling[0] missing unavailable reason",
+            errors,
+        )
+
+
 class RecordValidationTests(unittest.TestCase):
     def test_missing_measurements_have_an_explicit_error(self):
         record = success_record()
