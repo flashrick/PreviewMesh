@@ -463,6 +463,45 @@ resource defaults, image-storage method, experiment-project versions, and
 read-only cluster capacity in a new private freeze directory. Missing cluster
 permissions produce a partial freeze with an explicit limitation.
 
+### Generate an aggregate analysis report
+
+After selecting and validating the exact private run records, generate the
+privacy-safe aggregate report outside this checkout:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report.py \
+  /private/evidence/frozen-selected-records \
+  --output-dir /private/evidence/analysis-report
+```
+
+The positional input may be one or more `run-record.json` files or evidence
+directories; the tool discovers records recursively and deduplicates identical
+record identities. The output directory contains `analysis.json`, `report.md`,
+`timing-statistics.csv`, `comparisons.csv`, `resource-statistics.csv`,
+`reliability.csv`, `charts/timing-phases.svg`,
+`charts/project-size-total-feedback.svg`,
+`charts/concurrency-total-feedback.svg`, and
+`charts/failure-scenarios-total-feedback.svg`. The report groups
+timing comparisons by `project_size`, `concurrency`, `outcome`, and
+`failure_scenario`. A failure scenario uses a non-`none`
+`conditions.failure_type`, then a failed record's `failure_trigger`, and
+otherwise `none`; this is recorded-field grouping, not controlled failure
+injection.
+
+Records are validated without requiring measurements. Failed lifecycle records
+remain in the success/failure analysis cohort, while unsupported and invalid
+records remain retained in the input evidence and are reported as exclusion
+categories rather than entering lifecycle denominators. Missing or malformed
+measurements are counted and omitted from statistics; `not_applicable` values
+are counted separately and are also omitted. Neither category is converted to
+zero. The default small-sample threshold is five observed values, and sample
+standard deviation is unavailable for fewer than two values. The focused
+regression command is:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report_test.py
+```
+
 ### Recover interrupted cleanup
 
 <details>
@@ -520,6 +559,7 @@ flowchart LR
     preview --> k8s["K3s / Helm / Traefik"]
     control --> record["internal/statusrecord"]
     preview --> report["scripts/report.py"]
+    analysis["scripts/analysis_report.py"] --> analysis_outputs["analysis.json / CSV / SVG / report.md"]
     verify["scripts/verify-local.sh"] --> checks["Go tests / check-*.py / actionlint / helm lint"]
 ```
 
@@ -643,7 +683,13 @@ explicitly says they require a live cluster.
 | `scripts/collect-resources.py` | Read-only Kubernetes resource collector for metrics, managed Namespaces, Helm payloads, and PVC measurements; writes private JSONL samples and summaries. |
 | `scripts/collect-resources_test.py` | Tests quantity parsing, metric freshness, Namespace identity changes, storage measurements, concurrent sampling, and private output permissions. |
 | `scripts/experiment_runner.py` | Dispatches or collects repeated workflow runs, archives private artifacts, writes versioned run records, and validates missing measurements and lifecycle completeness. |
+| `scripts/analysis_report.py` | Reads validated private run records and writes privacy-safe aggregate JSON, CSV, Markdown, and SVG analysis outputs; preserves explicit missing, not-applicable, unsupported, and small-sample classifications. |
+| `scripts/analysis_report_test.py` | Focused deterministic tests for descriptive statistics, retention/exclusion policy, missing values, small samples, comparison dimensions, and generated outputs. |
 | `scripts/evaluation_matrix.py` | Validates project-size, revision, failure, repetition, image-policy, and stepped-concurrency conditions before evaluation runs begin. |
+| `scripts/evaluation_freeze.py` | Captures a private evaluation freeze, selected record manifest, tool/configuration metadata, and integrity summary without copying private evidence into this checkout. |
+| `scripts/evaluation_summary.py` | Produces aggregate evaluation summaries from retained run records while preserving missing and unsupported categories. |
+| `scripts/evidence_audit.py` | Audits retained evidence completeness and reports bounded status and exclusion categories. |
+| `scripts/preliminary_report.py` | Produces an aggregate preliminary evaluation report from selected evidence without exposing record identities. |
 | `scripts/configure-github-secrets.sh` | Reads registrations and collects hidden tokens, routing source tokens to the control repository, dispatch tokens to source repositories, and GHCR tokens to the control repository. |
 | `scripts/configure-runner.py` | Generates/renews a restricted Runner kubeconfig from administrator K3s access, verifies permissions, and atomically replaces the protected file. |
 | `scripts/create-control-repository.sh` | Creates a private control repository from this public checkout, configures remotes, and pushes the initial content. |

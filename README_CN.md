@@ -451,6 +451,66 @@ Node CPU 以 cores、内存以 bytes 报告，数据来自近期 metrics 窗口�
 
 </details>
 
+### 可重复评估运行
+
+只读资源收集器可以和
+[`scripts/experiment_runner.py`](scripts/experiment_runner.py) 配合，用于执行
+或收集重复的工作流运行。Runner 配置和证据必须放在本 checkout 之外；配置
+包含可信的私有 control 身份，证据可能包含工作流和 Kubernetes 输出。
+
+```bash
+python3 scripts/experiment_runner.py run \
+  --config /private/config/experiment.json \
+  --evidence-root /private/evidence/previewmesh \
+  --scenario create --repetitions 3 --concurrency 1 --dry-run
+python3 scripts/experiment_runner.py validate /private/evidence/previewmesh
+python3 scripts/evaluation_matrix.py /private/config/evaluation-matrix.json
+```
+
+运行记录保留不可变的源码和镜像身份、conditions、阶段 timing、missing
+measurement 原因、生命周期完整性、清理状态和证据 manifest。Unsupported 或
+invalid 运行仍会以明确原因保留，不会静默从数据集中删除。完整的记录和
+保留流程请运行 `--help` 查看。
+
+在验证 Runner 后，可以使用
+[`scripts/evaluation_freeze.py`](scripts/evaluation_freeze.py) 在新的私有
+冻结目录中保存 public/control revision、工具版本、资源默认值、镜像存储
+方式、评估项目版本和只读集群容量。缺少集群权限时会生成带有明确限制的
+partial freeze。
+
+### 生成汇总分析报告
+
+选定并验证准确的私有运行记录后，在本仓库之外生成隐私安全的汇总报告：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report.py \
+  /private/evidence/frozen-selected-records \
+  --output-dir /private/evidence/analysis-report
+```
+
+位置参数可以是一个或多个 `run-record.json` 文件或证据目录；工具会递归
+发现记录，并按记录身份去重。输出目录包含 `analysis.json`、`report.md`、
+`timing-statistics.csv`、`comparisons.csv`、`resource-statistics.csv`、
+`reliability.csv`、`charts/timing-phases.svg`、
+`charts/project-size-total-feedback.svg`、
+`charts/concurrency-total-feedback.svg` 和
+`charts/failure-scenarios-total-feedback.svg`。报告按 `project_size`、
+`concurrency`、`outcome` 和 `failure_scenario` 分组。failure scenario 优先
+使用非 `none` 的 `conditions.failure_type`，否则使用失败记录的
+`failure_trigger`，再否则使用 `none`；这只是记录字段分组，不代表受控的
+失败注入实验。
+
+记录会在不要求 measurement 的情况下验证。失败的生命周期记录仍保留在
+success/failure 分析 cohort 中；unsupported 和 invalid 记录仍保留在输入
+证据中，并以排除类别报告，不进入生命周期分母。缺失或格式错误的
+measurement 会计数但不参与统计；`not_applicable` 值单独计数，也不参与统计，
+两者都不会被转换成零。默认 small-sample 阈值是五个观测值；少于两个观测
+值时不提供 sample standard deviation。重点回归命令是：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report_test.py
+```
+
 ### 恢复中断的清理
 
 <details>
@@ -508,6 +568,7 @@ flowchart LR
     preview --> k8s["K3s / Helm / Traefik"]
     control --> record["internal/statusrecord"]
     preview --> report["scripts/report.py"]
+    analysis["scripts/analysis_report.py"] --> analysis_outputs["analysis.json / CSV / SVG / report.md"]
     verify["scripts/verify-local.sh"] --> checks["Go tests / check-*.py / actionlint / helm lint"]
 ```
 
@@ -629,6 +690,14 @@ flowchart LR
 | `scripts/cleanup.sh` | 不依赖当前目录、启动 `cleanup.py` 的 Bash 包装器。 |
 | `scripts/collect-resources.py` | 只读采集 Kubernetes metrics、托管 Namespace、Helm payload 和 PVC 测量值，写出私有 JSONL 与汇总。 |
 | `scripts/collect-resources_test.py` | 测试数量解析、metric 新鲜度、Namespace 身份变化、存储测量、并发采样和输出权限。 |
+| `scripts/experiment_runner.py` | 派发或收集重复工作流运行，归档私有产物，写入版本化运行记录，并验证缺失 measurement 和生命周期完整性。 |
+| `scripts/analysis_report.py` | 读取已验证的私有运行记录，生成隐私安全的 JSON、CSV、Markdown 和 SVG 汇总分析；保留 missing、not-applicable、unsupported 和 small-sample 分类。 |
+| `scripts/analysis_report_test.py` | 对描述性统计、保留/排除策略、缺失值、小样本、对比维度和输出文件进行确定性的重点测试。 |
+| `scripts/evaluation_matrix.py` | 在开始评估前校验 project-size、revision、failure、重复次数、镜像策略和阶梯 concurrency 条件。 |
+| `scripts/evaluation_freeze.py` | 写入私有评估冻结、选定记录清单、工具/配置元数据和完整性摘要，不把私有证据复制到本 checkout。 |
+| `scripts/evaluation_summary.py` | 从保留的运行记录生成汇总评估结果，同时保留 missing 和 unsupported 分类。 |
+| `scripts/evidence_audit.py` | 审核保留证据的完整性，报告有界的状态和排除类别。 |
+| `scripts/preliminary_report.py` | 从选定证据生成汇总初步评估报告，不暴露记录身份。 |
 | `scripts/configure-github-secrets.sh` | 读取登记并隐藏收集 Token，把源码 Token 写入 control，把 dispatch Token 写入源码仓库，把 GHCR Token 写入 control。 |
 | `scripts/configure-runner.py` | 从管理员 K3s 权限生成/续期受限 Runner kubeconfig，验证权限并原子替换受保护文件。 |
 | `scripts/create-control-repository.sh` | 从公开 checkout 创建私有 control 仓库、配置 remote 并推送初始内容。 |
