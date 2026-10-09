@@ -112,6 +112,57 @@ def _reason_category(reason):
     return "measurement_unavailable"
 
 
+def _project_size_reason(reason):
+    lowered = str(reason or "").lower()
+    if "front" in lowered or "backend" in lowered:
+        return "frontend_backend_not_supported"
+    if "multi" in lowered or "service" in lowered:
+        return "multi_service_not_supported"
+    if "register" in lowered or "fixture" in lowered:
+        return "fixture_not_registered"
+    return "unsupported_condition"
+
+
+def _project_size_summary(records):
+    groups = {}
+    for _, record in records:
+        size = (record.get("conditions") or {}).get("project_size") or "unknown"
+        group = groups.setdefault(
+            size,
+            {
+                "records": 0,
+                "lifecycle_success": 0,
+                "unsupported": 0,
+                "valid": 0,
+                "unsupported_reasons": set(),
+            },
+        )
+        group["records"] += 1
+        if record.get("outcome") == "success":
+            group["lifecycle_success"] += 1
+        if record.get("outcome") == "unsupported":
+            group["unsupported"] += 1
+            group["unsupported_reasons"].add(
+                _project_size_reason(record.get("exclusion_reason"))
+            )
+        if record.get("valid") is True:
+            group["valid"] += 1
+    result = []
+    for size in sorted(groups):
+        group = groups[size]
+        result.append(
+            {
+                "project_size": size,
+                "records": group["records"],
+                "lifecycle_success": group["lifecycle_success"],
+                "unsupported": group["unsupported"],
+                "strict_valid": group["valid"],
+                "unsupported_reasons": sorted(group["unsupported_reasons"]),
+            }
+        )
+    return result
+
+
 def _record_entries(paths):
     entries = []
     by_identity = {}
@@ -435,6 +486,7 @@ def summarize(paths):
     resources = _resource_summary(records)
     http_summary = _http_poll_summary(records)
     cleanup_summary = _cleanup_summary(records)
+    project_sizes = _project_size_summary(records)
     planned = [_number(record.get("conditions", {}).get("concurrency")) for _, record in records]
     planned = [value for value in planned if value is not None]
     return {
@@ -446,6 +498,7 @@ def summarize(paths):
             "duplicates_removed": duplicate_count,
             "identity_conflicts": conflict_count,
         },
+        "project_sizes": project_sizes,
         "success_rate": {
             "lifecycle": _metric(
                 lifecycle_success / len(considered) if considered else None,
@@ -489,6 +542,7 @@ def summarize(paths):
             | ({"recovery_time_unavailable"} if recovery_metric["availability"] == "unavailable" else set())
             | ({"duplicate_inventory_unavailable"} if cleanup_summary["duplicate_resources"]["availability"] == "unavailable" else set())
             | ({"orphan_inventory_unavailable"} if cleanup_summary["orphan_resources"]["availability"] == "unavailable" else set())
+            | ({"unsupported_project_size"} if any(item["unsupported"] for item in project_sizes) else set())
         ),
     }
 

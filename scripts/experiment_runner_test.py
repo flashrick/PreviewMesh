@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 
@@ -422,6 +423,31 @@ class UnsupportedRecordTests(unittest.TestCase):
                 json.loads((archive / "unsupported.json").read_text(encoding="utf-8")),
                 {"reason": reason},
             )
+            self.assertEqual(RUNNER.validate_record(record)["errors"], [])
+
+    def test_project_size_unsupported_record_does_not_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args = SimpleNamespace(
+                evidence_root=Path(temporary),
+                fixture="multi-service-project",
+                project_size="multi-service",
+                unsupported_reason="single-service chart does not support multiple services",
+                repetitions=1,
+                concurrency=1,
+                build_policy="rebuild",
+                metric_interval_seconds=10,
+                operation_timeout_seconds=300,
+                http_timeout_seconds=60,
+            )
+
+            result = RUNNER.command_record_unsupported(args)
+            archive = next(Path(temporary).iterdir())
+            record = json.loads((archive / "run-record.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(result, 0)
+            self.assertEqual(record["outcome"], "unsupported")
+            self.assertEqual(record["conditions"]["project_size"], "multi-service")
+            self.assertEqual(record["timings"]["schema_version"], 1)
             self.assertEqual(RUNNER.validate_record(record)["errors"], [])
 
 

@@ -24,6 +24,7 @@ def record(
     valid=False,
     evidence_hash="a" * 64,
     concurrency=1,
+    project_size="simple",
     http_result="success",
     cleanup=None,
     timeline=None,
@@ -34,7 +35,7 @@ def record(
         "outcome": outcome,
         "valid": valid,
         "evidence": {"sha256": evidence_hash},
-        "conditions": {"concurrency": concurrency},
+        "conditions": {"concurrency": concurrency, "project_size": project_size},
         "stage_outputs": (
             [
                 {
@@ -190,6 +191,38 @@ class EvaluationSummaryTests(unittest.TestCase):
             self.assertEqual(summary["selection"]["records_found"], 2)
             self.assertEqual(summary["selection"]["records_considered"], 1)
             self.assertEqual(summary["selection"]["duplicates_removed"], 1)
+
+    def test_project_size_breakdown_keeps_unsupported_out_of_success_rate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_record(root, "simple", record("run-simple"))
+            write_record(
+                root,
+                "multi",
+                record(
+                    "run-multi",
+                    project_size="multi-service",
+                    outcome="unsupported",
+                    valid=False,
+                    http_result=None,
+                ),
+            )
+            unsupported_path = root / "multi" / "run-record.json"
+            unsupported = json.loads(unsupported_path.read_text(encoding="utf-8"))
+            unsupported["exclusion_reason"] = "multi-service support is not established"
+            unsupported_path.write_text(json.dumps(unsupported) + "\n", encoding="utf-8")
+
+            summary = SUMMARY.summarize([root])
+
+            sizes = {item["project_size"]: item for item in summary["project_sizes"]}
+            self.assertEqual(sizes["simple"]["lifecycle_success"], 1)
+            self.assertEqual(sizes["multi-service"]["unsupported"], 1)
+            self.assertEqual(
+                sizes["multi-service"]["unsupported_reasons"],
+                ["multi_service_not_supported"],
+            )
+            self.assertEqual(summary["success_rate"]["lifecycle"]["denominator"], 1)
+            self.assertIn("unsupported_project_size", summary["limitations"])
 
 
 if __name__ == "__main__":

@@ -67,6 +67,7 @@ RECOVERY_MODES = {
     "manual",
     "unavailable",
 }
+PROJECT_SIZES = {"simple", "frontend-backend", "multi-service", "unknown"}
 
 
 class RunnerError(Exception):
@@ -1157,6 +1158,42 @@ def command_run(args):
     return 0 if all(not item["validation"]["errors"] for item in results) else 1
 
 
+def command_record_unsupported(args):
+    if args.repetitions < 1:
+        raise RunnerError("repetitions must be positive")
+    if args.concurrency < 1:
+        raise RunnerError("concurrency must be positive")
+    archive_root = private_root(args.evidence_root)
+    mkdir_private(archive_root)
+    results = []
+    for repetition in range(1, args.repetitions + 1):
+        spec = {
+            "run_id": safe_run_id(args.fixture, "create", repetition, args.concurrency),
+            "scenario": "create",
+            "repetition": repetition,
+            "fixture": args.fixture,
+            "fixture_config": {
+                "name": args.fixture,
+                "source_commit_sha": "unavailable",
+                "image_digest": "unavailable",
+            },
+            "conditions": {
+                "project_size": args.project_size,
+                "commit_version": "unavailable",
+                "concurrency": args.concurrency,
+                "build_policy": args.build_policy,
+                "failure_type": "unsupported",
+                "recovery_mode": "unavailable",
+                "metric_interval_seconds": args.metric_interval_seconds,
+                "operation_timeout_seconds": args.operation_timeout_seconds,
+                "http_timeout_seconds": args.http_timeout_seconds,
+            },
+        }
+        results.append(run_one({}, spec, archive_root, None, args.unsupported_reason))
+    print(json.dumps({"runs": results}, indent=2, sort_keys=True))
+    return 0 if all(not item["validation"]["errors"] for item in results) else 1
+
+
 def find_records(paths):
     found = []
     for raw in paths:
@@ -1213,6 +1250,22 @@ def parser():
     run.add_argument("--unsupported-reason", default="", help="record an unsupported condition without dispatching")
     run.add_argument("--dry-run", action="store_true", help="print the run plan without dispatching or writing evidence")
     run.set_defaults(handler=command_run)
+
+    unsupported = commands.add_parser(
+        "record-unsupported",
+        help="record a project-size condition without dispatching a workflow",
+    )
+    unsupported.add_argument("--evidence-root", required=True, type=Path)
+    unsupported.add_argument("--fixture", required=True)
+    unsupported.add_argument("--project-size", required=True, choices=sorted(PROJECT_SIZES))
+    unsupported.add_argument("--unsupported-reason", required=True)
+    unsupported.add_argument("--repetitions", type=int, default=1)
+    unsupported.add_argument("--concurrency", type=int, default=1)
+    unsupported.add_argument("--build-policy", choices=("rebuild", "reuse-cache"), default="rebuild")
+    unsupported.add_argument("--metric-interval-seconds", type=float, default=10)
+    unsupported.add_argument("--operation-timeout-seconds", type=float, default=300)
+    unsupported.add_argument("--http-timeout-seconds", type=float, default=60)
+    unsupported.set_defaults(handler=command_record_unsupported)
 
     validate = commands.add_parser("validate", help="validate one or more private run records")
     validate.add_argument("path", nargs="+", type=Path)
