@@ -16,13 +16,17 @@ for argument in "$@"; do
     continue
   fi
   case "$argument" in
-    init|check|install|doctor|onboard-source) command_name=$argument ;;
+    init|check|install|doctor|onboard-source|cleanup) command_name=$argument ;;
     --language) language_option=true; next_value=--language ;;
     --language=*) language_option=true; language=${argument#--language=} ;;
     --config|--source) next_value=$argument ;;
     -h|--help) help_requested=true ;;
   esac
 done
+# Cleanup has its own dependency-light menu and must not load a setup.ini first.
+if [ "$command_name" = cleanup ]; then
+  exec bash "$root/scripts/cleanup.sh" "$@"
+fi
 # Select before bootstrapping Python, and pass the choice on without a second prompt.
 if [ -t 0 ] && [ "$language_option" = false ] && [ "$help_requested" = false ]; then
   printf 'Select language / 请选择语言:\n  1. English\n  2. 中文\n'

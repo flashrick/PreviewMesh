@@ -1060,7 +1060,9 @@ class Installer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Guided PreviewMesh setup / PreviewMesh 安装")
+    parser = argparse.ArgumentParser(
+        description="Guided PreviewMesh setup / PreviewMesh 安装; cleanup: bash scripts/setup.sh cleanup opens a selectable old-trace menu / cleanup 会打开可选择的旧痕迹清理菜单"
+    )
     parser.add_argument("command", nargs="?", choices=("init", "check", "install", "doctor", "onboard-source"), default="install",
                         help="init: write configuration; check: validate it; install: set up services; doctor: inspect readiness; onboard-source: review an application notification workflow / init 写入配置；check 检查配置；install 安装服务；doctor 检查就绪状态；onboard-source 审核应用通知工作流")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,

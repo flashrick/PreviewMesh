@@ -94,6 +94,18 @@ flowchart LR
 
 ### 1. 运行配置向导
 
+如果要在本机重新开始设置，先运行可交互的清理菜单：
+
+```bash
+bash scripts/setup.sh cleanup
+```
+
+菜单会用复选框逐项说明并让你选择：活动配置和未完成草稿、已配置的 Token 文件、安装器断点/日志/下载工具/本机 Runner 文件、PreviewMesh 系统服务和入口文件、GitHub Runner 远端登记，以及 PreviewMesh 管理的 Kubernetes 资源。前几项主要用于清除会让安装器复用旧配置、旧凭据或旧断点的痕迹；系统服务项会停止并删除 PreviewMesh 自己创建的 systemd 单元和带管理标记的防火墙链；远端 Runner 和 Kubernetes 项目会单独标为破坏性操作。
+
+清理菜单默认不会删除 Token 文件；只有勾选凭据项目时，才会删除活动配置引用的文件和默认 secrets 目录中的 `.token` 文件。它也不会删除公开或私有 Git 仓库、K3s 本体、未带 PreviewMesh 管理标签的 Kubernetes 命名空间或无关防火墙规则。删除本机 Runner 文件前，应同时选择 GitHub Runner 远端登记，否则 GitHub 中的旧 Runner 名称可能仍会阻止重新安装。默认不选择任何项目；也可以使用 `--language en`、`--dry-run` 预览，自动化场景必须显式使用 `--select ... --yes`，确认整机重置范围后才使用 `--all --yes`。完成后再运行下面的 `init` 和 `install`。
+
+如果提示 `install-state.json` 与活动配置的部署管理仓库不一致，先确认旧安装确实不再使用；清理本机状态不会迁移或撤销旧的远端仓库、Secrets、Runner 或集群资源。
+
 ```bash
 bash scripts/setup.sh init
 ```

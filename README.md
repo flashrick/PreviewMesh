@@ -89,6 +89,18 @@ These requirements are checked by the [application preflight](#run-the-applicati
 
 ### 1. Run the configuration wizard
 
+To start setup again on this machine, run the interactive cleanup menu first:
+
+```bash
+bash scripts/setup.sh cleanup
+```
+
+The menu explains and lets you check each category: the active configuration and unfinished draft; configured Token files; installer checkpoints, logs, downloaded tools and local Runner files; PreviewMesh system services and generated entry files; the GitHub Runner registration; and PreviewMesh-managed Kubernetes resources. The first categories remove traces that can make the installer reuse old inputs, credentials or checkpoints. The system category stops and removes only PreviewMesh systemd units and its marked firewall chain. The remote Runner and Kubernetes categories are shown as destructive operations.
+
+Token files are kept unless the credentials category is checked; that category removes files referenced by the active configuration and `.token` files in the default secrets directory. The menu does not remove public or private Git repositories, K3s itself, unlabelled Kubernetes namespaces or unrelated firewall rules. If you remove the local Runner files, select the GitHub Runner registration too, or the old Runner name may still prevent registration. Nothing is selected by default; use `--language en`, `--dry-run` to preview, an explicit `--select ... --yes` for automation, or `--all --yes` only after reviewing the complete reset scope. After cleanup, run `init` and `install` below.
+
+If `install-state.json` and the active configuration refer to different deployment-management repositories, first confirm that the old installation is no longer in use; removing local state does not migrate or revoke its remote repository, Secrets, Runner, or cluster resources.
+
 ```bash
 bash scripts/setup.sh init
 ```
