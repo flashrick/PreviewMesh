@@ -224,6 +224,32 @@ class EvaluationSummaryTests(unittest.TestCase):
             self.assertEqual(summary["success_rate"]["lifecycle"]["denominator"], 1)
             self.assertIn("unsupported_project_size", summary["limitations"])
 
+    def test_concurrency_breakdown_keeps_unrun_levels_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_record(root, "level-one", record("run-one", concurrency=1))
+            write_record(
+                root,
+                "level-five",
+                record(
+                    "run-five",
+                    concurrency=5,
+                    outcome="unsupported",
+                    valid=False,
+                    http_result=None,
+                ),
+            )
+
+            summary = SUMMARY.summarize([root])
+            levels = {item["level"]: item for item in summary["concurrency"]["by_level"]}
+
+            self.assertEqual(levels[1]["status"], "observed")
+            self.assertEqual(levels[1]["lifecycle_success"], 1)
+            self.assertEqual(levels[5]["status"], "unsupported")
+            self.assertEqual(levels[10]["status"], "not_run")
+            self.assertEqual(levels[20]["status"], "not_run")
+            self.assertEqual(summary["success_rate"]["lifecycle"]["denominator"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

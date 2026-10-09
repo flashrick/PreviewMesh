@@ -8,6 +8,7 @@ import sys
 
 
 SUMMARY_SCHEMA_VERSION = "previewmesh-evaluation-summary-v1"
+CONCURRENCY_LEVELS = (1, 5, 10, 20)
 KNOWN_METRIC_NAMES = {
     "cpu",
     "memory",
@@ -453,6 +454,56 @@ def _cleanup_summary(records):
     }
 
 
+def _concurrency_breakdown(records):
+    groups = {}
+    for record_path, record in records:
+        concurrency = _number((record.get("conditions") or {}).get("concurrency"))
+        if concurrency is None or not concurrency.is_integer() or concurrency < 1:
+            continue
+        groups.setdefault(int(concurrency), []).append((record_path, record))
+    levels = sorted(set(CONCURRENCY_LEVELS) | set(groups))
+    result = []
+    for level in levels:
+        selected = groups.get(level, [])
+        considered = [
+            item for item in selected if item[1].get("outcome") in {"success", "failure"}
+        ]
+        unsupported = sum(record.get("outcome") == "unsupported" for _, record in selected)
+        invalid = sum(record.get("outcome") == "invalid" for _, record in selected)
+        incomplete = sum(
+            record.get("outcome") in {"success", "failure"} and not record.get("valid", False)
+            for _, record in selected
+        )
+        resources = _resource_summary(selected) if selected else None
+        if not selected:
+            status = "not_run"
+        elif not considered and unsupported == len(selected):
+            status = "unsupported"
+        elif considered:
+            status = "observed"
+        else:
+            status = "not_evaluable"
+        result.append(
+            {
+                "level": level,
+                "records": len(selected),
+                "considered": len(considered),
+                "lifecycle_success": sum(record.get("outcome") == "success" for _, record in considered),
+                "strict_valid": sum(record.get("valid") is True for _, record in considered),
+                "incomplete": incomplete,
+                "unsupported": unsupported,
+                "invalid": invalid,
+                "observed_running_high_water": resources["observed_running_high_water"] if resources else None,
+                "observed_managed_high_water": resources["observed_managed_high_water"] if resources else None,
+                "actual_overlap": None,
+                "actual_overlap_availability": "unavailable",
+                "actual_overlap_reason": "cohort-specific overlap timestamps were not retained",
+                "status": status,
+            }
+        )
+    return result
+
+
 def summarize(paths):
     records, duplicate_count, conflict_count = _record_entries(paths)
     if not records:
@@ -487,6 +538,7 @@ def summarize(paths):
     http_summary = _http_poll_summary(records)
     cleanup_summary = _cleanup_summary(records)
     project_sizes = _project_size_summary(records)
+    concurrency_breakdown = _concurrency_breakdown(records)
     planned = [_number(record.get("conditions", {}).get("concurrency")) for _, record in records]
     planned = [value for value in planned if value is not None]
     return {
@@ -535,6 +587,7 @@ def summarize(paths):
             "capacity": None,
             "capacity_availability": "unavailable",
             "capacity_reason": "the selected runs do not establish cluster capacity",
+            "by_level": concurrency_breakdown,
         },
         "limitations": sorted(
             set(resources["unsupported"])
