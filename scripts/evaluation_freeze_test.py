@@ -130,6 +130,99 @@ class ConfigurationSnapshotTests(unittest.TestCase):
             self.assertNotIn(sensitive_value, snapshot_json)
 
 
+class FixtureVersionArgumentTests(unittest.TestCase):
+    def test_fixture_version_requires_a_fixture_name_and_lowercase_full_sha(self):
+        invalid_values = (
+            "podinfo",
+            "podinfo=" + "A" * 40,
+            "podinfo=" + "a" * 39,
+            "pod info=" + "a" * 40,
+            "podinfo=" + "a" * 40 + "=extra",
+        )
+
+        for value in invalid_values:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temporary:
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    exit_code = FREEZE.main(
+                        [
+                            "--output",
+                            str(Path(temporary) / "freeze"),
+                            "--fixture-version",
+                            value,
+                        ]
+                    )
+
+                self.assertEqual(exit_code, 2)
+                self.assertIn("--fixture-version", stderr.getvalue())
+
+    def test_fixture_version_without_config_is_snapshotted_without_registration_fields(self):
+        revision = "a" * 40
+        cluster = {
+            "version": FREEZE.unavailable("cluster version unavailable for test"),
+            "nodes": FREEZE.unavailable("cluster nodes unavailable for test"),
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "freeze"
+            stdout = io.StringIO()
+            with patch.object(FREEZE, "cluster_snapshot", return_value=cluster), contextlib.redirect_stdout(stdout):
+                exit_code = FREEZE.main(
+                    [
+                        "--output",
+                        str(output),
+                        "--fixture-version",
+                        f"podinfo={revision}",
+                    ]
+                )
+
+            freeze = json.loads((output / "freeze.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 1)
+        experiment = freeze["experiment_configuration"]
+        self.assertTrue(experiment["available"])
+        self.assertEqual(
+            experiment["value"],
+            {
+                "workflow": "preview.yml",
+                "ref": "main",
+                "fixtures": [
+                    {"name": "podinfo", "source_commit_sha": revision}
+                ],
+            },
+        )
+        snapshot_json = json.dumps(experiment, sort_keys=True)
+        for field in ("repository_id", "source_repository", "pr_number", "secret", "token", "image_digest"):
+            with self.subTest(field=field):
+                self.assertNotIn(field, snapshot_json)
+
+
+class EvaluationDefaultsTests(unittest.TestCase):
+    def test_default_evaluation_conditions_are_recorded(self):
+        cluster = {
+            "version": FREEZE.unavailable("cluster version unavailable for test"),
+            "nodes": FREEZE.unavailable("cluster nodes unavailable for test"),
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "freeze"
+            with patch.object(FREEZE, "cluster_snapshot", return_value=cluster):
+                FREEZE.main(["--output", str(output)])
+
+            freeze = json.loads((output / "freeze.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            freeze["evaluation_defaults"],
+            {
+                "build_policy": "rebuild",
+                "concurrency": 1,
+                "metric_interval_seconds": 10,
+                "operation_timeout_seconds": 300,
+                "http_timeout_seconds": 60,
+            },
+        )
+
+
 class ResourceDefaultTests(unittest.TestCase):
     def test_resource_defaults_parse_valid_cpu_and_memory_quantities(self):
         values = """

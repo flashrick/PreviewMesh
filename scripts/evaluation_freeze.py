@@ -157,9 +157,23 @@ def cluster_snapshot():
     return {"version": version, "nodes": nodes}
 
 
-def config_snapshot(path):
+def explicit_fixture_versions(entries):
+    fixtures = []
+    for entry in entries:
+        if "=" not in entry:
+            raise runner.RunnerError("--fixture-version must use NAME=SHA")
+        name, revision = entry.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise runner.RunnerError("--fixture-version must use a fixture name and lowercase full SHA")
+        fixtures.append({"name": name, "source_commit_sha": revision})
+    return fixtures
+
+
+def config_snapshot(path, versions=()):
     if not path:
-        return unavailable("experiment config path was not supplied")
+        if not versions:
+            return unavailable("experiment config path or fixture versions were not supplied")
+        return available({"workflow": "preview.yml", "ref": "main", "fixtures": list(versions)})
     try:
         config = runner.validate_config(runner.load_json(path))
     except runner.RunnerError:
@@ -174,10 +188,13 @@ def config_snapshot(path):
         if isinstance(conditions, dict):
             item["conditions"] = {key: conditions[key] for key in CONFIG_FIELDS if key in conditions}
         fixtures.append(item)
+    by_name = {fixture["name"]: fixture for fixture in fixtures}
+    for version in versions:
+        by_name.setdefault(version["name"], {}).update(version)
     return available({
         "workflow": config.get("workflow", "preview.yml"),
         "ref": config.get("ref", "main"),
-        "fixtures": fixtures,
+        "fixtures": list(by_name.values()),
     })
 
 
@@ -187,6 +204,12 @@ def main(argv=None):
     parser.add_argument("--control-directory", type=Path, help="private control checkout")
     parser.add_argument("--experiment-config", type=Path, help="private runner config")
     parser.add_argument("--image-storage-method", default="", help="evaluated image storage, for example ghcr")
+    parser.add_argument("--fixture-version", action="append", default=[], metavar="NAME=SHA")
+    parser.add_argument("--build-policy", default="rebuild")
+    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--metric-interval-seconds", type=float, default=10)
+    parser.add_argument("--operation-timeout-seconds", type=float, default=300)
+    parser.add_argument("--http-timeout-seconds", type=float, default=60)
     args = parser.parse_args(argv)
 
     try:
@@ -200,6 +223,11 @@ def main(argv=None):
 
     public_root = Path(__file__).resolve().parents[1]
     chart = public_root / "charts" / "preview"
+    try:
+        versions = explicit_fixture_versions(args.fixture_version)
+    except runner.RunnerError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     freeze = {
         "schema_version": FREEZE_SCHEMA,
         "captured_at_utc": runner.utc_now(),
@@ -213,7 +241,14 @@ def main(argv=None):
         "cluster": cluster_snapshot(),
         "image_storage": available(args.image_storage_method) if args.image_storage_method else unavailable("image storage method was not supplied"),
         "resource_allocation": chart_resource_defaults(chart / "values.yaml"),
-        "experiment_configuration": config_snapshot(args.experiment_config),
+        "experiment_configuration": config_snapshot(args.experiment_config, versions),
+        "evaluation_defaults": {
+            "build_policy": args.build_policy,
+            "concurrency": args.concurrency,
+            "metric_interval_seconds": args.metric_interval_seconds,
+            "operation_timeout_seconds": args.operation_timeout_seconds,
+            "http_timeout_seconds": args.http_timeout_seconds,
+        },
         "limitations": [],
     }
     for name, value in (
