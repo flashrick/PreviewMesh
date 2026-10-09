@@ -11,6 +11,7 @@ PreviewMesh 为符合条件的拉取请求（PR）在开发网络上提供临时
 
 - [安装](#安装)，包括[应用要求](#应用要求)
 - [按拉取请求查询预览](#按拉取请求查询预览)
+- [配置文件与职责](#配置文件与职责)
 - [更新私有部署管理仓库](#更新私有部署管理仓库)
 - [本地检查](#本地检查)
 - [故障排查](#故障排查)
@@ -278,6 +279,25 @@ root 管理的后台维护服务每五分钟检查一次 Runner 的 Kubernetes �
 `doctor` 会区分“基础环境就绪”和“应用通知文件尚待发布”；基础环境检查通过不代表已经成功部署过真实预览。已有手工安装可以保留应用登记及 Secret 名称；接入新安装器前，先更新旧版部署管理代码。
 
 需要底层操作说明时，参见[手工安装参考](ops/install/manual_CN.md)。两种安装路径都使用[预览访问说明](ops/install/access.md)统一处理域名、端口和验证。
+
+### 配置文件与职责
+
+English: [Configuration files and responsibilities](README.md#configuration-files-and-responsibilities)。
+
+这些文件各有不同职责。`setup.ini` 描述期望的安装输入；`install-state.json` 记录本 Linux 账号已经安装并管理的内容。二者不能互换。不要把私密值复制到本公开仓库。
+
+| 文件 | 用途 | 敏感性与 Git | 损坏或迁移时处理 |
+| --- | --- | --- | --- |
+| `config/setup.example.ini` | 公开的带注释模板，包含占位符和安全默认值；`init --template` 会把它复制到活动配置路径。 | 只要仍是占位符就可以提交。不要提交填写后的副本或 Token 明文。 | 模板损坏时，从公开 PreviewMesh 代码副本取得干净版本。不要未经审核就用模板替代活动配置。 |
+| `~/.config/previewmesh/setup.ini` | 当前用户的活动配置：仓库角色、本地目录、网络设置、端口和 Token 文件路径。只保存文件引用，不保存 Token 内容。 | 放在 Git 外并保持仅当前用户可读；即使没有 Token，也可能暴露私有仓库名称和本地路径。 | 通过 `init` 修改，或在 `install` 前仔细审核。更换仓库时，先确认这里填写的是希望继续管理的那套安装。 |
+| `~/.config/previewmesh/setup.ini.draft` | 位于活动配置旁边的未完成向导候选配置。 | 放在 Git 外。它可能包含与 `setup.ini` 相同的私有名称和路径，但不包含 Token 内容。 | 向导中断后保留它，并用 `bash scripts/setup.sh init --config /path/to/setup.ini` 恢复。接受为活动配置前先审核。 |
+| `~/.local/share/previewmesh/install-state.json` | 每个账号的本机状态：部署管理仓库归属、GitHub ID、阶段断点以及产物/依赖证据。它不是 `setup.ini`。 | 放在 Git 外并保持仅当前用户可读。它不是 Token 存储，但包含私有路径、身份和运行元数据。 | 不要直接删除。排错或迁移时保留它。如果安装器报告“本机账号已管理另一个部署管理仓库”，应恢复与该状态匹配的 `setup.ini` 中的 `control_repository`，或为独立安装使用另一个 Linux 账号；不要删除状态来绕过检查。 |
+| `~/.local/share/previewmesh/install-state.json.bak` | 安装状态的最后有效备份。 | 与活动状态一样放在 Git 外并保护。 | 如果 `install-state.json` 无法读取，保留两个文件，检查备份，确认可信后再恢复。排查期间不要覆盖或丢弃备份。 |
+| `~/.local/share/previewmesh/setup.log` | 仅所有者可读的脱敏安装器输出，用于诊断失败阶段和恢复判断。 | 不要提交或分享原始日志；其中仍可能有私有路径或仓库元数据。 | 排错期间保留它。日志只是证据，不是仓库归属来源；不要通过编辑日志改变安装状态。 |
+| `/etc/previewmesh/installation.json` | root 管理的系统安装元数据，供本机维护服务使用，包含路径和运行时归属信息。 | 属于系统私有文件，不是 Git 文件；不要复制到本仓库或手工编辑。 | 对异常内容保留副本供排查；确认 `setup.ini` 和 `install-state.json` 后，再通过安装器修复。 |
+| `control project/config/repositories.json` | 私有部署管理项目共享的应用登记：仓库 ID、源码名称、端口和 Actions Secret 名称。Token 明文不存放在此文件。 | 只应提交到私有部署管理仓库。不要把私有登记文件提交到公开 PreviewMesh 仓库。 | 从私有仓库的 Git 历史或可信备份中保留并恢复。更新或重建 control project 时审核并保留登记；不要通过删除本机安装状态来替代登记迁移。 |
+
+最重要的边界是：`install-state.json` 不是 `setup.ini`。修改 `--config` 只会改变输入配置，不会为每份配置创建独立的安装状态。出现 `control` 归属不一致时，这是状态与配置冲突，不是要求重置账号。应恢复正确配置，或为另一套部署管理仓库使用独立 Linux 账号；不要删除 `install-state.json` 或其备份作为迁移捷径。
 
 ## 更新私有部署管理仓库
 
