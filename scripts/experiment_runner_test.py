@@ -259,6 +259,36 @@ class RecordValidationTests(unittest.TestCase):
         self.assertEqual(validation["errors"], [])
         self.assertTrue(record["valid"])
 
+    def test_close_success_record_allows_missing_build_identity(self):
+        record = success_record()
+        record.update(
+            {
+                "run_id": "podinfo-sclose-c1-n1-20261009T000000Z",
+                "scenario": "close",
+                "source_commit_sha": "unavailable",
+                "image_digest": "unavailable",
+                "final_served_sha": "unavailable",
+                "cleanup": {
+                    "namespace_uid": "uid-1",
+                    "uid_guarded": True,
+                    "namespace_absent": True,
+                    "related_resources_absent": True,
+                    "orphan_scope": "namespace",
+                    "unavailable_reason": "",
+                },
+                "lifecycle": {
+                    "expected_stages": ["event", "cleanup", "report"],
+                    "observed_stages": ["event", "cleanup", "report"],
+                    "missing_stages": {},
+                },
+            }
+        )
+
+        validation = RUNNER.validate_record(record)
+
+        self.assertEqual(validation["errors"], [])
+        self.assertTrue(record["valid"])
+
 
 class UnsupportedRecordTests(unittest.TestCase):
     def test_unsupported_record_is_written_without_dispatching(self):

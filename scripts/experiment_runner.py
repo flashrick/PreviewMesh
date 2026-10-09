@@ -600,7 +600,7 @@ def validate_record(record, require_measurements=True):
     for field, pattern in (("source_commit_sha", SHA_RE), ("image_digest", DIGEST_RE)):
         value = record.get(field)
         if value == "unavailable":
-            if outcome not in {"failure", "unsupported", "invalid"}:
+            if outcome not in {"failure", "unsupported", "invalid"} and scenario != "close":
                 errors.append(f"{field} is unavailable for a successful run")
             else:
                 warnings.append(f"{field} unavailable")
