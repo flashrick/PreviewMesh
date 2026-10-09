@@ -544,6 +544,8 @@ class Installer:
                 temporary.flush()
                 self.run(["sudo", "env", "INSTALL_K3S_VERSION=" + version,
                           "INSTALL_K3S_EXEC=server --disable servicelb", "sh", temporary.name], timeout=900)
+        # Recover an existing stopped installation before checking its readiness.
+        self.run(["sudo", "systemctl", "enable", "--now", "k3s"])
         self.run(["sudo", "systemctl", "is-active", "--quiet", "k3s"])
         # Use K3s's matching client when no separate kubectl is installed.
         if not self.tool("kubectl"):

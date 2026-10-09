@@ -953,6 +953,33 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(token, text)
         self.assertFalse(any(args and args[0] == "sudo" for args, _ in calls))
 
+    def test_cluster_starts_existing_k3s_service_before_validation(self):
+        app = self.instance()
+        app.wsl = True
+        app.tool = lambda name: "/bin/true"
+        run_calls = []
+
+        def run(args, **kwargs):
+            args = [str(item) for item in args]
+            run_calls.append(args)
+            if args[:2] == ["git", "-C"] and "ls-files" in args:
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        app.run = run
+        app.kube = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+        app.managed = lambda *args, **kwargs: True
+
+        # The production check is unrelated to this command-order regression.
+        with patch.object(installer.Path, "stat", return_value=Mock(st_uid=0, st_mode=0o755)):
+            app.cluster()
+
+        enable = ["sudo", "systemctl", "enable", "--now", "k3s"]
+        active = ["sudo", "systemctl", "is-active", "--quiet", "k3s"]
+        self.assertIn(enable, run_calls)
+        self.assertIn(active, run_calls)
+        self.assertLess(run_calls.index(enable), run_calls.index(active))
+
     def test_runner_download_fallback_uses_latest_official_asset_at_download_boundary(self):
         checksum = "a" * 64
         latest = self.latest_runner_release()
