@@ -2,800 +2,286 @@
 
 [English](README.md)
 
-PreviewMesh 为符合条件的拉取请求（PR）在开发网络上提供临时应用 URL。它构建 PR 对应的精确源码提交，将镜像部署到 K3s，检查应用通过 `/health` 返回的 commit SHA，并在 PR 关闭或合并后删除预览。
+PreviewMesh 为符合条件的拉取请求提供一个位于私有开发网络中的临时应用 URL。它构建准确的源代码提交，发布不可变镜像，将镜像部署到 K3s，验证 `/health` 和应用返回的提交 SHA，将结果回写到拉取请求，并在拉取请求关闭后删除预览。
 
 > [!WARNING]
-> 本仓库是公开的 PreviewMesh 代码仓库。由它创建的部署管理仓库必须保持私有。不要把 GitHub Token、kubeconfig、真实仓库登记信息或运行证据放进本仓库。如果你从私有仓库复制了本目录，请创建全新的公开 Git 历史，不要公开原有的私有提交记录。
+> 这是公开的 PreviewMesh 代码仓库。由它创建的部署管理仓库必须保持私有。不要在这里提交 GitHub Token、kubeconfig、真实仓库注册信息、私有 URL 或运行时证据。
 
-## 导航
+## 快速导航
 
-- [安装](#安装)，包括[应用要求](#应用要求)
-- [按拉取请求查询预览](#按拉取请求查询预览)
-- [配置文件与职责](#配置文件与职责)
-- [更新私有部署管理仓库](#更新私有部署管理仓库)
-- [本地检查](#本地检查)
-- [故障排查](#故障排查)
+- [你将获得什么](#你将获得什么)
+- [工作原理](#工作原理)
+- [前置条件](#前置条件)
+- [安装](#安装)
+- [使用预览](#使用预览)
+- [运维与排错](#运维与排错)
+- [高级参考](#高级参考)
+
+## 你将获得什么
+
+| 能力 | 行为 |
+| --- | --- |
+| 准确版本 | 构建拉取请求的完整提交 SHA，并使用不可变镜像摘要部署。 |
+| 隔离预览 | 为每个已注册仓库和拉取请求创建可预测、带所有权标记的 Kubernetes Namespace 和 Release。 |
+| 可信准入 | 校验已注册的仓库 ID 和名称、当前拉取请求状态、同一仓库的 head/base，以及作者的写权限。Fork 拉取请求会被拒绝。 |
+| 运行时验证 | 等待工作负载和 Ingress 就绪，然后要求 `/health` 返回 HTTP 200、`status: "ok"` 和预期的 `commit_sha`。 |
+| 拉取请求反馈 | 写入 Commit Status；在权限允许时写入结果评论；验证成功后提供 **Open preview** URL。 |
+| 清理 | 拉取请求关闭或合并后删除所属预览，并提供检查和有限重试路径用于恢复。 |
 
 ## 工作原理
 
-PreviewMesh 将公开的 PreviewMesh 代码仓库、私有部署管理仓库和应用源码仓库分开。实现和配置中把部署管理仓库称为 `control`，把应用源码仓库称为 `source`；这只是内部名称，不是额外的仓库类型。
+PreviewMesh 使用三类相互分离的仓库角色：
 
-| 仓库 | 内容 | 可见性 |
+| 仓库角色 | 职责 | 可见性 |
 | --- | --- | --- |
-| PreviewMesh 代码仓库（公开） | 可复用代码、Chart、工作流和配置说明；创建部署管理仓库时的代码来源 | 公开 |
-| 部署管理仓库（私有） | 可信 PreviewMesh 自动化、应用登记、工作流变量、Actions Secrets 和 Runner 配置 | 私有 |
-| 应用源码仓库 | 应用代码、Dockerfile、健康接口和通知工作流 | 公开或私有 |
+| PreviewMesh 代码仓库 | 可复用 Go 代码、Helm Chart、工作流、安装脚本和公开文档。 | 公开 |
+| 部署管理仓库 | 可信工作流、应用注册信息、Actions Secrets、Runner 配置和私有控制平面。 | 私有 |
+| 应用仓库 | 应用代码、根目录的 `Dockerfile`、`/health` 和通知工作流。 | 公开或私有 |
 
-需要创建新的部署管理仓库时，安装器会把公开 PreviewMesh 代码仓库的代码复制到独立的本地目录，并创建私有部署管理仓库。现有部署管理仓库必须包含 PreviewMesh 部署工具。公开代码仓库不是公开的控制平面，应用源码仓库也不能填作部署管理仓库。
+公开仓库是创建或更新私有部署管理仓库的代码来源，不是控制平面。不要把应用仓库填写为部署管理仓库。
 
-应用源码仓库会通知私有部署管理仓库。控制工作流先使用 GitHub 托管 Runner 构建并发布不可变的 GHCR 镜像，再把单独的 Job 交给 K3s 机器上的自托管 Runner。这个 Runner 部署精确的镜像 digest，并通过 Traefik 检查应用。
+~~~mermaid
+flowchart LR
+    A[Open or update PR in application repository] --> B[Notification workflow]
+    B -->|Repository ID, name, PR number| C[Private deployment-management workflow]
+    C --> D[Validate registration, PR and permissions]
+    D --> E[Checkout exact source SHA]
+    E --> F[Build and push immutable GHCR digest]
+    F --> G[Deploy to K3s on restricted runner]
+    G --> H[Verify readiness, /health and served SHA]
+    H --> I[Commit status, PR comment and preview URL]
+    A2[Close or merge PR] --> J[Remove owned namespace]
+~~~
 
 重要边界：
 
-- 只有私有部署管理仓库设置 `PREVIEWMESH_ENABLED=true` 后，预览工作流才会运行。
-- 只有登记过的仓库可以使用；数字仓库 ID 和完整 owner/name 必须与 GitHub 一致。
-- PR 作者必须对已登记的应用源码仓库有写权限。
-- Fork PR 会被拒绝。请在已登记的应用源码仓库自身创建 PR。
-- 应用源码仓库工作流只转发元数据，不检出或执行 PR 代码。
-- 自托管 Runner 需要受限 kubeconfig，并且只应服务于私有部署管理仓库和专用开发集群。
+- 应用仓库的通知工作流只转发元数据，不会检出或执行拉取请求代码。
+- 只有私有部署管理仓库中注册的应用才会被接受。
+- 私有仓库设置 `PREVIEWMESH_ENABLED=true` 之前，预览工作流保持禁用。
+- 自托管 Runner 必须在专用开发集群中使用受限 kubeconfig。不要给它 cluster-admin kubeconfig。
+- 预览 URL 只能从私有网络访问，不是公开互联网托管。
 
-<details>
-<summary>工作流与运行细节</summary>
+## 前置条件
 
-```mermaid
-flowchart LR
-    A[应用源码仓库 PR 事件] --> B[应用仓库：previewmesh-notify.yml]
-    B -->|workflow_dispatch + PR 元数据| C[私有部署管理仓库：preview.yml]
-    C --> D[验证登记信息和当前 PR]
-    D --> E[GitHub 托管 Runner 执行 build Job]
-    E --> F[取出精确的源码提交 SHA]
-    F --> G[构建镜像并向 GHCR 推送 SHA-256 digest]
-    G --> H[Self-hosted Runner 执行 local Job]
-    H --> I[拉取 digest 并部署到 K3s]
-    I --> J[验证 /health 和实际 SHA]
-    J --> K[回写 Commit 状态、PR 评论和预览地址]
-    A2[PR 关闭] --> B
-    C -->|PR 已关闭| L[删除归属的 Namespace]
-```
+引导式安装器支持 **Ubuntu 22.04 或 24.04 x64**，包括使用 **WSL2 systemd** 的这些发行版。请使用有 `sudo` 权限的普通 Linux 用户、专用开发 K3s 集群和稳定的私有局域网 IPv4 地址。WSL 安装还需要 Windows 管理员权限来配置局域网入口。
 
-### 运行时交接
+你需要：
 
-`previewmesh-notify.yml` 由 `onboard-source` 从应用源码仓库的 GitHub 默认分支准备。预览模式只显示完整 diff；`--create-pr` 会创建一个专门的可审核 PR，由你检查后合并。文件来自 [`templates/source-notify.yml`](templates/source-notify.yml)，合并后在 GitHub 托管的 `ubuntu-latest` Runner 上运行。`jobs.notify.env` 下的两个值决定要通知哪个部署管理仓库；应用源码仓库中的 `PREVIEWMESH_DISPATCH_TOKEN` Secret 授权它在部署管理仓库的 `main` 分支派发 `preview.yml`。派发时只发送应用源码仓库 ID、完整仓库名和 PR 编号。
+- 能访问安装涉及的 GitHub 仓库；
+- 按安装器或接入流程的要求，使用已认证的 `gh` CLI；
+- 为公开代码、私有部署管理 checkout 和每个应用 checkout 准备互不重叠的本地目录；
+- 将 Token 文件放在 Git checkout 外，并限制为文件所有者可读。
 
-实际执行生命周期的 [`preview.yml`](.github/workflows/preview.yml) 位于私有部署管理仓库。它的 `build` Job 使用 GitHub 托管 Runner，读取当前 PR head 的 commit SHA，取出这个精确版本，并运行 `previewmesh build`。CLI 本身没有 `--push` 参数；该命令在内部调用 Docker Buildx 并推送镜像。这个 Job 声明 `packages: write` 权限，并使用工作流自带的 `GITHUB_TOKEN` 登录 GHCR；不需要另设镜像发布 Job，也不需要手动创建 Package。
+### 应用契约
 
-镜像 digest 是类似 `sha256:abc...` 的内容标识，不是源码提交 SHA。Commit SHA 标识 Git 源码版本；镜像 digest 标识确切的容器镜像内容。PreviewMesh 部署的引用类似 `ghcr.io/OWNER/previewmesh-c123-r456@sha256:...`，而不是可能被重新指向其他内容的 tag，因此 K3s 中的工作负载不会悄悄切换到另一份镜像。
+每个已注册应用都必须提供：
 
-`local` Job 通过 `runs-on: [self-hosted, Linux, X64, previewmesh]` 选择 Runner。安装器会在 K3s 所在机器上注册并启动 Runner，可在私有部署管理仓库的 **Settings → Actions → Runners** 中查看。GitHub 会把 build Job 输出的 `image` 和已确认的 commit SHA 传给这个 Job。[`scripts/local-attempt.sh`](scripts/local-attempt.sh) 再把完整的 digest 引用传给 `previewmesh deploy`；Kubernetes 使用由 `GHCR_READ_TOKEN` 生成的 Namespace 内 `ghcr-pull` Secret 从 GHCR 拉取镜像，之后 Helm 创建或更新 K3s 资源。
+| 要求 | 契约 |
+| --- | --- |
+| 镜像 | 根目录中的 `Dockerfile`，并能构建 `linux/amd64` 镜像。 |
+| 网络 | 应用在注册的 HTTP 端口上监听 `0.0.0.0`。 |
+| 运行时 | 镜像兼容 UID/GID `65532`，不依赖额外的 Linux capability。 |
+| 健康接口 | `GET /health` 返回 HTTP 200，并在 JSON 中包含 `status: "ok"` 和运行时的 `PREVIEW_COMMIT_SHA`。 |
 
-部署就绪阶段先等待 Deployment 和 Pod，再等待预览 Service 获得 ClusterIP，以及 Traefik 在 Ingress status 中发布地址，之后才进行 `/health` 验证。WSL 配置中 Traefik 发布的是 `127.0.0.1`，它只用于判断路由已就绪；实际请求通过 `18080` 端口的 socket 代理转发。Service 或 Ingress 就绪检查失败时，本次尝试会失败，预览不会被标记为 ready。
+例如：
 
-部署后，local Job 检查应用的 `/health` 响应和实际提供的 commit SHA。`control status` 使用配置给应用源码仓库的 Token 调用 GitHub 的 commit-status 和 PR comment API。等待中的或最终的 `PreviewMesh` 状态会链接到工作流运行页或预览地址，最终 PR 评论还会包含运行详情和 **Open preview** 链接。这个预览地址仍是本地/私有地址；域名、DNS 和 hosts 的统一访问方法见[预览访问说明](ops/install/access.md)。
+~~~json
+{"status":"ok","commit_sha":"the value of PREVIEW_COMMIT_SHA"}
+~~~
 
-</details>
+预检可以检查 Dockerfile，也可以选择运行临时本地容器。这些检查不能证明集群部署、Ingress 可达性或应用级测试通过。第一个真实拉取请求才会验证完整链路。
 
 ## 安装
 
-支持 **Ubuntu 22.04/24.04 x64**，以及使用这些发行版并启用 **systemd 的 WSL2**。在准备运行 K3s 和 GitHub Runner 的机器上，以有 sudo 权限的普通 Linux 用户操作。使用专门的开发集群，并准备固定的局域网 IPv4。WSL 用户还需要 Windows 管理员权限来配置局域网入口。
+在公开 PreviewMesh checkout 中运行下面的命令。公开 checkout、私有部署管理 checkout 和应用 checkout 不能互相包含或重叠。
 
-先下载并解压本仓库的 ZIP 到 Linux 用户目录，或在已有 Git 的机器上 clone。在该目录打开终端。公开 PreviewMesh 代码目录、部署管理本地目录和每个应用代码本地目录必须分开且不能互相包含。安装器会补齐 Git 等缺少的工具，因此下载 ZIP 的方式不要求预先安装 Git。
+### 1. 创建配置
 
-`init` 和 `install` 默认使用 `~/.config/previewmesh/setup.ini`；也可以用 `--config /path/to/setup.ini` 指定其他路径。
+向导默认把活动配置保存到 `~/.config/previewmesh/setup.ini`。它保存 Token 文件路径，不保存 Token 内容。
 
-### 终端界面与自动化
-
-安装器和配置向导使用终端界面。第一次在交互式终端运行 `bash scripts/setup.sh init` 时，脚本会自动在用户缓存目录 `$XDG_CACHE_HOME/previewmesh/ui-venv`（或 `$HOME/.cache/previewmesh/ui-venv`）创建独立虚拟环境，并在其中安装 [Rich](https://github.com/Textualize/rich) 和 [Questionary](https://github.com/tmbo/questionary)。后续运行会复用它，不会修改系统 Python 包。在真实终端中会显示面板、克制的状态颜色、加载指示器和方向键选择。
-
-如果界面环境无法创建或下载，或者 stdin/stdout 被重定向，PreviewMesh 会使用可读的纯文本界面，不会改变校验、断点或安装行为。如需手动准备环境，或指定其他缓存位置，可以执行：
-
-```bash
-python3 -m venv "$HOME/.local/share/previewmesh/ui-venv"
-"$HOME/.local/share/previewmesh/ui-venv/bin/python" -m pip install -r scripts/ui-requirements.txt
-PATH="$HOME/.local/share/previewmesh/ui-venv/bin:$PATH" bash scripts/setup.sh init
-```
-
-如果发行版没有 `venv`，请安装匹配的 Ubuntu `python3-venv` 包后重新运行 `init`；如果无法安装，仍可使用纯文本模式。设置 `PREVIEWMESH_UI=plain` 可强制使用降级界面，设置 `PREVIEWMESH_UI_VENV` 可指定独立虚拟环境路径。
-
-颜色表达语义而不是装饰：蓝色表示当前步骤，绿色表示完成，琥珀色表示警告，珊瑚色表示失败，紫色表示复用断点，灰色表示待处理。每种状态同时保留文字标签和符号，因此关闭颜色后仍然可读。
-
-方向键界面需要 TTY。`init`、交互式 `install`、隐藏输入 Token、首次 `gh auth login` 和 `onboard-source --create-pr` 都需要终端；请在终端中运行。重定向或 CI 执行时必须提供有效的 `--config`、仓库外且权限为 `600` 的 Token 文件、已登录的 `gh` 以及可用的 `sudo`。`init --template`、`check`、`doctor` 和不带 `--create-pr` 的 `onboard-source` 仍适合自动化。`--verbose` 只显示脱敏后的工具输出。
-
-### 应用要求
-
-每个应用源码仓库的应用代码本地目录根部都需要一个 Dockerfile。它必须构建 `linux/amd64` 镜像，让应用在配置的端口上监听 `0.0.0.0`，并以 UID/GID `65532` 运行且不依赖额外的 Linux 能力（capabilities）。`GET /health` 必须返回 HTTP 200。JSON 中的 `commit_sha` 字段必须使用运行时环境变量 `PREVIEW_COMMIT_SHA` 的实际值，并保留下面的契约：
-
-```json
-{"status":"ok","commit_sha":"the value of PREVIEW_COMMIT_SHA"}
-```
-
-完整的静态检查和可选本地容器检查见[运行应用预检](#运行应用预检)。
-
-### 1. 运行配置向导
-
-如果要在本机重新开始设置，先运行可交互的清理菜单：
-
-```bash
-bash scripts/setup.sh cleanup
-```
-
-菜单会用复选框逐项说明并让你选择：活动配置和未完成草稿、已配置的 Token 文件、安装器断点/日志/下载工具/本机 Runner 文件、PreviewMesh 系统服务和入口文件、GitHub Runner 远端登记，以及 PreviewMesh 管理的 Kubernetes 资源。前几项主要用于清除会让安装器复用旧配置、旧凭据或旧断点的痕迹；系统服务项会停止并删除 PreviewMesh 自己创建的 systemd 单元和带管理标记的防火墙链；远端 Runner 和 Kubernetes 项目会单独标为破坏性操作。
-
-清理菜单默认不会删除 Token 文件；只有勾选凭据项目时，才会删除活动配置引用的文件和默认 secrets 目录中的 `.token` 文件。它也不会删除公开或私有 Git 仓库、K3s 本体、未带 PreviewMesh 管理标签的 Kubernetes 命名空间或无关防火墙规则。删除本机 Runner 文件前，应同时选择 GitHub Runner 远端登记，否则 GitHub 中的旧 Runner 名称可能仍会阻止重新安装。默认不选择任何项目；也可以使用 `--language en`、`--dry-run` 预览，自动化场景必须显式使用 `--select ... --yes`，确认整机重置范围后才使用 `--all --yes`。完成后再运行下面的 `init` 和 `install`。
-
-如果提示 `install-state.json` 与活动配置的部署管理仓库不一致，先确认旧安装确实不再使用；清理本机状态不会迁移或撤销旧的远端仓库、Secrets、Runner 或集群资源。
-
-```bash
+~~~bash
 bash scripts/setup.sh init
-```
+~~~
 
-在网络步骤中，向导会让你选择直接在 Ubuntu 上安装，还是在 WSL 中安装。默认值根据当前平台自动检测；这个选择只用于本次向导，不会写入配置，之后的 install 仍按实际平台自动判断。Ubuntu 模式调用本机只读 `ip` 获取私有 global IPv4 候选值，并过滤已知 VPN/容器接口前缀；WSL 模式调用只读 PowerShell，从正在运行的物理 Windows 网卡读取可用 IPv4，因此不会把 WSL guest NAT 地址当成预览局域网地址。
+如需使用其他路径，请显式指定：
 
-向导会从选定的部署管理本地目录和应用代码本地目录发现 GitHub remote、可用的局域网 IPv4 候选值，以及 Dockerfile `EXPOSE` 中声明的应用端口，并在展示端口前进行检查。单个网络地址会显示为实际默认值，直接回车即可接受；增强终端中的多个候选可用方向键和 Enter 选择，纯文本界面接受编号或完整地址，不会静默选择某个网卡。自动发现失败或没有地址时，提示会说明原因并允许手动填写私有局域网 IPv4。
+~~~bash
+bash scripts/setup.sh init --config /path/to/setup.ini
+~~~
 
-对于仓库、目录和端口列表，如果只有一个候选值，提示会直接显示实际默认值，例如 `[flashrick/PreviewMesh]`，直接回车即可接受。增强终端中有多个候选时可用方向键选择；纯文本界面接受编号或完整值。没有候选值时，请按提示填写完整的 `用户名或组织名/仓库名`、路径、地址或端口。
+向导会询问私有部署管理仓库、其本地 checkout、公开 PreviewMesh 仓库、应用仓库和端口、Token 文件路径、私有局域网地址、允许网段、预览域名后缀和输出语言。请保持所有仓库角色和本地目录分离。
 
-向导会分开收集普通配置和 Token 文件路径。不要把 Token 粘贴到向导中；配置文件只保存类似下面的文件引用：
+如果只需要带注释的模板而不启动交互流程：
 
-| 配置 | 填什么 |
-| --- | --- |
-| 部署管理仓库（私有）(`control_repository`) | 负责协调 PreviewMesh 的私有 GitHub 仓库，安装器可以从公开代码仓库创建；现有仓库必须包含部署工具 |
-| 部署管理本地目录 (`control_directory`) | 该私有仓库的本地目录，与公开代码目录和所有应用代码目录分开 |
-| PreviewMesh 代码仓库（公开）(`public_repository`) | 创建新的部署管理仓库时使用的公开代码来源，不是公开控制仓库 |
-| 应用源码仓库 (`[source:name]`) | 每个应用的 GitHub 仓库、应用代码本地目录和实际 HTTP 监听端口 |
-| Token 文件路径 | 应用、通知和镜像读取 Token 各自的独立文件，放在 Git 仓库外；配置中不填写 Token 明文 |
-| 局域网 IP | Ubuntu 服务器的固定私有局域网 IPv4；WSL 使用 **Windows 主机**的私有局域网 IPv4。向导会列出候选供确认，也允许手填 |
-| 允许网段 | `auto` 按选定局域网 IP 所属网卡的网络和前缀长度计算；WSL 使用 Windows 网卡信息；其他客户端网络请填写私有 CIDR |
-| 域名后缀 | `auto` 使用 `<LAN_IP>.sslip.io`；也可以选择小写的内部 DNS 后缀 |
-| 输出语言 | `auto` 跟随系统，`zh-CN` 为中文，`en` 为英文；`init` 会保存所选值 |
+~~~bash
+bash scripts/setup.sh init --template --config /path/to/setup.ini
+~~~
 
-三类仓库的关系是固定的：公开 PreviewMesh 代码仓库提供可复用的部署代码；需要新建部署管理仓库时，安装器把这些代码复制到独立目录并创建私有部署管理仓库；每个应用源码仓库仍是单独登记的应用代码来源。三个本地目录必须互相独立。不要把应用源码仓库填入部署管理仓库，也不要把部署凭据或应用登记信息放入公开代码仓库。
+不要把填写后的配置或 Token 内容放入本仓库。
 
-三个 Token 文件的用途不同。每个应用源码仓库使用独立的应用 Token，用于读取源码和回写状态；通知 Token 只选择部署管理仓库，并复制到每个应用源码仓库的 `PREVIEWMESH_DISPATCH_TOKEN`，让通知工作流派发 control 工作流；GHCR Token 是 classic 包读取 Token，保存到部署管理仓库的 `GHCR_READ_TOKEN`，供集群拉取预览镜像。安装器在 `setup.ini` 中只保存文件路径，不保存 Token 明文。
+### 2. 安装控制平面
 
-`init` 向导开始时会询问输出语言，并把所选值保存到 `setup.ini`。增强终端使用方向键选择，纯文本界面仍接受原有语言别名。取消或遇到 EOF 会保持当前配置不变；完成最终检查后若向导被中断，已校验的候选配置会保存到 `setup.ini.draft`。
+~~~bash
+bash scripts/setup.sh install --config /path/to/setup.ini
+~~~
 
-保存前，向导会显示仓库、目录、局域网地址、端口和 Token 文件路径等非敏感摘要。请审核后确认保存。已有配置时，向导会先询问是否载入并审核，再决定是否替换；下次运行 `init` 时会优先提供未完成的草稿。交互式 `install` 会先询问使用哪份配置，选择不使用已有配置时会打开向导。
+`install` 会准备工具、私有部署管理仓库、GitHub Secrets、K3s 权限、受限 Runner、预览网络入口、应用通知集成和就绪检查。安装支持断点续跑；某个阶段失败时，修复提示的问题后重新运行同一条命令。
 
-向导默认使用 `allowed_subnet = auto`，按选定局域网地址所属网卡的实际网络和前缀长度计算允许网段，不固定为 `/24`。它还默认使用 `domain_suffix = auto`，将选定的局域网地址与 `sslip.io` 组合。若使用其他私有客户端网段、内部 DNS 或 hosts 替代方案，请填写对应的私有 CIDR 或小写手工后缀，并按[预览访问说明](ops/install/access.md)配置。向导和安装器都不会打印 Token 内容。
+安装器负责准备基础设施，不会改写应用代码，也不能证明应用已经能够提供预览。[手动安装参考](ops/install/manual.md) 解释了不适合使用引导式流程时的各个基础设施步骤。
 
-如果只需要带注释的配置文件，可显式使用模板模式：
+### 3. 通过审核 PR 接入应用
 
-```bash
-bash scripts/setup.sh init --template
-```
+先预览工作流变更，不写入应用仓库：
 
-它会把[带逐项说明的模板](config/setup.example.ini)复制到 `~/.config/previewmesh/setup.ini`，不会覆盖已有文件。编辑后，安装时继续使用同一个配置路径。
+~~~bash
+bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO
+~~~
 
-交互式 `install` 启动时会先选择 English 或中文，随后询问是否载入已有配置，之后的安装提示会使用所选语言。选择 `no` 会打开配置向导，当前配置在最终保存前保持不变。也可以使用 `--language en` 或 `--language zh-CN` 直接指定语言并跳过第一个问题。语言输入无效时会重新提示，取消或遇到 EOF 会在修改系统前停止。`check` 等非交互命令继续遵循配置中的 `language`；`auto` 会跟随系统 locale。
+审核完整 diff 后，添加 `--create-pr` 创建专用的接入拉取请求：
 
-### 2. 执行安装
+~~~bash
+bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO --create-pr
+~~~
 
-```bash
-bash scripts/setup.sh install
-```
+该命令只准备 `.github/workflows/previewmesh-notify.yml`，不会合并 PR，也不会修改应用代码。请在创建测试预览前审核并合并应用默认分支上的这个 PR。
 
-例如，直接选择英文并跳过启动提问：
+### 4. 创建第一个预览
 
-```bash
-bash scripts/setup.sh install --language en
-```
+1. 在已注册的应用仓库中从分支创建普通拉取请求，目标为应用默认分支。不要使用 fork。
+2. 等待应用通知工作流和私有部署管理工作流完成。
+3. 确认构建、部署、就绪、健康检查和提交版本校验均成功。
+4. 在能够访问配置的私有网络的机器上打开生成的 URL。请阅读[预览访问说明](ops/install/access.md)了解 DNS、hosts 文件、WSL、`18080` 端口和 `/health` 检查。
+5. 关闭或合并拉取请求，等待清理工作流删除对应的预览 Namespace。
 
-`install` 会先解释当前步骤，再修改本机。八个阶段依次涵盖本机工具、私有部署管理仓库、三类访问 Token、本机 K3s 和受限部署权限、自托管 Runner、`18080` LAN/WSL 预览入口、应用通知工作流和基础环境就绪检查。终端会显示完整阶段列表、当前阶段、已完成阶段和剩余阶段；已验证的断点复用、成功、警告、取消和失败会使用不同的文字标签。每个阶段提示都会说明动作及用途；最后的就绪检查不会创建应用预览。结束时会显示摘要并逐个应用报告通知工作流是否仍待接入。需要创建经过审核的应用接入 PR 时，使用显式的 `onboard-source` 命令，然后创建测试应用 PR 验证真实预览链路。安装完成后继续查看[预览访问说明](ops/install/access.md)。
+## 使用预览
 
-`install` 的第 1 阶段会检查 Ubuntu 的 `python3-yaml`，缺少时才安装，已有兼容模块会继续复用。独立运行安装器测试或会执行 Traefik 配置比较的本地检查也需要这个包；请执行 `sudo apt-get update && sudo apt-get install -y python3-yaml`。第 6 阶段按 YAML 语义比较 Traefik 的 `valuesContent`，会识别两个随项目发布的旧配置（只有 `ClusterIP` Service 的配置，以及另外设置 `ingressEndpoint.ip` 为 `127.0.0.1` 的配置），并将它们升级到当前 manifest。出现其他字段或自定义内容时，阶段会在 apply 前停止；先用排错表中的命令审核对象，再决定如何处理并重新运行同一条 `install` 命令。
+正常的开发循环是：
 
-仍需你完成浏览器登录和 GitHub Token 的创建。安装器会展示每个 Token 的创建页面、准确的目标仓库和所需权限。缺少 Token 文件时，可以在隐藏输入提示中粘贴，安装器会保存为仅当前用户可读写的文件。组织审批、SSO 和 Token 到期时间由你的 GitHub 账号管理。这些个人 Token 不会自动续期；到期前更新相应文件并重新安装即可。
+~~~text
+推送分支 -> 创建同仓库 PR -> 等待部署 -> 查看私有 URL -> 关闭或合并 -> 确认清理
+~~~
 
-WSL 安装期间，Windows 会请求管理员权限来配置局域网转发。当前连接需为“专用”或“域”网络；安装器不会关闭防火墙，也不会把“公用”网络自动改为受信任网络。
+在私有部署管理 checkout 中，可以构建只读的状态查询命令：
 
-某一步失败时，安装器会列出本次运行已完成的阶段、仍需完成的阶段和继续执行的准确命令。修复问题后，重新运行**同一条命令**。
-
-<details>
-<summary>继续安装与查看日志</summary>
-
-`install-state.json` 记录各阶段的配置、安装器输入和依赖摘要，以及可验证的产物信息。部署管理仓库准备和应用通知阶段仅在文件及已发布版本仍匹配时复用；凭据、集群、Runner、网络及就绪阶段每次都核对实时状态。配置、脚本、依赖或产物变化、缺失或损坏时，相应阶段会重新运行并说明原因。
-
-`install-state.json.bak` 保留上一次有效状态；状态文件无法读取时，先保留原文件、检查备份，并恢复可信副本后再运行。摘要保存的是摘要值和元数据，不包含令牌内容。已有自定义工作流和配置不会被静默覆盖。
-
-脱敏日志 `~/.local/share/previewmesh/setup.log` 的权限仅允许文件所有者访问；`--verbose` 也会把详细输出显示在终端。
-
-</details>
-
-### 3. 创建经过审核的应用接入 PR
-
-安装结束时，对于仍待接入的应用源码仓库，安装器会打印下一步命令。针对要接入的应用源码仓库执行一次：
-
-```bash
-bash scripts/setup.sh onboard-source \
-  --config /path/to/setup.ini \
-  --source OWNER/REPO
-```
-
-`onboard-source` 只读取应用源码仓库的 GitHub 默认分支，并准备一个文件：`.github/workflows/previewmesh-notify.yml`。不加 `--create-pr` 时，它只显示完整 diff，不写本地文件，也不写远程仓库。如果默认分支已经有匹配内容，会报告无需修改。该命令只需要 Python 3 和已登录 GitHub 的 `gh` CLI，以及目标仓库的访问权。classic PAT 需要 `repo` 和 `workflow` scope；fine-grained PAT 需要对目标仓库有访问权，并授予 **Contents: Read and write**、**Workflows: Read and write**、**Pull requests: Read and write** 权限，参见 GitHub 的[细粒度个人访问令牌权限说明](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)。不要求 systemd、K3s 或应用源码仓库的本地目录。
-
-如需让命令创建可审核的 PR，添加 `--create-pr`：
-
-```bash
-bash scripts/setup.sh onboard-source \
-  --config /path/to/setup.ini \
-  --source OWNER/REPO \
-  --create-pr
-```
-
-创建新 PR 时，命令会先显示完整 diff，只有输入准确的 `create` 后才继续。它使用专用的 `previewmesh/onboard-source` 分支。如果已有开放的接入 PR，命令会返回链接并保留该分支和 PR 内容，不检查是否可合并。没有开放 PR 时，如果专用分支内容或基线与当前提案不同，命令会停止并打印人工处理步骤。PR 只提交通知工作流，不读取或提交应用代码本地目录中的其他改动，也不会自动合并。已有 PR 的审核和合并冲突处理由你自行完成。
-
-PR 合并后，运行 `doctor`，让它重新检查应用默认分支上的通知工作流：
-
-```bash
-bash scripts/setup.sh doctor --config /path/to/setup.ini
-```
-
-### 4. 开始正常开发
-
-用同一个应用源码仓库的分支创建一个以默认分支为目标的普通测试 PR，不要使用 fork。按下面的顺序确认真实预览链路：
-
-1. 应用源码仓库分支已推送到以应用默认分支为目标的 PR。
-2. 应用通知 Actions 运行并成功派发请求。
-3. 私有部署管理仓库的 `Preview` 工作流完成 `build` 和 `local` Job。
-4. 将预期的源 PR head SHA 与 PR 状态或评论中记录的 SHA 比较，然后按[预览访问说明](ops/install/access.md)在同一局域网的另一台机器上打开生成的 URL 并核对该 URL。
-5. 关闭或合并 PR，等待部署管理仓库工作流删除对应预览。
-
-安装、onboarding diff 和通过 `doctor` 检查都不能证明真实预览已经部署；只有这次测试 PR 的构建、部署、SHA/URL 证据和后续清理能证明完整链路。
-
-#### 运行应用预检
-
-<details>
-<summary>静态检查与可选本地容器检查</summary>
-
-在应用代码本地目录外构建 CLI，再对干净的应用代码本地目录运行预检。报告文件也必须放在该目录外，因为检查会包含未跟踪和被忽略的文件；把 JSON 重定向到应用目录会使它在检查期间变脏。
-
-```bash
+~~~bash
 go build -o /tmp/previewmesh ./cmd/previewmesh
-SOURCE_DIR=/path/to/source
-PREFLIGHT_DIR=$(mktemp -d /tmp/previewmesh-preflight.XXXXXX)
-EXPECTED_SHA=$(git -C "$SOURCE_DIR" rev-parse HEAD)
+gh auth status
+/tmp/previewmesh status --repo OWNER/REPO --pr 123
+~~~
 
-# Static checks only; Docker is not called by this command.
-/tmp/previewmesh preflight \
-  --source-dir "$SOURCE_DIR" \
-  --port 8080 \
-  --sha "$EXPECTED_SHA" \
-  > "$PREFLIGHT_DIR/static.json"
-```
+自动化场景使用结构化输出：
 
-将 `SOURCE_DIR` 和 `8080` 替换为配置中的应用代码本地目录和登记应用端口。
+~~~bash
+/tmp/previewmesh status --repo OWNER/REPO --pr 123 --json
+~~~
 
-`--sha SHA` 可省略；省略时检查本地目录的 `HEAD`。SHA 必须是完整的小写 Git commit ID。静态预检会检查端口范围、Git 根目录和 revision、包含 ignored files 在内的干净本地目录、根目录 Dockerfile 及其最终阶段的 `EXPOSE`/`USER` 声明，以及 `0.0.0.0`、`GET /health`、`PREVIEW_COMMIT_SHA` 和 health 响应 `commit_sha` 字段等源代码标记。这些检查依靠源代码扫描和启发式规则，不能证明监听地址、HTTP 响应、环境变量传递、文件权限或其他运行时行为。
+`status` 通过已认证的 `gh` CLI 读取当前拉取请求状态、`PreviewMesh` Commit Status 和结构化工作流反馈。它不会探测预览 URL，不会查询 Kubernetes，也不会执行实时健康检查。`ready` 表示当前提交有完整且较新的证据；拉取请求关闭后，`removed` 表示已有清理证据。
 
-JSON 报告记录 `source_sha`、`configuration_fingerprint`、UTC 时间的 `checked_at`、端口和契约，以及 `static`、`container`、`deployment` 和 `findings` 字段。`blocker` 会给出修复方向并以非零状态退出；`warning` 也会给出修复方向，并将静态状态保留为 `passed_with_warnings`。由于源代码扫描不能证明运行时行为，静态限制警告总会出现。构建前应查看这些警告。报告只包含受控诊断，不包含源代码片段或工具日志；把它放在应用代码本地目录外，并将其中的 SHA、fingerprint 和时间戳作为本次检查的身份。
+HTTP 200 并不等于验证成功。应用验证还必须要求 `status: ok`，并且 `commit_sha` 与本次请求的准确源代码版本一致。
 
-如需进行本地运行时检查，在同一命令中加入 `--container-check`：
-
-```bash
-# Build and run a temporary local image/container; nothing is pushed or deployed.
-/tmp/previewmesh preflight \
-  --source-dir "$SOURCE_DIR" \
-  --port 8080 \
-  --sha "$EXPECTED_SHA" \
-  --container-check \
-  > "$PREFLIGHT_DIR/container.json"
-```
-
-这个显式模式会为 `linux/amd64` 本地构建并运行应用，注入 `PREVIEW_COMMIT_SHA`，发布仅绑定 loopback 的临时端口，并检查 `/health`。容器以 UID/GID `65532:65532` 运行，删除全部 capability 并启用 `no-new-privileges`；资源限制为 512 MiB、1 个 CPU 和 128 个进程。`--timeout` 默认对每个外部操作限制为五分钟，`--http-timeout` 默认将启动和健康检查限制为一分钟；两个值都会记录在 `container_configuration` 中，并计入 configuration fingerprint。若先发现静态 blocker，不会调用 Docker，`container` 会报告 `not_run_static_failed`。检查结束后会删除临时 image 和 container。
-
-这项检查只验证本地启动和健康行为，不验证集群网络、挂载、Ingress 或真实部署，也不会推送镜像或创建预览。
-
-`previewmesh build` 会在 Docker build 和 push 前，对精确的干净应用代码本地目录重复静态检查。传入与预检相同的 `--port PORT`（默认值为 `8080`），让报告与登记的应用端口一致。静态 blocker 会在发布前停止 build；静态 warning 会进入 build 结果供审核。build 不会自动运行可选的本地容器检查。
-
-</details>
-
-安装器负责基础环境，不会改写应用或证明应用的运行行为。第一个真实 PR 会验证镜像权限、应用兼容性和实际提供的 SHA；关闭或合并该 PR 后，再确认部署管理仓库工作流已删除预览。
-
-[预览访问说明](ops/install/access.md)是从安装完成到打开 URL 的统一入口。推荐的 `domain_suffix = auto` 使用 `<LAN_IP>.sslip.io`，DNS 检查通过后不需要为每个预览添加 hosts。小写手工后缀支持内部通配 DNS 或明确的 hosts 替代方案；入口中说明探测条目、每个 PR 的条目、`18080` 端口和 `/health` 验证。如果局域网地址或后缀发生变化，请重新安装并重新部署开放的 PR，旧 URL 不会自动迁移。
+## 运维与排错
 
 ### 检查和恢复
 
-```bash
-# 读取配置并检查前提条件，不修改系统。
-bash scripts/setup.sh check
-# 检查已安装服务、凭据、DNS 和 GitHub 配置。
-bash scripts/setup.sh doctor
-```
+下面的 setup 命令只执行读取检查：
 
-所有命令都支持 `--config /配置文件路径/setup.ini`。换终端不需要重新 export 变量。更新配置或 Token 文件后重新执行 `install`；安装器会说明需要重新检查的阶段。每个 Linux 账号管理一套安装，Windows 转发绑定对应的 WSL 发行版。
+~~~bash
+# Read configuration and inspect prerequisites.
+bash scripts/setup.sh check --config /path/to/setup.ini
 
-root 管理的后台维护服务每五分钟检查一次 Runner 的 Kubernetes 凭据，在接近**实际到期时间**时续期，同时刷新 Traefik 代理目标地址。写入受限 kubeconfig 前会放弃 root 权限；续期失败会保留原凭据。WSL NAT 转发会在 Windows 用户已登录且发行版正在运行时刷新，不会为了刷新转发而启动已停止的发行版。
+# Inspect installed services, credentials, DNS and GitHub setup.
+bash scripts/setup.sh doctor --config /path/to/setup.ini
+~~~
 
-`doctor` 会区分“基础环境就绪”和“应用通知文件尚待发布”；基础环境检查通过不代表已经成功部署过真实预览。已有手工安装可以保留应用登记及 Secret 名称；接入新安装器前，先更新旧版部署管理代码。
+`--config` 是 setup 脚本的选项，用来选择配置文件；它不会创建独立的安装状态。`doctor` 报告基础设施就绪情况和待接入工作，但 `check` 和 `doctor` 都不能证明应用预览成功。
 
-需要底层操作说明时，参见[手工安装参考](ops/install/manual_CN.md)。两种安装路径都使用[预览访问说明](ops/install/access.md)统一处理域名、端口和验证。
+如果必须重置旧安装，请使用可选择的清理菜单，并在确认前逐项审核所有破坏性类别：
 
-### 配置文件与职责
+~~~bash
+bash scripts/setup.sh cleanup --config /path/to/setup.ini
+~~~
 
-English: [Configuration files and responsibilities](README.md#configuration-files-and-responsibilities)。
+### 配置与凭据边界
 
-这些文件各有不同职责。`setup.ini` 描述期望的安装输入；`install-state.json` 记录本 Linux 账号已经安装并管理的内容。二者不能互换。不要把私密值复制到本公开仓库。
+| 位置 | 用途 | 处理方式 |
+| --- | --- | --- |
+| 公开 PreviewMesh checkout | 可复用代码、Chart、工作流、模板和安全示例。 | 可公开；不得加入真实注册信息、凭据或运行时证据。 |
+| 私有部署管理 checkout | 可信工作流和 `config/repositories.json` 注册信息。 | 必须保持私有，只在这里提交注册信息。 |
+| `~/.config/previewmesh/setup.ini` | 每个用户的仓库、目录、网络、端口和 Token 路径设置。 | 放在 Git 外并限制所有者访问；只保存引用，不保存 Token 内容。 |
+| `~/.local/share/previewmesh/install-state.json` | 每个账号的安装断点和所有权状态。 | 放在 Git 外并限制所有者访问；不要为了绕过控制仓库不匹配而删除。 |
+| Token 文件 | 应用、派发和 GHCR 凭据。 | 放在 Git 外，并设置为仅所有者可读。 |
 
-| 文件 | 用途 | 敏感性与 Git | 损坏或迁移时处理 |
-| --- | --- | --- | --- |
-| `config/setup.example.ini` | 公开的带注释模板，包含占位符和安全默认值；`init --template` 会把它复制到活动配置路径。 | 只要仍是占位符就可以提交。不要提交填写后的副本或 Token 明文。 | 模板损坏时，从公开 PreviewMesh 代码副本取得干净版本。不要未经审核就用模板替代活动配置。 |
-| `~/.config/previewmesh/setup.ini` | 当前用户的活动配置：仓库角色、本地目录、网络设置、端口和 Token 文件路径。只保存文件引用，不保存 Token 内容。 | 放在 Git 外并保持仅当前用户可读；即使没有 Token，也可能暴露私有仓库名称和本地路径。 | 通过 `init` 修改，或在 `install` 前仔细审核。更换仓库时，先确认这里填写的是希望继续管理的那套安装。 |
-| `~/.config/previewmesh/setup.ini.draft` | 位于活动配置旁边的未完成向导候选配置。 | 放在 Git 外。它可能包含与 `setup.ini` 相同的私有名称和路径，但不包含 Token 内容。 | 向导中断后保留它，并用 `bash scripts/setup.sh init --config /path/to/setup.ini` 恢复。接受为活动配置前先审核。 |
-| `~/.local/share/previewmesh/install-state.json` | 每个账号的本机状态：部署管理仓库归属、GitHub ID、阶段断点以及产物/依赖证据。它不是 `setup.ini`。 | 放在 Git 外并保持仅当前用户可读。它不是 Token 存储，但包含私有路径、身份和运行元数据。 | 不要直接删除。排错或迁移时保留它。如果安装器报告“本机账号已管理另一个部署管理仓库”，应恢复与该状态匹配的 `setup.ini` 中的 `control_repository`，或为独立安装使用另一个 Linux 账号；不要删除状态来绕过检查。 |
-| `~/.local/share/previewmesh/install-state.json.bak` | 安装状态的最后有效备份。 | 与活动状态一样放在 Git 外并保护。 | 如果 `install-state.json` 无法读取，保留两个文件，检查备份，确认可信后再恢复。排查期间不要覆盖或丢弃备份。 |
-| `~/.local/share/previewmesh/setup.log` | 仅所有者可读的脱敏安装器输出，用于诊断失败阶段和恢复判断。 | 不要提交或分享原始日志；其中仍可能有私有路径或仓库元数据。 | 排错期间保留它。日志只是证据，不是仓库归属来源；不要通过编辑日志改变安装状态。 |
-| `/etc/previewmesh/installation.json` | root 管理的系统安装元数据，供本机维护服务使用，包含路径和运行时归属信息。 | 属于系统私有文件，不是 Git 文件；不要复制到本仓库或手工编辑。 | 对异常内容保留副本供排查；确认 `setup.ini` 和 `install-state.json` 后，再通过安装器修复。 |
-| `control project/config/repositories.json` | 私有部署管理项目共享的应用登记：仓库 ID、源码名称、端口和 Actions Secret 名称。Token 明文不存放在此文件。 | 只应提交到私有部署管理仓库。不要把私有登记文件提交到公开 PreviewMesh 仓库。 | 从私有仓库的 Git 历史或可信备份中保留并恢复。更新或重建 control project 时审核并保留登记；不要通过删除本机安装状态来替代登记迁移。 |
+应用工作流使用 `PREVIEWMESH_DISPATCH_TOKEN` 通知私有部署管理仓库。私有仓库存放应用仓库 Secrets 和 `GHCR_READ_TOKEN`。安装器会说明所需权限和目标位置；不要把这些值复制到公开 checkout。
 
-最重要的边界是：`install-state.json` 不是 `setup.ini`。修改 `--config` 只会改变输入配置，不会为每份配置创建独立的安装状态。出现 `control` 归属不一致时，这是状态与配置冲突，不是要求重置账号。应恢复正确配置，或为另一套部署管理仓库使用独立 Linux 账号；不要删除 `install-state.json` 或其备份作为迁移捷径。
+### 故障排查
 
-## 更新私有部署管理仓库
+| 现象 | 首先检查 |
+| --- | --- |
+| 没有应用通知 | 确认工作流已在应用默认分支、Actions 已启用、接入 PR 已合并。Fork PR 会被有意跳过。 |
+| 部署任务被跳过 | 在私有部署管理仓库中将 `PREVIEWMESH_ENABLED=true`，并在 `main` 上派发工作流。 |
+| `local` 任务一直排队 | 确认私有仓库的自托管 Runner 在线，并具有 `self-hosted`、`Linux`、`X64` 和 `previewmesh` 标签。 |
+| 注册或授权失败 | 对照私有注册信息中的仓库 ID 和 owner/name。PR 必须属于该仓库，作者必须具有写权限。 |
+| 镜像推送或拉取失败 | 检查构建工作流的 GitHub package 写权限、`GHCR_READ_TOKEN` 和预览 Namespace 使用的 `ghcr-pull` Secret。 |
+| 就绪或 HTTP 验证失败 | 检查 Deployment、Pod、Service、Traefik、配置的 hostname 和 `/health` 响应。请使用[预览访问说明](ops/install/access.md)。 |
+| `status` 没有可用 URL | 证据可能仍在等待、已经失败、已过期，或属于旧提交。检查最新工作流并重新运行预览。`status` 不会探测 URL。 |
+| PR 关闭后预览仍存在 | 等待 closed-PR 通知和控制工作流。如果派发失败，修复后手动重试清理路径。 |
+| WSL 访问中断 | 重新运行 `init` 确认当前 Windows 主机局域网地址，然后重新运行 `install`。查看[手动 WSL 和访问说明](ops/install/access.md)。 |
 
-在私有部署管理本地目录中执行更新。实现中把这个目录称为 `control`。先提交本地改动，或用 `git stash` 收起它们；更新脚本要求工作区干净，并且 Git 已配置提交者身份。脚本会复用安装时创建的 `upstream`，如果没有这个 remote，就自动创建：
+Runner 权限请看 [Kubernetes 访问说明](ops/kubernetes/README.md)。完整手动安装请看[手动安装参考](ops/install/manual.md)。生命周期和恢复细节请看[预览生命周期验证](ops/verification/preview-lifecycle.md)。
 
-```bash
+## 高级参考
+
+<details>
+<summary>直接 CLI 生命周期</summary>
+
+推荐使用私有部署管理工作流，因为它会重新检查拉取请求状态，并处理过时版本和清理。受信任的控制环境也可以使用较低层级的 CLI 命令：
+
+| 命令 | 用途 |
+| --- | --- |
+| `preflight` | 检查应用 checkout，也可以运行临时本地容器检查。 |
+| `build` | 校验准确 checkout，并为控制工作流发布镜像。 |
+| `deploy` | 将不可变镜像摘要部署到所属预览 Namespace。 |
+| `verify` | 等待就绪，并验证 `/health` 和应用返回的版本。 |
+| `cleanup` | 拉取请求关闭后删除所属预览。 |
+| `cleanup-inspect` | 在不删除资源的情况下收集所有权和清理状态。 |
+| `cleanup-retry` | 使用原始 Namespace 身份重试清理。 |
+
+在私有控制 checkout 中执行 `previewmesh <command> --help` 查看准确参数。不要在公开文档或 shell 历史中传递私有凭据。
+
+</details>
+
+<details>
+<summary>更新私有部署管理 checkout</summary>
+
+请在私有 checkout 中运行更新，而不是在公开源代码目录中运行。先审核或暂存本地改动：
+
+~~~bash
 git switch main
 git pull --ff-only origin main
 git status --short
-```
-
-如果 `git status --short` 列出了文件，先处理这些改动，再运行更新脚本。确认工作区干净后再执行：
-
-```bash
 scripts/update-upstream.sh --remote upstream --ref main
-```
+~~~
 
-有更新时，脚本会在本地更新分支上创建提交，并停留在该分支。如果提示无需更新，就到此结束。否则，检查差异、执行下方的本地检查，再推送实际分支并创建 PR：
+推送更新分支或创建 PR 前，先审核变更并运行本地检查。更新器会保留私有仓库的应用注册信息，不会自动更新已经发布到应用仓库的通知工作流。合并更新后，如果本机管理文件需要刷新，请重新运行 `install`。
 
-```bash
-UPDATE_BRANCH=$(git branch --show-current)
-git diff --stat main...HEAD
-git diff main...HEAD
-```
+</details>
 
-执行[本地检查](#本地检查)中的命令。通过后再推送更新分支并创建 PR：
+<details>
+<summary>本地检查</summary>
 
-```bash
-git push -u origin "$UPDATE_BRANCH"
-gh pr create --base main --head "$UPDATE_BRANCH"
-```
+在受信任的控制 checkout 中运行：
 
-更新脚本会保留私有分支中的 `config/repositories.json`，所以你的应用登记不会被覆盖。GitHub Secrets 不在 Git 中，因此不会被修改。如果除了该登记文件以外还有冲突，脚本会停止并要求人工检查；不要对工作流或部署代码直接选择一侧覆盖。
-
-新创建的副本还包含 **Update PreviewMesh from upstream** 工作流，每周检查一次，也可以手动运行。它在 GitHub 托管的 Runner 上执行检查并创建更新 PR，不使用部署 Runner 或你保存的应用 Token。在 **Settings → Actions → General → Workflow permissions** 中启用 **Allow GitHub Actions to create and approve pull requests**；如果组织策略不允许，请使用本地更新流程。参见 [GitHub Actions 设置](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-a-repository/managing-github-actions-settings-for-a-repository)。如果公开 PreviewMesh 代码仓库由其他 owner 维护，可设置可选的 repository variable：`PREVIEWMESH_UPSTREAM_REPOSITORY`。
-
-如果私有仓库是通过 **Use this template** 创建的，它与模板之间没有共同 Git 历史。第一次运行更新器时会创建一个小的历史桥接提交，同时保留当前私有文件；之后就可以使用普通 Git merge。第一次运行只关联历史，不会把上游当前的文件改动同步到你的项目中。审核桥接 PR 时，手动合入目前需要的改动；上游之后的新提交才能正常合并。每次更新也要检查登记文件之外的自定义内容。
-
-更新部署管理仓库不会自动更新应用源码仓库中已经发布的通知工作流，也不会替换本机已安装的 WSL/K3s 文件。合并更新后，使用原配置重新运行 `install` 来刷新本机托管副本；如果发现你修改过的文件，安装器会停止并显示差异。应用工作流仍需由你审核并提交；需要创建审核 PR 时，使用显式的 `onboard-source --create-pr` 流程。
-
-## 本地检查
-
-修改或更新部署管理仓库项目后，在项目根目录执行下面的检查。需要 Git、Bash、Go 1.25+、Python 3、Helm 3 和 `actionlint`，缺少时先安装。这些是开发检查，不需要每次运行预览时重复执行：
-
-```bash
+~~~bash
 scripts/verify-local.sh
-```
+~~~
 
-脚本先检查工具和版本，再依次执行 Go 测试、`go vet`、工作流/Secret/配置脚本检查、Helm lint 和 actionlint；任一步失败立即停止。
-
-Python 检查会模拟外部工具，不会访问 GitHub 或 Kubernetes。这些命令都不会部署应用。检查通过后，仍需运行一次真实预览，确认 Token、镜像权限、Runner、网络和健康接口配置正确。
-
-## CLI 说明
-
-直接使用 CLI 时，可信域名后缀依次由 `--domain-suffix`、`PREVIEWMESH_DOMAIN_SUFFIX` 和旧版默认值 `preview.test` 决定。安装器推荐 `domain_suffix = auto`，解析为 `<LAN_IP>.sslip.io`；也支持小写手工后缀。直接 CLI 的旧默认值仍要求匹配的 DNS 或 hosts 配置，不是安装器推荐方案。显式指定的 `--hostname` 仍必须匹配仓库/PR 身份与该后缀。URL 生成及 DNS/hosts 验证见[预览访问说明](ops/install/access.md)。
-
-`control resolve` 只验证登记文件，不访问 GitHub。`control inspect` 检查当前 PR、Fork 状态和作者权限。`control status` 写入 `PreviewMesh` commit status。
-
-工作流实际调用 `previewmesh build`、`deploy` 和 `cleanup`；`deploy` 内部完成验证。`previewmesh verify` 仍可作为独立的低级命令使用。完整 PR 生命周期应使用工作流，因为它会在部署前后重新检查 PR 状态，并处理过期版本和清理。
-
-### 按拉取请求查询预览
-
-从私有部署管理本地目录根部构建 CLI。请确认用户 shell 的 `PATH` 中可用 Go 1.25+ 和已认证的 `gh` CLI；安装器内部补齐的工具不一定出现在该 `PATH` 中：
-
-```bash
-go version
-gh auth status
-go build -o /tmp/previewmesh ./cmd/previewmesh
-```
-
-只知道应用源码仓库和 PR 编号时，可以查询记录中的预览状态：
-
-```bash
-/tmp/previewmesh status --repo OWNER/REPO --pr 123
-/tmp/previewmesh status --repo OWNER/REPO --pr 123 --json
-/tmp/previewmesh status --repo OWNER/REPO --pr 123 --max-age 24h
-```
-
-这个命令只读取 GitHub 上的 PR 及预览结果，不需要仓库登记文件、Kubernetes 访问权限、GHCR 凭据或部署凭据。`--max-age` 默认 24 小时，控制已记录健康证据的有效期。查询结果反映历史观测；命令不会访问预览 URL 或执行实时健康检查。
-
-<details>
-<summary>状态证据与 PR 评论</summary>
-
-查询结果会合并 build、deployment、readiness、health、cleanup、evidence 和可用的 timing 信息。`ready` 要求当前 head SHA 有完整的结构化证据：build、deployment 和 readiness 成功；HTTP 200 响应含预期的 `status: ok` 和 commit revision；请求的 revision 与应用提供的 revision 相同；预览 URL 与当前 status 匹配。
-
-缺少反馈或只有旧版无结构化反馈时，结果为 `missing`；证据太旧时为 `expired`。这两种状态都不会提供可用 URL。待处理的尝试为 `running`；失败尝试在证据提供时标出失败阶段，并链接 PR 或工作流证据供继续检查。
-
-已关闭或已合并的 PR 不会从这个查询得到实时预览 URL。关闭后，如果清理证据仍在等待、不可用或失败，结果可以是 `running`、`missing`、`failure` 或 `expired`；只有关闭后的状态确认预览已经不存在时，结果才是 `removed`。找不到或无法读取仓库/PR 时，命令会给出可操作的 GitHub 权限或错误信息。自动化需要相同字段时使用 `--json`，不要解析人类可读文本。
-
-工作流拿到足够的 PR 信息后，会尝试在应用源码仓库 PR 中发布结果评论，包含 commit SHA、部署状态和工作流运行链接。部署验证通过后还会显示 **Open preview** 链接。构建或部署失败、版本已被更新的尝试和清理结果不会显示可用预览链接。构建中的状态显示在 PR 的 `PreviewMesh` status check 中。每次结果都会新增评论，重跑同一提交可能再次产生评论。
-
-`control status --comment --run-url <workflow-url>` 启用结果评论。应用 Token 需要[Token 配置说明](ops/install/manual_CN.md#6-配置-github-secrets)中的 **Commit statuses: Read and write** 和 **Pull requests: Read and write** 权限。两种回写会独立尝试；回写失败会记录在结果中，不改变实际部署或清理结果。预览链接仍要求配置相应网络访问和 DNS/hosts 解析，发布链接不会把本地环境公开到互联网。
-
-评论还展示 build 结果、Deployment 副本数量、Pod 就绪情况及失败原因、Service/Ingress 是否存在、`/health` 最后一次 HTTP 状态码、提交版本验证、回滚和清理结果。运行时观测是本次尝试结束时的快照（若进行了回滚，则为回滚之后），未执行或无法获取的检查会明确标记。HTTP 200 不直接等于验证成功，响应还必须包含 `status: ok` 和预期提交 SHA；Service/Ingress 存在也不代表可访问。CLI 通过 `--build-state` 和 `--result-file` 接收这些证据。
-
-运行记录会保存各 CLI 阶段的 UTC 开始和结束时间、耗时及结果，写入阶段 CSV 和结果 JSON，并汇总到 `summary.json`。`resource_observation` 记录运行状态快照的耗时，`resource_verify` 记录清理时检查 Namespace 归属或是否已删除的耗时。
+它会检查 Go 代码、工作流和 setup fixtures、Helm Chart 以及 Shell/Python 校验。它不会部署应用，也不能证明外部 GitHub、GHCR、K3s、Runner、网络或应用凭据可用。
 
 </details>
 
-### 资源测量
-
-<details>
-<summary>收集资源证据</summary>
-
-在可信的部署管理环境中运行只读资源收集器，并将输出放在应用代码本地目录外：
-
-```bash
-python3 scripts/collect-resources.py \
-  --run-id baseline-001 \
-  --output /tmp/previewmesh-resource-evidence \
-  --samples 13 --interval 10 --max-metric-age 60
-```
-
-可以重复传入 `--namespace` 选择指定的受管预览 Namespace；省略时包含所有受管预览。输出目录必须是新目录。收集器不会修改工作负载，并写入 `samples.jsonl` 和 `summary.json`。`--timeout` 限制每个 Kubernetes 请求，`--max-gap` 设置允许积分的最大采样间隔，默认是采样间隔的两倍。
-
-Node CPU 以 cores、内存以 bytes 报告，数据来自近期 metrics 窗口，因此 Node 总量包括系统工作负载和收集开销。预览值要求每个预期容器都有新鲜 metrics，并且 Namespace 身份保持稳定。
-
-汇总积分只使用相邻可用样本之间的梯形面积；更大的间隔保持未覆盖。近期 metrics 窗口重复出现时，它们是保留的观测，不是独立样本。
-
-`helm_release_payload_bytes` 统计内存中的 Kubernetes Secret `data.release` 经 base64 解码后的 payload 字节数，不是 etcd 磁盘用量。`pvc_requested_bytes` 和 `pvc_capacity_bytes` 分别描述 PVC 请求容量和绑定容量，不是文件系统使用量。主机文件系统用量、registry 存储和 volume 文件系统用量无法由此收集器获得。
-
-</details>
-
-### 可重复评估运行
-
-只读资源收集器可以和
-[`scripts/experiment_runner.py`](scripts/experiment_runner.py) 配合，用于执行
-或收集重复的工作流运行。Runner 配置和证据必须放在本 checkout 之外；配置
-包含可信的私有 control 身份，证据可能包含工作流和 Kubernetes 输出。
-
-```bash
-python3 scripts/experiment_runner.py run \
-  --config /private/config/experiment.json \
-  --evidence-root /private/evidence/previewmesh \
-  --scenario create --repetitions 20 --concurrency 1 --dry-run
-python3 scripts/experiment_runner.py validate /private/evidence/previewmesh
-python3 scripts/evaluation_matrix.py /private/config/evaluation-matrix.json
-```
-
-运行记录保留不可变的源码和镜像身份、conditions、阶段 timing、missing
-measurement 原因、生命周期完整性、清理状态和证据 manifest。Unsupported 或
-invalid 运行仍会以明确原因保留，不会静默从数据集中删除。完整的记录和
-保留流程请运行 `--help` 查看。
-
-新的 deployment evidence 会分别记录 scheduling、image pull、container
-start、Pod readiness、Service readiness 和 Ingress readiness timing。只有旧的
-合并 readiness stage 的历史 artifact 会保持 `partial` 或 `unavailable`，不
-会补造时间边界。
-
-PreviewMesh 不执行应用级测试。每条新的运行记录会将 `source-ci` 标为外部
-test owner，并把 `observed`、`unavailable` 或 `not_applicable` 的 test evidence
-与 deployment/HTTP outcome 分开报告。
-
-`previewmesh` HTTP verifier 会在私有 result artifact 旁写入
-`http-polls.jsonl`，每个 poll 一行隐私安全的 JSON，包含 UTC 边界、状态码、
-status/SHA 检查、延迟和有限的失败代码；不会保留响应 body 或 URL。
-`scripts/evaluation_summary.py` 只有在该文件存在时才统计失败请求，否则会将
-request-level evidence 标记为 unavailable。
-
-在验证 Runner 后，可以使用
-[`scripts/evaluation_freeze.py`](scripts/evaluation_freeze.py) 在新的私有
-冻结目录中保存 public/control revision、工具版本、资源默认值、镜像存储
-方式、评估项目版本和只读集群容量。缺少集群权限时会生成带有明确限制的
-partial freeze。
-
-### 生成汇总分析报告
-
-选定并验证准确的私有运行记录后，在本仓库之外生成隐私安全的汇总报告：
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report.py \
-  /private/evidence/frozen-selected-records \
-  --output-dir /private/evidence/analysis-report
-```
-
-位置参数可以是一个或多个 `run-record.json` 文件或证据目录；工具会递归
-发现记录，并按记录身份去重。输出目录包含 `analysis.json`、`report.md`、
-`timing-statistics.csv`、`comparisons.csv`、`resource-statistics.csv`、
-`reliability.csv`、`charts/timing-phases.svg`、
-`charts/project-size-total-feedback.svg`、
-`charts/concurrency-total-feedback.svg` 和
-`charts/failure-scenarios-total-feedback.svg`。报告按 `project_size`、
-`concurrency`、`outcome` 和 `failure_scenario` 分组。failure scenario 优先
-使用非 `none` 的 `conditions.failure_type`，否则使用失败记录的
-`failure_trigger`，再否则使用 `none`。新的运行记录还会保存
-`failure_evidence`；如果请求的故障类型没有观察到触发证据，则分组为
-`unknown`。这是记录证据边界，不代表每种故障都已经完成受控注入测试。
-
-记录会在不要求 measurement 的情况下验证。失败的生命周期记录仍保留在
-success/failure 分析 cohort 中；unsupported 和 invalid 记录仍保留在输入
-证据中，并以排除类别报告，不进入生命周期分母。缺失或格式错误的
-measurement 会计数但不参与统计；`not_applicable` 值单独计数，也不参与统计，
-两者都不会被转换成零。默认 small-sample 阈值是五个观测值；少于两个观测
-值时不提供 sample standard deviation。重点回归命令是：
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report_test.py
-```
-
-### 恢复中断的清理
-
-<details>
-<summary>检查并重试清理</summary>
-
-先在私有部署管理本地目录根部构建 CLI。使用与工作流相同的 kubeconfig 和登记身份；同一 PR 的所有部署必须串行进行恢复。重试前确认 PR 应保持关闭，因为这些低级命令不会检查 GitHub 状态：
-
-```bash
-go build -o /tmp/previewmesh ./cmd/previewmesh
-
-# Inspect without changing resources; save the original Namespace UID before cleanup.
-/tmp/previewmesh cleanup-inspect \
-  --repository-id "$REPOSITORY_ID" --pr "$PR_NUMBER" \
-  --source-repository "$SOURCE_REPOSITORY" \
-  --result-file /tmp/cleanup-before.json
-
-# Use the original UID from cleanup_inspection.namespace_uid or saved pre-cleanup evidence.
-/tmp/previewmesh cleanup-retry \
-  --repository-id "$REPOSITORY_ID" --pr "$PR_NUMBER" \
-  --source-repository "$SOURCE_REPOSITORY" \
-  --namespace-uid "$ORIGINAL_NAMESPACE_UID" \
-  --cleanup-attempts 3 --timeout 30s \
-  --result-file /tmp/cleanup-recovery.json
-```
-
-`cleanup-retry` 会执行 1–10 次尝试（默认 3 次），每次重新检查归属，并发送绑定 Namespace UID 的删除请求。中断后重跑时必须保留原 UID；不要替换成新 Namespace 的 UID。它不会删除 finalizer，也不会创建资源。每个外部调用都有自己的 `--timeout`，这不是整个命令的总时限。即使后续尝试成功，失败尝试仍会保存在 `cleanup_recovery.attempts` 中。成功必须确认 Namespace 已不存在；API 错误或重试耗尽会以非零状态退出，最后一次 inspection 失败也会以非零状态退出。
-
-正常的 `scripts/local-attempt.sh` cleanup 在第一次失败后会使用同一 Runner
-凭据刚刚读取的 Namespace UID 执行有界重试。如果无法读取该 UID，流程会安全
-失败，不会猜测要删除的身份。
-
-`cleanup-inspect` 会发现所有可列举的 namespaced resource 类型，并在目标 Namespace 内不依赖 label 过滤地建立清单，包括 Helm history、无 label 对象、删除时间戳和 finalizer。JSON 只包含资源元数据。`cleanup_inspection.state` 为 `remaining`、`confirmed_absent` 或 `incomplete`：inspection 成功且为 `remaining`，只表示清单已完成，不表示清理成功。正常 cleanup 结果也会记录删除后的 absence boundary，但因为 Namespace 已删除而标记 `inventory_complete=false`；`duplicate_count` 只有完整 inventory 才会标为 observed，`orphan_count` 以及 cluster-scoped、registry、volume filesystem 和外部范围在独立测量前保持 unavailable。
-
-被禁止的列表、发现失败或 inspection 期间 Namespace 发生变化，会生成 `incomplete` 报告并以非零状态退出。受限 Runner 凭据可能无法访问某些发现出的类型；已经完成的列表会与错误一起保留。检查范围只有目标 Namespace。集群级存储、其他 Namespace、registry 镜像和外部资源需要单独检查。临时文件可能很快丢失，请安全保管结果 JSON 和可选的 `--evidence` CSV。
-
-</details>
-
-## 项目地图
-
-本地图覆盖没有被 `.gitignore` 匹配的项目文件。仅供本机使用的文档、
-证据、凭据、生成的二进制文件和运行时状态不在地图范围内。地图描述的是
-维护中的文件关系，不是编译器生成的完整调用图。
-
-本地图背后的工具调研见
-[`PROJECT_MAP_TOOL_RESEARCH.md`](PROJECT_MAP_TOOL_RESEARCH.md)。调研结论是：
-没有一个成熟工具能同时理解本项目使用的全部语言和配置格式。实际可行的
-方法是组合语言/领域专用分析工具，再人工审核文件职责和关系。
-
-```mermaid
-flowchart LR
-    setup["scripts/setup.sh<br/>scripts/setup.py"] --> config["config/setup.example.ini<br/>config/repositories.json"]
-    setup --> ops["ops/kubernetes<br/>ops/wsl"]
-    setup --> notify["templates/source-notify.yml"]
-    notify --> workflow[".github/workflows/preview.yml"]
-    workflow --> control["cmd/control"]
-    workflow --> local["scripts/local-attempt.sh"]
-    local --> preview["cmd/previewmesh"]
-    preview --> chart["charts/preview"]
-    preview --> k8s["K3s / Helm / Traefik"]
-    control --> record["internal/statusrecord"]
-    preview --> report["scripts/report.py"]
-    analysis["scripts/analysis_report.py"] --> analysis_outputs["analysis.json / CSV / SVG / report.md"]
-    verify["scripts/verify-local.sh"] --> checks["Go tests / check-*.py / actionlint / helm lint"]
-```
-
-### 根目录和自动化
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `.github/actionlint.yaml` | `actionlint` 使用的配置，声明 PreviewMesh 自托管 Runner 标签。 |
-| `.github/workflows/preview.yml` | 主生命周期工作流：编译两个 Go CLI，校验登记和 PR，调用 `scripts/local-attempt.sh`，最后运行 `scripts/report.py`。 |
-| `.github/workflows/update-upstream.yml` | 定时/手动上游同步工作流：调用 `scripts/update-upstream.sh`，运行检查并创建更新 PR。 |
-| `.gitignore` | 定义不属于公开项目地图的本地、私有、生成和运行时路径。 |
-| `LICENSE` | MIT 许可证，不参与运行时。 |
-| `README.md` | 英文产品、安装、工作流、CLI、运维和项目地图说明。 |
-| `README_CN.md` | `README.md` 的中文对应版本，保持相同的项目边界和地图。 |
-| `PROJECT_MAP_TOOL_RESEARCH.md` | 关于成熟项目地图工具的官方资料调研。 |
-| `go.mod` | 声明 `previewmesh` Go 模块，供两个 CLI 和 `internal/statusrecord` 使用。 |
-
-### `charts/preview/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `charts/preview/Chart.yaml` | Helm Chart 元数据，由 `cmd/previewmesh` 的部署阶段使用。 |
-| `charts/preview/values.yaml` | 安全示例默认值；真实镜像、提交 SHA、端口、主机名和资源值由 `cmd/previewmesh deploy` 提供。 |
-| `charts/preview/values.schema.json` | 在 Helm 渲染前校验 digest 镜像、完整提交 SHA、端口、主机名和资源值。 |
-| `charts/preview/templates/_helpers.tpl` | 供资源模板共用的名称、标签和 selector 辅助模板。 |
-| `charts/preview/templates/deployment.yaml` | 创建非 root 应用 Deployment，设置 `PREVIEW_COMMIT_SHA` 并探测 `/health`。 |
-| `charts/preview/templates/service.yaml` | 创建选择 Deployment 的内部 ClusterIP Service。 |
-| `charts/preview/templates/ingress.yaml` | 创建 Traefik Ingress，把预览主机名映射到 Service。 |
-| `charts/preview/templates/configmap.yaml` | 向 Pod 提供不可变的请求 commit SHA 和受支持的 `simple` project-size 范围。 |
-| `charts/preview/templates/resourcequota.yaml` | 为每个 preview 应用可配置的 CPU、memory、Pod 和对象数量限制。 |
-| `charts/preview/templates/serviceaccount.yaml` | 创建 preview 专属 ServiceAccount，默认关闭 token automount。 |
-| `charts/preview/templates/role.yaml` | 默认创建空的 Namespace 级 Role；应用权限必须单独审核后显式配置。 |
-| `charts/preview/templates/rolebinding.yaml` | 只将 preview ServiceAccount 绑定到本 Namespace 的 Role。 |
-
-Chart 有意不渲染 PVC、volume 或多个应用 Deployment/Service。这些功能仍在
-受支持的单服务 PreviewMesh contract 之外；如果未来加入，必须新增
-project-size 范围、清理 inventory、storage measurement 和 live fixture evidence。
-
-### `cmd/control/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `cmd/control/main.go` | 可信控制 CLI：`resolve` 读取 `config/repositories.json`；`inspect` 通过 GitHub 校验仓库、PR、fork 和作者权限；`status` 发布 Commit Status 与 PR 反馈。 |
-| `cmd/control/report.go` | 使用 `internal/statusrecord` 将部署/清理观察结果转换成受控 Markdown 证据。 |
-| `cmd/control/main_test.go` | 测试精确登记匹配、PR 策略、重复通知和报告失败。 |
-| `cmd/control/report_test.go` | 测试证据表、未知结果和 Markdown 转义。 |
-| `cmd/control/statusrecord_test.go` | 测试结构化证据标记与状态、SHA、仓库、PR、作者的关联。 |
-
-### `cmd/previewmesh/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `cmd/previewmesh/main.go` | 预览 CLI 编排：build、deploy、verify、cleanup、清理重试/盘点、Namespace 归属、Helm、就绪检查、HTTP 验证、回滚和结构化证据；渲染 `charts/preview`。 |
-| `cmd/previewmesh/cleanup.go` | 安全清理重试和 namespaced 资源完整盘点；只记录元数据，不暴露 Secret 内容。 |
-| `cmd/previewmesh/observations.go` | 只读采集 Deployment、Pod、Service、Ingress 快照，供结果和 `cmd/control/report.go` 使用。 |
-| `cmd/previewmesh/preflight.go` | 应用源码预检：Git 干净状态、Dockerfile 和契约检查，可选临时容器验证及受控 findings。 |
-| `cmd/previewmesh/status.go` | 通过 `gh` 只读查询 PR、Commit Status、分页评论和 `internal/statusrecord` 证据，计算 running、ready、failure、removed、expired 等状态；不查询 Kubernetes。 |
-| `cmd/previewmesh/main_test.go` | 测试参数安全、健康/SHA、就绪检查、部署失败、回滚、清理证据和域名约束。 |
-| `cmd/previewmesh/cleanup_test.go` | 测试中断清理、Namespace 替换、UID 冲突、API/权限失败和跨进程重试。 |
-| `cmd/previewmesh/observations_test.go` | 测试运行时摘要，以及 HTTP 成功与提交身份已核验的区别。 |
-| `cmd/previewmesh/preflight_test.go` | 测试静态 blocker/warning、忽略文件、凭据脱敏、临时 Docker 清理和检查期间源码变化。 |
-| `cmd/previewmesh/status_test.go` | 测试成功、失败、缺失、pending、过期、关闭/合并、分页和错误关联的状态证据。 |
-
-### `internal/statusrecord/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `internal/statusrecord/record.go` | PR 证据和阶段计时的无凭据共享格式与标记。由 `cmd/control` 写入，由 `cmd/previewmesh/status.go` 读取。 |
-
-### `config/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `config/repositories.example.json` | 私有控制仓库登记格式示例：仓库 ID、源码名称、应用端口和 Secret 名。 |
-| `config/repositories.json` | 当前公开登记文件，内容为空；私有 control checkout 为 `cmd/control`、安装检查和 Secret 配置提供真实登记。 |
-| `config/setup.example.ini` | 安装配置模板，定义 control/source 仓库、目录、网络、域名、端口和 Token 文件路径；不保存 Token 明文。 |
-
-### `ops/install/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `ops/install/access.md` | 预览访问规范：URL、18080 端口、DNS/hosts、WSL LAN、Traefik 检查和 `/health`。 |
-| `ops/install/manual.md` | 英文手工安装路径，串联 RBAC、K3s、Traefik、Secret、源码通知、检查和清理。 |
-| `ops/install/manual_CN.md` | `manual.md` 的中文版本。 |
-
-### `ops/kubernetes/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `ops/kubernetes/README.md` | 解释自托管 Runner 的 Kubernetes 安全边界和受限 kubeconfig，关联 `runner-rbac.yaml`、`configure-runner.py` 和安装器。 |
-| `ops/kubernetes/runner-rbac.yaml` | 创建 Runner Namespace、ServiceAccount、ClusterRole 和绑定；允许管理预览资源，但不允许 cluster-admin、Pod 日志或 Pod exec。 |
-| `ops/kubernetes/traefik-helmchartconfig.yaml` | 让 Traefik 保持 ClusterIP 并发布本地 Ingress 地址；由安装器应用并供 WSL 入口使用。 |
-
-### `ops/wsl/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `ops/wsl/check-ingress.ps1` | Windows 侧诊断，验证 localhost:18080 对未知主机返回预期 Traefik 404。 |
-| `ops/wsl/docker-egress-ports.sh` | 在支持的 WSL mirrored 网络场景为 Docker bridge 出口添加幂等 TCP MASQUERADE 规则。 |
-| `ops/wsl/docker-egress.md` | 说明 Docker 出口辅助脚本的适用条件、安装和移除。 |
-| `ops/wsl/ingress.env.example` | 入口服务使用的 Traefik ClusterIP 占位配置。 |
-| `ops/wsl/previewmesh-docker-egress.service` | 开机运行 Docker 出口辅助脚本的 systemd oneshot 单元。 |
-| `ops/wsl/previewmesh-ingress.service` | 先准备 WSL 路由，再把本地入口转发到 Traefik 的 socket proxy 服务。 |
-| `ops/wsl/previewmesh-ingress.socket` | 监听 `127.0.0.1:18080` 并把连接交给入口服务。 |
-| `ops/wsl/setup-lan.ps1` | Windows 侧 LAN 转发、防火墙、WSL 网络和计划任务的安装/刷新/检查逻辑，由 `scripts/setup.py` 调用。 |
-
-### `scripts/`
-
-这些脚本分为验证、安装/运行编排和报告三类。除非描述明确要求真实集群，
-`check-*` 文件通常使用替身或 fixture。
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `scripts/check-cleanup.py` | 离线回归可选择清理、dry-run、Token 保留和安装归属冲突。 |
-| `scripts/check-environment.sh` | 只读检查本地、集群、Runner 和开发环境工具/版本。 |
-| `scripts/check-github-secrets.py` | 用假 `gh` 检查 Secret 路由、重复保护、隐藏输入和上传失败。 |
-| `scripts/check-installer.py` | 安装器离线测试套件，覆盖配置、凭据、断点、GitHub/K3s/Traefik/WSL/Runner、下载和维护边界。 |
-| `scripts/check-notification.mjs` | 从 `templates/source-notify.yml` 提取 GitHub Script，在内存中测试重复事件派发。 |
-| `scripts/check-onboard-source.py` | 模拟 GitHub API，验证 `setup_onboard.py` 只修改通知工作流。 |
-| `scripts/check-repeated-deploy.py` | 真实集群上的重复部署/缺资源检查，验证归属、Helm values、资源身份和恢复；修复模式会主动删除选定预览资源。 |
-| `scripts/check-repeated-deploy_test.py` | 重复资源检测的离线测试。 |
-| `scripts/check-setup-ui.py` | 测试终端 UI、fallback 和 bootstrap 适配层。 |
-| `scripts/check-setup-wizard.py` | 测试向导发现、输入、草稿、语言、网络和端口逻辑。 |
-| `scripts/check-setup.py` | 用假工具检查受限 kubeconfig、凭据保护、版本检查和退出码传递。 |
-| `scripts/check-windows-setup.ps1` | 用 PowerShell AST 离线检查 `ops/wsl/setup-lan.ps1` 的 Windows/WSL/UAC、计划任务、网络和结果分支。 |
-| `scripts/check-workflow.py` | 工作流级离线回归，使用真实 Go 构建和 Docker/Helm/kubectl/部署/清理/派发/报告替身。 |
-| `scripts/cleanup.py` | 选择性清理实现，处理配置、Token、安装状态、服务、Runner 痕迹和 PreviewMesh 资源，支持 dry-run 和确认。 |
-| `scripts/cleanup.sh` | 不依赖当前目录、启动 `cleanup.py` 的 Bash 包装器。 |
-| `scripts/collect-resources.py` | 只读采集 Kubernetes metrics、托管 Namespace、Helm payload 和 PVC 测量值，写出私有 JSONL 与汇总。 |
-| `scripts/collect-resources_test.py` | 测试数量解析、metric 新鲜度、Namespace 身份变化、存储测量、并发采样和输出权限。 |
-| `scripts/experiment_runner.py` | 派发或收集重复工作流运行，归档私有产物，写入版本化运行记录，并验证缺失 measurement 和生命周期完整性。 |
-| `scripts/analysis_report.py` | 读取已验证的私有运行记录，生成隐私安全的 JSON、CSV、Markdown 和 SVG 汇总分析；保留 missing、not-applicable、unsupported 和 small-sample 分类。 |
-| `scripts/analysis_report_test.py` | 对描述性统计、保留/排除策略、缺失值、小样本、对比维度和输出文件进行确定性的重点测试。 |
-| `scripts/evaluation_matrix.py` | 在开始评估前校验 project-size、revision、failure、重复次数、镜像策略和阶梯 concurrency 条件。 |
-| `scripts/evaluation_freeze.py` | 写入私有评估冻结、选定记录清单、工具/配置元数据和完整性摘要，不把私有证据复制到本 checkout。 |
-| `scripts/evaluation_summary.py` | 从保留的运行记录生成汇总评估结果，同时保留 missing 和 unsupported 分类。 |
-| `scripts/evidence_audit.py` | 审核保留证据的完整性，报告有界的状态和排除类别。 |
-| `scripts/preliminary_report.py` | 从选定证据生成汇总初步评估报告，不暴露记录身份。 |
-| `scripts/configure-github-secrets.sh` | 读取登记并隐藏收集 Token，把源码 Token 写入 control，把 dispatch Token 写入源码仓库，把 GHCR Token 写入 control。 |
-| `scripts/configure-runner.py` | 从管理员 K3s 权限生成/续期受限 Runner kubeconfig，验证权限并原子替换受保护文件。 |
-| `scripts/create-control-repository.sh` | 从公开 checkout 创建私有 control 仓库、配置 remote 并推送初始内容。 |
-| `scripts/local-attempt.sh` | 本地 Runner 编排器：resolve/inspect PR，选择 deploy 或 cleanup，处理旧 SHA/关闭 PR 并发布最终证据。 |
-| `scripts/report.py` | 合并 build/local 产物、阶段 CSV 和可选 GitHub 时间数据，生成 `summary.json`、合并 CSV 和工作流摘要。 |
-| `scripts/setup.py` | 安装器核心，协调依赖、私有 control checkout、Secret、K3s/RBAC、Runner、网络、源码通知、GitHub 自动化和 doctor 阶段。 |
-| `scripts/setup.sh` | Shell 入口：解析命令、准备可选 UI Python 并进入 `setup.py`；cleanup 转给 `cleanup.sh`。 |
-| `scripts/setup_config.py` | INI 模型和安全 I/O，校验仓库、目录、网络、端口和 Token 路径，读取受保护 Token 并合并登记。 |
-| `scripts/setup_downloads.py` | 解析官方工具/Runner 发行版，HTTPS 下载、SHA-256 校验和安全解包。 |
-| `scripts/setup_ingress_route.py` | 特权 WSL mirrored 网络辅助程序，等待 bridge 并准备到 Traefik 的私有路由。 |
-| `scripts/setup_language.py` | 安装器和向导共用的中英文选择。 |
-| `scripts/setup_maintenance.py` | root 管理的维护进程，续期 Runner 凭据、刷新 Traefik 端点、维护专用防火墙链，并在写凭据前降权。 |
-| `scripts/setup_onboard.py` | 读取源码默认分支，生成通知工作流差异，可选创建可审核 PR。 |
-| `scripts/setup_resume.py` | 安装断点和摘要校验；复用阶段前检查配置、脚本、模板、运维文件、依赖和产物。 |
-| `scripts/setup_ui.py` | 可选 Rich/Questionary 终端 UI 与纯文本 fallback，不改变安装逻辑。 |
-| `scripts/setup_ui_bootstrap.py` | 创建用户目录下的可选 UI 虚拟环境并安装 `ui-requirements.txt`。 |
-| `scripts/setup_wizard.py` | 无凭据交互式向导，发现仓库、LAN 地址和应用端口，写入已校验配置草稿。 |
-| `scripts/ui-requirements.txt` | Rich 和 Questionary 的可选 UI 依赖约束。 |
-| `scripts/update-upstream.sh` | 将公开上游合并到私有 control checkout，保留私有登记，冲突时停止并创建本地审核分支。 |
-| `scripts/verify-local.sh` | 开发验证入口，调用环境检查、Go test/vet、Python 检查、Bash 语法、Helm lint 和 actionlint。 |
-
-### `templates/`
-
-| 路径 | 职责和关系 |
-| --- | --- |
-| `templates/source-notify.yml` | 复制到各应用源码仓库的工作流，监听 PR 变化，只发送仓库 ID、完整名称和 PR 号到 control；不检出或执行 PR 代码。`setup_onboard.py` 填充其 control 占位符。 |
-
-### 关系边界
-
-主运行链路是：
-
-`templates/source-notify.yml` → 应用源码仓库通知 →
-`.github/workflows/preview.yml` → `cmd/control` 登记/PR 检查 →
-`scripts/local-attempt.sh` → `cmd/previewmesh` → `charts/preview` 和 K3s →
-`scripts/report.py` 以及 `cmd/control` 的状态/评论回写。
-
-安装链路是 `scripts/setup.sh` → `scripts/setup.py` → 配置、断点、下载、
-接入、维护、Kubernetes 和 WSL 辅助程序。验证链路是
-`scripts/verify-local.sh` → Go 测试与 `check-*` fixture，再加 `helm lint`
-和 `actionlint`。
-
-地图不把外部应用 Dockerfile、应用 `/health` 实现、GitHub Secrets、Runner
-登记、正在运行的 K3s 状态或生成的运行证据视为本公开项目文件；它们是系统
-边界外的输入或运行结果。
-
-## 故障排查
-
-先看失败 Job 的日志和部署管理仓库运行摘要。应用通知变绿只代表请求发送成功，`report` 变绿只代表结果收集完成。
-
-| 现象 | 接下来检查什么 |
-| --- | --- |
-| 没有应用通知 | 确认工作流已在应用默认分支上，且已启用 Actions；如果缺少，使用 `onboard-source --create-pr`。Fork PR 会被跳过。对于之前就存在的 PR，推送新提交或按[手动运行说明](ops/install/manual_CN.md#8-运行预览)触发。 |
-| 通知返回 403 或 404 | 检查应用工作流中的部署管理仓库 owner/name、部署管理仓库 `main` 上的 `preview.yml`，以及 dispatch Token 选择的部署管理仓库、Actions 写权限、审批状态和有效期。 |
-| 部署管理 Job 被跳过 | 将部署管理仓库的 Actions variable `PREVIEWMESH_ENABLED` 设为准确的 `true`，并选择 `main` 触发。 |
-| `local` 一直排队 | 确认私有仓库的 Runner 在线，并且有 `self-hosted`、`Linux`、`X64`、`previewmesh` 四个标签。 |
-| 仓库 Runner 下载列表为空或没有 Linux/x64 项 | 阶段 5 会从官方 [`actions/runner` 稳定发行版](https://github.com/actions/runner/releases/latest) 获取匹配的安装包，并在解压前验证 SHA-256。若找不到匹配的版本、架构或校验和，安装器会明确停止。已完成阶段和 `install-state.json` 会保留，修复后重新运行同一条 `install` 命令。 |
-| 登记或 PR 授权失败 | 与部署管理仓库 `main` 上已提交的登记文件核对仓库 ID、owner/name、端口和 `source_secret`。PR 必须来自已登记的应用源码仓库内部，作者需要有写权限。 |
-| 应用本地目录检出失败 | 检查应用 Token 的仓库访问范围、Contents 读取权限、审批状态和有效期。 |
-| 没有状态或 PR 评论 | 检查 `source_secret` 对应的 Token、Commit statuses 和 Pull requests 写权限，以及运行摘要中的回写错误。 |
-| Kubernetes 返回 Unauthorized 或无法读取配置 | 检查 Runner 服务环境中的 `KUBECONFIG`、文件归属和 Token 有效期。先运行 `setup.sh doctor` 并检查 `previewmesh-maintenance.service`；手工安装可按[Runner 说明](ops/install/manual_CN.md#5-配置-k3s-和-runner)续期。 |
-| 镜像推送或拉取失败 | 推送失败时检查部署管理仓库工作流对 Package 的写权限，尤其是已存在的 Package；拉取失败时检查 classic `GHCR_READ_TOKEN`、其用户的 Package 读取权限，以及预览 Namespace 中的 `ghcr-pull` Secret。 |
-| 就绪检查或 HTTP 验证失败 | 如果 Deployment、Pod 和 Service 都已就绪，但 Ingress 就绪检查超时，检查 Traefik 是否已在 Ingress status 中发布地址。WSL 配置中的 HelmChartConfig 应将 `providers.kubernetesIngress.ingressEndpoint.ip` 设为 `127.0.0.1`；应用配置并等待 Traefik rollout 完成。然后按[预览访问说明](ops/install/access.md)检查配置的 DNS/hosts 探测、生成的 URL 和 `/health`。 |
-| Traefik 自定义配置不匹配 | 修改前先查看现有对象：`sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system get helmchartconfig traefik --ignore-not-found -o yaml`。安装器遇到未识别字段时会在 apply 前停止；审核并处理后重新运行同一条 `install` 命令。 |
-| WSL 局域网入口提示配置的地址不存在或已变化 | 执行 `bash scripts/setup.sh init`，选择 WSL，确认向导重新发现的 Windows 主机局域网 IPv4，或手动填写当前地址，然后重新运行原来那条 `install` 命令。 |
-| Mirrored WSL 可以访问 loopback，但不能访问 Windows 局域网地址 | 在 `%UserProfile%\.wslconfig` 中合并下面的设置并保留已有设置：`[experimental]` 和 `hostAddressLoopback=true`。保存 WSL 中的工作后，在 Windows PowerShell 执行 `wsl --shutdown`（会停止所有发行版），重新打开 Ubuntu，再运行同一条 `install` 命令。此设置只适用于 mirrored 模式。 |
-| Windows 报告当前网络为“公用” | 仅在可信的家庭或办公局域网中，打开 Windows **设置 → 网络和 Internet → 当前连接 → 属性**，将**网络配置文件**设为**专用**，再重新运行同一条 `install` 命令。安装器支持“专用”和“域”网络，不会自动把“公用”网络改为受信任网络，也不会削弱防火墙保护。 |
-| Windows 管理员步骤失败 | 查看终端显示的提权子进程错误，并查看 `~/.local/share/previewmesh/setup.log` 中的脱敏日志。按提示处理地址、网络 Profile、WSL 或转发问题后，重新运行同一条 `install` 命令。 |
-| Runner 验证通过，但浏览器打不开 | 从浏览器所在机器按[预览访问说明](ops/install/access.md)检查，再运行 `setup.sh doctor`。如果局域网地址或后缀改变，请重新安装并重新部署开放的 PR；旧 URL 不会迁移。 |
-| PR 关闭后预览仍存在 | 找到 `closed` 通知并等待对应部署管理仓库运行完成。如果通知失败，修复后手动触发这个已关闭 PR，重试清理。 |
-| 更新工作流无法创建 PR | 检查更新章节中的 Actions PR 创建权限，或者自行推送生成的分支并创建 PR。 |
-
-如果在 WSL 中手动构建 Docker 镜像时遇到容器网络问题，参见可选的 [WSL 出站网络配置](ops/wsl/docker-egress.md)。
+## 相关文档
+
+- [预览访问](ops/install/access.md) — DNS、hosts 文件、WSL/LAN 访问、`18080` 端口和 `/health` 验证。
+- [手动安装](ops/install/manual.md) — 不适合使用引导式安装时的基础设施流程。
+- [Kubernetes Runner 访问](ops/kubernetes/README.md) — 受限 kubeconfig 和 RBAC 边界。
+- [预览生命周期验证](ops/verification/preview-lifecycle.md) — 运行生命周期和清理检查。
