@@ -77,6 +77,8 @@ STORAGE_BOUNDARIES = {
         'reason': 'unavailable when Helm Secret listing or payload parsing fails',
     },
 }
+CAPACITY_SCHEMA_VERSION = 1
+BASELINE_KINDS = {'idle', 'preview-workload', 'mixed', 'unknown'}
 MANAGED_LABEL = 'previewmesh.local/managed-by'
 UNITS = {
     'cpu_cores': 'core', 'memory_bytes': 'byte',
@@ -141,11 +143,40 @@ def duration_seconds(value):
 
 
 class Collector:
-    def __init__(self, run_id, namespaces=(), timeout=10, max_age=60):
+    def __init__(self, run_id, namespaces=(), timeout=10, max_age=60, baseline_kind='unknown'):
         self.run_id = run_id
         self.namespaces = set(namespaces)
         self.timeout = timeout
         self.max_age = max_age
+        self.baseline_kind = baseline_kind if baseline_kind in BASELINE_KINDS else 'unknown'
+
+    def cluster_capacity(self, nodes):
+        """Read allocatable capacity without treating it as preview capacity."""
+        if not nodes:
+            return {
+                'schema_version': CAPACITY_SCHEMA_VERSION,
+                'availability': 'unavailable',
+                'reason': 'node inventory was empty',
+            }
+        try:
+            cpu = sum(quantity(node['status']['allocatable']['cpu']) for node in nodes)
+            memory = sum(quantity(node['status']['allocatable']['memory']) for node in nodes)
+        except (KeyError, TypeError, ValueError):
+            return {
+                'schema_version': CAPACITY_SCHEMA_VERSION,
+                'availability': 'unavailable',
+                'reason': 'node allocatable capacity was missing or invalid',
+            }
+        return {
+            'schema_version': CAPACITY_SCHEMA_VERSION,
+            'availability': 'observed',
+            'node_count': len(nodes),
+            'allocatable_cpu_cores': {'value': cpu, 'unit': 'core'},
+            'allocatable_memory_bytes': {'value': memory, 'unit': 'byte'},
+            'source': 'node.status.allocatable',
+            'permission': 'node list/get access',
+            'window': 'point-in-time cluster observation',
+        }
 
     def query(self, *arguments):
         # Raw responses, including Helm Secrets, stay in memory and are never archived.
@@ -249,22 +280,34 @@ class Collector:
             return {'schema_version': SCHEMA_VERSION, 'run_id': self.run_id,
                     'started_at_utc': utc_now(), 'ended_at_utc': utc_now(),
                     'elapsed_seconds': elapsed_seconds, 'scopes': {}, 'errors': [error],
-                    'managed_namespace_count': error, 'running_preview_count': error}
+                    'managed_namespace_count': error, 'running_preview_count': error,
+                    'baseline_kind': self.baseline_kind,
+                    'cluster_capacity': {
+                        'schema_version': CAPACITY_SCHEMA_VERSION,
+                        'availability': 'unavailable',
+                        'reason': 'sample structure was invalid',
+                    }}
 
     def _sample(self, elapsed_seconds):
         sample = {'schema_version': SCHEMA_VERSION, 'run_id': self.run_id,
                   'started_at_utc': utc_now(), 'elapsed_seconds': elapsed_seconds,
-                  'scopes': {}, 'errors': []}
+                  'scopes': {}, 'errors': [], 'baseline_kind': self.baseline_kind}
         scopes = sample['scopes']
         nodes, nodes_error = self.listing('get', 'nodes', '-o', 'json')
         metrics, metrics_error = self.listing('get', '--raw', '/apis/metrics.k8s.io/v1beta1/nodes')
         error = nodes_error or metrics_error
         if error:
             cpu = memory = error
+            capacity = {'schema_version': CAPACITY_SCHEMA_VERSION,
+                        'availability': 'unavailable',
+                        'reason': error['reason']}
         elif not nodes:
             cpu = memory = unavailable('No nodes returned', 'incomplete_inventory')
+            capacity = self.cluster_capacity(nodes)
         else:
             cpu, memory = self.metric_usage(metrics, [n['metadata']['name'] for n in nodes], datetime.now(timezone.utc))
+            capacity = self.cluster_capacity(nodes)
+        sample['cluster_capacity'] = capacity
         scopes['cluster'] = {'identity': {'scope': 'cluster'}, 'measurements': {
             'cpu_cores': cpu, 'memory_bytes': memory,
             'host_disk_used_bytes': unavailable('Host filesystem measurement requires a separate collector', 'unsupported'),
@@ -337,6 +380,37 @@ def summarize(samples, interval, max_gap):
                               'Helm payload sizes exclude object metadata, database and filesystem overhead.',
                               'PVC requested/provisioned capacity is not filesystem usage.',
                               'Repeated recent metrics windows are retained, not independent observations.']}
+    baseline_kinds = {sample.get('baseline_kind', 'unknown') for sample in samples}
+    result['baseline_kind'] = baseline_kinds.pop() if len(baseline_kinds) == 1 else 'mixed'
+    capacities = [sample.get('cluster_capacity', {}) for sample in samples]
+    observed_capacities = [capacity for capacity in capacities
+                           if capacity.get('availability') == 'observed']
+    if not observed_capacities:
+        result['cluster_capacity'] = {
+            'schema_version': CAPACITY_SCHEMA_VERSION,
+            'availability': 'unavailable',
+            'observations': len(capacities),
+            'observed_observations': 0,
+            'reason': 'node allocatable capacity was unavailable for every sample',
+        }
+    else:
+        cpu_values = [capacity['allocatable_cpu_cores']['value'] for capacity in observed_capacities]
+        memory_values = [capacity['allocatable_memory_bytes']['value'] for capacity in observed_capacities]
+        node_values = [capacity['node_count'] for capacity in observed_capacities]
+        result['cluster_capacity'] = {
+            'schema_version': CAPACITY_SCHEMA_VERSION,
+            'availability': 'observed' if len(observed_capacities) == len(capacities) else 'partial',
+            'observations': len(capacities),
+            'observed_observations': len(observed_capacities),
+            'node_count': {'minimum': min(node_values), 'maximum': max(node_values)},
+            'allocatable_cpu_cores': {
+                'minimum': min(cpu_values), 'maximum': max(cpu_values), 'unit': 'core'},
+            'allocatable_memory_bytes': {
+                'minimum': min(memory_values), 'maximum': max(memory_values), 'unit': 'byte'},
+            'source': 'node.status.allocatable',
+            'permission': 'node list/get access',
+            'window': 'point-in-time values across the resource collection window',
+        }
     for count in ('managed_namespace_count', 'running_preview_count'):
         available = [s[count]['value'] for s in samples if s.get(count, {}).get('available')]
         result[f'max_observed_{count}'] = max(available) if available else None
@@ -411,6 +485,8 @@ def main():
     parser.add_argument('--timeout', type=positive, default=10)
     parser.add_argument('--max-metric-age', type=positive, default=60)
     parser.add_argument('--max-gap', type=positive, help='Largest integrable gap; default: twice interval')
+    parser.add_argument('--baseline-kind', choices=sorted(BASELINE_KINDS), default='unknown',
+                        help='Declared workload baseline for attribution; default: unknown')
     args = parser.parse_args()
     if args.samples < 2 or not args.run_id.strip():
         parser.error('at least two samples and a nonempty run ID are required')
@@ -422,7 +498,8 @@ def main():
         parser.error('sampling duration is too large')
     os.umask(0o077)
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    collector = Collector(args.run_id, args.namespace, args.timeout, args.max_metric_age)
+    collector = Collector(args.run_id, args.namespace, args.timeout, args.max_metric_age,
+                           args.baseline_kind)
     samples, start = [], time.monotonic()
     interrupted = False
     try:

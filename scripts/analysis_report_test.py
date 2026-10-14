@@ -272,6 +272,12 @@ class AnalysisReportTests(unittest.TestCase):
                     "reason": "host filesystem measurement requires a separate collector",
                 }
             }
+            document["metrics"]["baseline_kind"] = "idle"
+            document["metrics"]["cluster_capacity"] = {
+                "availability": "observed",
+                "allocatable_cpu_cores": {"maximum": 2, "unit": "core"},
+                "allocatable_memory_bytes": {"maximum": 4 * 1024 ** 3, "unit": "byte"},
+            }
             write_record(root, "storage", document)
 
             report = REPORT.analyze([root], small_sample_threshold=1)
@@ -279,6 +285,8 @@ class AnalysisReportTests(unittest.TestCase):
             boundary = report["definitions"]["storage_boundaries"]["host_disk_bytes"]
             self.assertEqual(boundary["availability"], "unsupported")
             self.assertNotIn("value", boundary)
+            self.assertEqual(report["capacity"]["availability"], "observed")
+            self.assertEqual(report["capacity"]["baseline_kinds"], ["idle"])
 
     def test_small_sample_flag_and_warning_are_explicit(self):
         with tempfile.TemporaryDirectory() as temporary:

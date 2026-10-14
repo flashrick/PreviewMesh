@@ -293,6 +293,47 @@ def _resource_summaries(record_path):
     return summaries
 
 
+def _capacity_number(document, field):
+    value = document.get(field) if isinstance(document, dict) else None
+    if isinstance(value, dict):
+        direct = _number(value.get("value"))
+        if direct is not None:
+            return direct
+        values = [_number(value.get(key)) for key in ("minimum", "maximum")]
+        values = [item for item in values if item is not None]
+        return max(values) if values else None
+    return _number(value)
+
+
+def _capacity_summary(records):
+    observations = []
+    baseline_kinds = set()
+    for _, record in records:
+        metrics = record.get("metrics") or {}
+        baseline = metrics.get("baseline_kind")
+        if isinstance(baseline, str) and baseline:
+            baseline_kinds.add(baseline)
+        capacity = metrics.get("cluster_capacity")
+        if isinstance(capacity, dict):
+            observations.append(capacity)
+    observed = [item for item in observations if item.get("availability") == "observed"]
+    result = {
+        "availability": "observed" if observations and len(observed) == len(observations) else
+        "partial" if observed else "unavailable",
+        "records": len(observations),
+        "observed_records": len(observed),
+        "baseline_kinds": sorted(baseline_kinds),
+    }
+    for field, unit in (("allocatable_cpu_cores", "core"), ("allocatable_memory_bytes", "byte")):
+        values = [_capacity_number(item, field) for item in observed]
+        values = [value for value in values if value is not None]
+        if values:
+            result[field] = {"minimum": min(values), "maximum": max(values), "unit": unit}
+    if result["availability"] != "observed":
+        result["reason"] = "cluster allocatable capacity was missing or incomplete for selected records"
+    return result
+
+
 def _find_numeric(document, names):
     if isinstance(document, dict):
         for name in names:
@@ -401,6 +442,7 @@ def _resource_summary(records):
         "by_scope": by_scope,
         "unsupported": sorted(unsupported),
         "storage_boundaries": storage_boundaries,
+        "cluster_capacity": _capacity_summary(records),
         "observed_running_high_water": max(running_high_water) if running_high_water else None,
         "observed_managed_high_water": max(managed_high_water) if managed_high_water else None,
     }
@@ -575,6 +617,13 @@ def _concurrency_breakdown(records):
                 "actual_overlap": overlap,
                 "actual_overlap_availability": overlap_availability,
                 "actual_overlap_reason": overlap_reason,
+                "capacity": resources["cluster_capacity"] if resources else {
+                    "availability": "unavailable",
+                    "records": 0,
+                    "observed_records": 0,
+                    "baseline_kinds": [],
+                    "reason": "no records were selected for this concurrency level",
+                },
                 "status": status,
             }
         )
@@ -659,15 +708,18 @@ def summarize(paths):
             "by_scope": resources["by_scope"],
             "unsupported": resources["unsupported"],
             "storage_boundaries": resources["storage_boundaries"],
+            "cluster_capacity": resources["cluster_capacity"],
         },
         "concurrency": {
             "planned": max(planned) if planned else None,
             "planned_availability": "observed" if planned else "unavailable",
             "observed_running_high_water": resources["observed_running_high_water"],
             "observed_managed_high_water": resources["observed_managed_high_water"],
-            "capacity": None,
-            "capacity_availability": "unavailable",
-            "capacity_reason": "the selected runs do not establish cluster capacity",
+            "capacity": resources["cluster_capacity"],
+            "capacity_availability": resources["cluster_capacity"]["availability"] if resources else "unavailable",
+            "capacity_reason": resources["cluster_capacity"].get(
+                "reason", "cluster allocatable capacity was observed separately from preview usage"
+            ) if resources else "the selected runs do not establish cluster capacity",
             "actual_overlap": actual_overlap,
             "actual_overlap_availability": overlap_availability,
             "actual_overlap_reason": overlap_reason,

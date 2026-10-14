@@ -356,6 +356,41 @@ def _storage_boundaries(entries):
     return {name: boundaries[name] for name in sorted(boundaries)}
 
 
+def _capacity_contract(entries):
+    """Summarize capacity evidence separately from preview resource usage."""
+    baseline_kinds = set()
+    capacities = []
+    for _, record in entries:
+        metrics = record.get("metrics") or {}
+        baseline = metrics.get("baseline_kind")
+        if isinstance(baseline, str) and baseline:
+            baseline_kinds.add(baseline)
+        capacity = metrics.get("cluster_capacity")
+        if isinstance(capacity, dict):
+            capacities.append(capacity)
+    observed = [item for item in capacities if item.get("availability") == "observed"]
+    result = {
+        "availability": "observed" if capacities and len(observed) == len(capacities) else
+        "partial" if observed else "unavailable",
+        "records": len(capacities),
+        "observed_records": len(observed),
+        "baseline_kinds": sorted(baseline_kinds),
+    }
+    for field, unit in (("allocatable_cpu_cores", "core"), ("allocatable_memory_bytes", "byte")):
+        values = []
+        for capacity in observed:
+            value = capacity.get(field)
+            if isinstance(value, dict):
+                value = value.get("maximum", value.get("value"))
+            if _number(value) is not None:
+                values.append(float(value))
+        if values:
+            result[field] = {"minimum": min(values), "maximum": max(values), "unit": unit}
+    if result["availability"] != "observed":
+        result["reason"] = "cluster allocatable capacity was missing or incomplete"
+    return result
+
+
 def _poll_failures(record_path):
     poll_paths = sorted(record_path.parent.rglob("http-polls.jsonl"))
     if not poll_paths:
@@ -569,6 +604,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
         resources, project_resources, concurrency_resources, small_sample_threshold
     )
     storage_boundaries = _storage_boundaries(entries)
+    capacity = _capacity_contract(entries)
     reliability_rows = _reliability_rows(entries, small_sample_threshold)
     all_rows = timing_rows + timing_comparisons + resource_rows + resource_comparisons + reliability_rows
     warnings = _warning_rows(all_rows)
@@ -581,6 +617,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
         "schema_version": ANALYSIS_SCHEMA_VERSION,
         "generated_by": "scripts/analysis_report.py",
         "selection": selection,
+        "capacity": capacity,
         "definitions": {
             "quantile_method": "linear interpolation at position (n - 1) * probability",
             "standard_deviation": "sample standard deviation using n - 1; unavailable for n < 2",
@@ -747,6 +784,7 @@ def _markdown_report(report):
     ]
     lines.extend(["## Cleanup completeness", "", _markdown_table(cleanup_rows), ""])
     lines.extend(["## Resource statistics", "", _markdown_table(report["tables"]["resource_statistics"]), ""])
+    lines.extend(["## Capacity and baseline", "", f"`{json.dumps(report['capacity'], sort_keys=True)}`", ""])
     lines.extend(["## Comparisons", "", _markdown_table(report["tables"]["comparisons"]), ""])
     lines.extend(["## Charts", ""])
     for chart in report["charts"]:

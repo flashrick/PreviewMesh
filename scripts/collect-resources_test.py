@@ -94,7 +94,10 @@ def metrics_responses(namespace="pm-r12-pr3", uid="uid-1", current_uid=None,
     claims = claims if claims is not None else []
     current_uid = current_uid or uid
     return {
-        ("get", "nodes", "-o", "json"): ok({"items": [{"metadata": {"name": "node-a"}}]}),
+        ("get", "nodes", "-o", "json"): ok({"items": [{
+            "metadata": {"name": "node-a"},
+            "status": {"allocatable": {"cpu": "2", "memory": "4Gi"}},
+        }]}),
         ("get", "--raw", "/apis/metrics.k8s.io/v1beta1/nodes"): ok({"items": node_metrics}),
         ("get", "namespaces", "-l", "previewmesh.local/managed-by=previewmesh", "-o", "json"): ok({
             "items": [{"metadata": {
@@ -144,6 +147,19 @@ def basic_sample(run_id, elapsed, namespace="pm-r12-pr3", uid="uid-1", cpu=1.0):
 
 
 class QuantityAndMetricTests(unittest.TestCase):
+    def test_cluster_capacity_requires_explicit_allocatable_values(self):
+        collector = COLLECTOR.Collector("run", baseline_kind="idle")
+        observed = collector.cluster_capacity([{
+            "metadata": {"name": "node-a"},
+            "status": {"allocatable": {"cpu": "2", "memory": "4Gi"}},
+        }])
+        self.assertEqual(observed["availability"], "observed")
+        self.assertEqual(observed["allocatable_cpu_cores"]["value"], 2)
+        self.assertEqual(observed["allocatable_memory_bytes"]["value"], 4 * 1024 ** 3)
+        self.assertEqual(collector.baseline_kind, "idle")
+        unavailable = collector.cluster_capacity([{"metadata": {"name": "node-a"}}])
+        self.assertEqual(unavailable["availability"], "unavailable")
+
     def test_quantity_accepts_cpu_memory_and_exponential_forms(self):
         self.assertAlmostEqual(COLLECTOR.quantity("500m"), 0.5)
         self.assertAlmostEqual(COLLECTOR.quantity("1e3m"), 1.0)
@@ -425,7 +441,7 @@ class ConcurrencyAndCLITests(unittest.TestCase):
 
     def test_cli_creates_private_jsonl_and_summary_files(self):
         class FakeCollector:
-            def __init__(self, run_id, namespaces, timeout, max_age):
+            def __init__(self, run_id, namespaces, timeout, max_age, baseline_kind="unknown"):
                 self.run_id = run_id
 
             def sample(self, elapsed):

@@ -749,6 +749,14 @@ def resource_metrics(artifacts):
             ),
         },
         "storage_boundaries": resource.get("storage_boundaries", {}) if resource else {},
+        "baseline_kind": resource.get("baseline_kind", "unknown") if resource else "unknown",
+        "cluster_capacity": resource.get("cluster_capacity", {
+            "availability": "unavailable",
+            "reason": "resource summary did not include cluster capacity",
+        }) if resource else {
+            "availability": "unavailable",
+            "reason": "resource collector summary was not found in workflow artifacts",
+        },
         "coverage_seconds": {},
         "unavailable_reasons": [],
         "measurements": {},

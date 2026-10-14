@@ -29,6 +29,7 @@ def record(
     cleanup=None,
     timeline=None,
     execution=None,
+    capacity=None,
 ):
     document = {
         "run_id": run_id,
@@ -71,6 +72,9 @@ def record(
     }
     if execution is not None:
         document["execution"] = execution
+    if capacity is not None:
+        document["metrics"]["baseline_kind"] = "idle"
+        document["metrics"]["cluster_capacity"] = capacity
     return document
 
 
@@ -180,6 +184,32 @@ class EvaluationSummaryTests(unittest.TestCase):
                 summary["resources"]["storage_boundaries"]["host_disk_bytes"]["availability"],
                 "unsupported",
             )
+
+    def test_summary_separates_capacity_from_preview_high_water(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_record(
+                root,
+                "capacity",
+                record(
+                    "run-capacity",
+                    capacity={
+                        "availability": "observed",
+                        "allocatable_cpu_cores": {"minimum": 2, "maximum": 2, "unit": "core"},
+                        "allocatable_memory_bytes": {
+                            "minimum": 4 * 1024 ** 3,
+                            "maximum": 4 * 1024 ** 3,
+                            "unit": "byte",
+                        },
+                    },
+                ),
+            )
+
+            summary = SUMMARY.summarize([root])
+
+            self.assertEqual(summary["concurrency"]["capacity_availability"], "observed")
+            self.assertEqual(summary["concurrency"]["capacity"]["baseline_kinds"], ["idle"])
+            self.assertEqual(summary["resources"]["cluster_capacity"]["allocatable_cpu_cores"]["maximum"], 2.0)
 
     def test_zero_failed_requests_remains_an_observed_zero(self):
         with tempfile.TemporaryDirectory() as temporary:

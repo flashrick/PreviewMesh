@@ -423,12 +423,15 @@ Run the read-only resource collector from a trusted control environment and keep
 python3 scripts/collect-resources.py \
   --run-id baseline-001 \
   --output /tmp/previewmesh-resource-evidence \
-  --samples 13 --interval 10 --max-metric-age 60
+  --samples 13 --interval 10 --max-metric-age 60 \
+  --baseline-kind idle
 ```
 
 Repeat `--namespace` to select particular managed preview namespaces; omit it to include every managed preview. The output directory must be new. The collector does not change workloads and writes `samples.jsonl` and `summary.json`. `--timeout` bounds each Kubernetes request, while `--max-gap` sets the largest gap that can be integrated (by default, twice the sampling interval).
 
 Node CPU is reported in cores and memory in bytes from recent metrics windows, so node totals include system workloads and collection overhead. Preview values require fresh metrics for every expected container and a stable namespace identity. Summary integrals use trapezoids between adjacent available samples only; larger gaps remain uncovered. `resource_minutes` is the canonical CPU core-minute producer: it integrates `cpu_cores` over the observed window, reports `core_minute`, and is `partial` or `unavailable` when that window cannot be fully covered. Repeated recent metrics windows are retained observations, not independent samples.
+
+`--baseline-kind` records whether the collection was intended as an `idle`, `preview-workload`, `mixed`, or `unknown` baseline. The collector also records Kubernetes node allocatable CPU and memory as cluster capacity; this is separate from preview usage and does not establish maximum preview concurrency.
 
 `helm_release_payload_bytes` counts base64-decoded Kubernetes Secret `data.release` payload bytes held in memory; it is not etcd disk usage. `pvc_requested_bytes` and `pvc_capacity_bytes` describe requested and bound PVC capacity, not filesystem use. The private summary carries a storage-boundary contract for each metric: host disk, registry image bytes, and filesystem/volume usage remain `unsupported` because they need separate privileged host or registry producers. Their unit, scope, required permission, and point-in-time window are retained in `storage_boundaries`; unsupported and unavailable values are never emitted as zero.
 
