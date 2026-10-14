@@ -334,6 +334,44 @@ def _capacity_summary(records):
     return result
 
 
+def _metrics_window_summary(records):
+    windows = []
+    for _, record in records:
+        window = (record.get("metrics") or {}).get("metrics_window")
+        if isinstance(window, dict):
+            windows.append(window)
+    observed = [window for window in windows if window.get("availability") == "observed"]
+    result = {
+        "availability": "observed" if windows and len(observed) == len(windows) else
+        "partial" if observed else "unavailable",
+        "records": len(windows),
+        "observed_records": len(observed),
+    }
+    durations = [_number(window.get("observed_duration_seconds")) for window in windows]
+    durations = [value for value in durations if value is not None]
+    if durations:
+        result["observed_duration_seconds"] = {
+            "minimum": min(durations), "maximum": max(durations), "unit": "second"
+        }
+    intervals = []
+    gaps = 0
+    for window in windows:
+        actual = window.get("actual_interval_seconds") or {}
+        for key in ("minimum", "maximum", "mean"):
+            value = _number(actual.get(key))
+            if value is not None:
+                intervals.append(value)
+        gaps += int(_number(window.get("gap_count")) or 0)
+    if intervals:
+        result["actual_interval_seconds"] = {
+            "minimum": min(intervals), "maximum": max(intervals), "unit": "second"
+        }
+    result["gap_count"] = gaps
+    if result["availability"] != "observed":
+        result["reason"] = "one or more selected resource windows were incomplete or unavailable"
+    return result
+
+
 def _find_numeric(document, names):
     if isinstance(document, dict):
         for name in names:
@@ -381,7 +419,10 @@ def _resource_summary(records):
             group_key = (_scope_class(scope), metric_name, measurement.get("unit") or "unavailable")
             group = aggregates.setdefault(
                 group_key,
-                {"values": [], "covered_seconds": 0.0, "available": 0, "partial": 0, "total": 0},
+                {
+                    "values": [], "peaks": [], "partial_peaks": [], "covered_seconds": 0.0,
+                    "available": 0, "partial": 0, "total": 0,
+                },
             )
             group["total"] += 1
             availability = measurement.get("availability")
@@ -390,11 +431,21 @@ def _resource_summary(records):
             if availability == "observed" and _number(measurement.get("value")) is not None:
                 group["available"] += 1
                 group["values"].append(float(measurement["value"]))
+                peak = measurement.get("maximum")
+                if _number(peak) is None and isinstance(measurement.get("peak"), dict):
+                    peak = measurement["peak"].get("value")
+                if _number(peak) is not None:
+                    group["peaks"].append(float(peak))
                 covered = _number(measurement.get("covered_seconds"))
                 if covered is not None:
                     group["covered_seconds"] += covered
             elif availability == "partial":
                 group["partial"] += 1
+                peak = measurement.get("maximum")
+                if _number(peak) is None and isinstance(measurement.get("peak"), dict):
+                    peak = measurement["peak"].get("value")
+                if _number(peak) is not None:
+                    group["partial_peaks"].append(float(peak))
             else:
                 unsupported.add(_reason_category(f"{metric_name} unavailable"))
         for summary in _resource_summaries(record_path):
@@ -436,6 +487,11 @@ def _resource_summary(records):
                 available_count=group["available"],
                 partial_count=group["partial"],
                 covered_seconds=group["covered_seconds"] or None,
+                peak_value=(max(group["peaks"] + group["partial_peaks"])
+                            if group["peaks"] or group["partial_peaks"] else None),
+                peak_availability=("observed" if group["available"] == group["total"]
+                                   else "partial" if group["peaks"] or group["partial_peaks"]
+                                   else "unavailable"),
             )
         )
     return {
@@ -443,6 +499,7 @@ def _resource_summary(records):
         "unsupported": sorted(unsupported),
         "storage_boundaries": storage_boundaries,
         "cluster_capacity": _capacity_summary(records),
+        "metrics_window": _metrics_window_summary(records),
         "observed_running_high_water": max(running_high_water) if running_high_water else None,
         "observed_managed_high_water": max(managed_high_water) if managed_high_water else None,
     }
@@ -709,6 +766,7 @@ def summarize(paths):
             "unsupported": resources["unsupported"],
             "storage_boundaries": resources["storage_boundaries"],
             "cluster_capacity": resources["cluster_capacity"],
+            "metrics_window": resources["metrics_window"],
         },
         "concurrency": {
             "planned": max(planned) if planned else None,

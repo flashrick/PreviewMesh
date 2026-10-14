@@ -750,6 +750,13 @@ def resource_metrics(artifacts):
         },
         "storage_boundaries": resource.get("storage_boundaries", {}) if resource else {},
         "baseline_kind": resource.get("baseline_kind", "unknown") if resource else "unknown",
+        "metrics_window": resource.get("metrics_window", {
+            "availability": "unavailable",
+            "reason": "resource summary did not include a metrics window",
+        }) if resource else {
+            "availability": "unavailable",
+            "reason": "resource collector summary was not found in workflow artifacts",
+        },
         "cluster_capacity": resource.get("cluster_capacity", {
             "availability": "unavailable",
             "reason": "resource summary did not include cluster capacity",
@@ -799,6 +806,9 @@ def resource_metrics(artifacts):
                 "value": value,
                 "covered_seconds": measurement.get("covered_seconds", 0),
                 "uncovered_seconds": measurement.get("uncovered_seconds", 0),
+                "minimum": measurement.get("minimum"),
+                "maximum": measurement.get("maximum"),
+                "peak": measurement.get("peak"),
             }
             for field in (
                 "schema_version", "definition", "source_metric", "available_samples",

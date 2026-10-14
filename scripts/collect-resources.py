@@ -79,6 +79,7 @@ STORAGE_BOUNDARIES = {
 }
 CAPACITY_SCHEMA_VERSION = 1
 BASELINE_KINDS = {'idle', 'preview-workload', 'mixed', 'unknown'}
+METRICS_WINDOW_SCHEMA_VERSION = 1
 MANAGED_LABEL = 'previewmesh.local/managed-by'
 UNITS = {
     'cpu_cores': 'core', 'memory_bytes': 'byte',
@@ -366,6 +367,43 @@ class Collector:
         return sample
 
 
+def metrics_window(samples, interval, max_gap, elapsed):
+    """Describe the sampled window without hiding gaps behind requested timing."""
+    intervals = [samples[index]['elapsed_seconds'] - samples[index - 1]['elapsed_seconds']
+                 for index in range(1, len(samples))]
+    valid_intervals = [value for value in intervals if value > 0]
+    gap_intervals = [value for value in valid_intervals if value > max_gap]
+    if len(valid_intervals) != len(intervals) or gap_intervals:
+        availability = 'partial'
+        reason = 'one or more sample intervals were invalid or exceeded max_gap'
+    elif len(samples) < 2:
+        availability = 'unavailable'
+        reason = 'at least two samples are required'
+    else:
+        availability = 'observed'
+        reason = None
+    window = {
+        'schema_version': METRICS_WINDOW_SCHEMA_VERSION,
+        'availability': availability,
+        'started_at_utc': samples[0].get('started_at_utc'),
+        'ended_at_utc': samples[-1].get('ended_at_utc'),
+        'observed_duration_seconds': elapsed,
+        'sample_count': len(samples),
+        'requested_interval_seconds': interval,
+        'max_gap_seconds': max_gap,
+        'actual_interval_seconds': {
+            'minimum': min(valid_intervals) if valid_intervals else None,
+            'maximum': max(valid_intervals) if valid_intervals else None,
+            'mean': sum(valid_intervals) / len(valid_intervals) if valid_intervals else None,
+            'observed_count': len(valid_intervals),
+        },
+        'gap_count': len(gap_intervals),
+    }
+    if reason:
+        window['reason'] = reason
+    return window
+
+
 def summarize(samples, interval, max_gap):
     """Integrate adjacent valid observations only; never bridge unavailable samples."""
     elapsed = samples[-1]['elapsed_seconds'] - samples[0]['elapsed_seconds'] if len(samples) > 1 else 0
@@ -373,6 +411,7 @@ def summarize(samples, interval, max_gap):
               'samples': len(samples), 'requested_interval_seconds': interval,
               'observed_duration_seconds': elapsed, 'max_gap_seconds': max_gap,
               'integration': 'trapezoidal; adjacent available samples only', 'scopes': {},
+              'metrics_window': metrics_window(samples, interval, max_gap, elapsed),
               'storage_boundary_schema_version': STORAGE_BOUNDARY_SCHEMA_VERSION,
               'storage_boundaries': json.loads(json.dumps(STORAGE_BOUNDARIES)),
               'limitations': ['Sampling can miss transient concurrency and resource peaks.',
@@ -432,6 +471,7 @@ def summarize(samples, interval, max_gap):
             scope['measurements'][metric] = {
                 'unit': unit, 'available_samples': len(valid), 'unavailable_samples': len(samples) - len(valid),
                 'minimum': min(valid) if valid else None, 'maximum': max(valid) if valid else None,
+                'peak': {'value': max(valid), 'unit': unit, 'observed_samples': len(valid)} if valid else None,
                 'integral': integral if covered else None, 'integral_unit': f'{unit}_minute',
                 'covered_seconds': covered, 'uncovered_seconds': max(0, elapsed - covered),
                 'complete': bool(covered) and math.isclose(covered, elapsed),
@@ -457,6 +497,7 @@ def summarize(samples, interval, max_gap):
             'available': availability == 'observed',
             'available_samples': cpu['available_samples'],
             'unavailable_samples': cpu['unavailable_samples'],
+            'peak': cpu['peak'],
             'covered_seconds': covered,
             'uncovered_seconds': cpu['uncovered_seconds'],
             'complete': cpu['complete'],

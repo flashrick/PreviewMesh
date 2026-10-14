@@ -30,6 +30,7 @@ def record(
     timeline=None,
     execution=None,
     capacity=None,
+    metrics_window=None,
 ):
     document = {
         "run_id": run_id,
@@ -75,6 +76,8 @@ def record(
     if capacity is not None:
         document["metrics"]["baseline_kind"] = "idle"
         document["metrics"]["cluster_capacity"] = capacity
+    if metrics_window is not None:
+        document["metrics"]["metrics_window"] = metrics_window
     return document
 
 
@@ -210,6 +213,29 @@ class EvaluationSummaryTests(unittest.TestCase):
             self.assertEqual(summary["concurrency"]["capacity_availability"], "observed")
             self.assertEqual(summary["concurrency"]["capacity"]["baseline_kinds"], ["idle"])
             self.assertEqual(summary["resources"]["cluster_capacity"]["allocatable_cpu_cores"]["maximum"], 2.0)
+
+    def test_summary_reports_resource_peaks_and_window_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            document = record(
+                "run-window",
+                metrics_window={
+                    "availability": "observed",
+                    "observed_duration_seconds": 20,
+                    "actual_interval_seconds": {"minimum": 9, "maximum": 11, "mean": 10},
+                    "gap_count": 0,
+                },
+            )
+            document["metrics"]["measurements"]["preview:uid-1:cpu"]["maximum"] = 3.5
+            write_record(root, "window", document)
+
+            summary = SUMMARY.summarize([root])
+
+            self.assertEqual(summary["resources"]["metrics_window"]["availability"], "observed")
+            self.assertEqual(summary["resources"]["metrics_window"]["actual_interval_seconds"]["maximum"], 11.0)
+            resource = next(item for item in summary["resources"]["by_scope"] if item["metric"] == "cpu")
+            self.assertEqual(resource["peak_value"], 3.5)
+            self.assertEqual(resource["peak_availability"], "observed")
 
     def test_zero_failed_requests_remains_an_observed_zero(self):
         with tempfile.TemporaryDirectory() as temporary:

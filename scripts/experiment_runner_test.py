@@ -581,6 +581,10 @@ class ResourceMetricTests(unittest.TestCase):
                     {
                         "samples": 2,
                         "observed_duration_seconds": 10,
+                        "metrics_window": {
+                            "availability": "observed",
+                            "sample_count": 2,
+                        },
                         "scopes": {
                             "preview:private-uid": {
                                 "measurements": {
@@ -591,6 +595,9 @@ class ResourceMetricTests(unittest.TestCase):
                                         "complete": True,
                                         "covered_seconds": 10,
                                         "uncovered_seconds": 0,
+                                        "minimum": 1,
+                                        "maximum": 3,
+                                        "peak": {"value": 3, "unit": "core", "observed_samples": 2},
                                     },
                                     "memory_bytes": {
                                         "unit": "byte",
@@ -627,9 +634,11 @@ class ResourceMetricTests(unittest.TestCase):
             metrics = RUNNER.resource_metrics(artifacts)
 
             self.assertEqual(metrics["units"]["resource_minutes"], "core_minute")
+            self.assertEqual(metrics["metrics_window"]["availability"], "observed")
             self.assertEqual(metrics["storage_boundaries"]["host_disk_bytes"]["availability"], "unsupported")
             self.assertTrue(metrics["measurements"]["preview:private-uid:cpu"]["available"])
             self.assertTrue(metrics["measurements"]["preview:private-uid:memory"]["available"])
+            self.assertEqual(metrics["measurements"]["preview:private-uid:cpu"]["maximum"], 3)
             resource_minutes = metrics["measurements"]["preview:private-uid:resource_minutes"]
             self.assertFalse(resource_minutes["available"])
             self.assertEqual(resource_minutes["availability"], "partial")
