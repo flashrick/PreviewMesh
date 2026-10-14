@@ -305,7 +305,9 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
                                cwd=run, env=report_env, check=True)
                 summary = json.loads((run/'evidence/summary.json').read_text())
                 assert summary['outcome'] == 'removed' and summary['cleanup'] == 'confirmed_absent', summary
-                assert summary['remaining_namespace_resources'] == 0, summary
+                assert summary['remaining_namespace_resources'] is None, summary
+                assert summary['cleanup_inventory']['availability'] == 'partial', summary
+                assert 'cluster-scoped' in summary['cleanup_inventory']['uncheckable_scopes'], summary
                 assert not summary.get('failed_stage') and not summary.get('error'), summary
                 with (run/'evidence/combined.csv').open() as stream:
                     combined = list(csv.DictReader(stream))

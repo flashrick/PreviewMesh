@@ -420,7 +420,7 @@ def _cleanup_summary(records):
             continue
         applicable.append(record)
         cleanup = record.get("cleanup") or {}
-        if cleanup.get("namespace_absent") is True and cleanup.get("related_resources_absent") is True:
+        if cleanup.get("namespace_absent") is True:
             confirmed += 1
         duplicate = _explicit_count(record, ("duplicate_count", "duplicate_resources"))
         orphan = _explicit_count(record, ("orphan_count", "orphan_resources"))

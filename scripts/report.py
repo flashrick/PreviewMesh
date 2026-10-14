@@ -21,6 +21,31 @@ results = {}
 for path in files:
     if path.name in ['deploy.json', 'cleanup.json', 'build.json', 'outcome.json']:
         results[path.stem] = json.loads(path.read_text())
+    elif path.name == 'cleanup-inspect.json':
+        results['cleanup_inspection_after'] = json.loads(path.read_text())
+
+
+def inventory_summary(document):
+    """Expose cleanup counts without copying namespace identities or objects."""
+    if not isinstance(document, dict):
+        return {
+            'availability': 'unavailable',
+            'reason': 'cleanup inventory was not retained',
+        }
+    complete = document.get('inventory_complete') is True
+    duplicate_availability = document.get('duplicate_availability', 'unavailable')
+    orphan_availability = document.get('orphan_availability', 'unavailable')
+    return {
+        'availability': 'observed' if complete else 'partial',
+        'state': document.get('state', 'unavailable'),
+        'inventory_complete': complete,
+        'remaining_count': document.get('remaining_count') if complete else None,
+        'duplicate_count': document.get('duplicate_count') if duplicate_availability == 'observed' else None,
+        'duplicate_count_availability': duplicate_availability,
+        'orphan_count': document.get('orphan_count') if orphan_availability == 'observed' else None,
+        'orphan_count_availability': orphan_availability,
+        'uncheckable_scopes': document.get('uncheckable_scopes', []),
+    }
 
 def timestamp(value):
     return dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
@@ -63,6 +88,13 @@ if not has_lifecycle_evidence:
     rows[-1]['error'] = 'No lifecycle evidence collected; inspect job results and control logs.'
 failed = next((results[name] for name in ['cleanup', 'deploy', 'build']
                if results.get(name, {}).get('result') == 'failure'), {})
+cleanup_document = results.get('cleanup', {})
+cleanup_inventory = (
+    results.get('cleanup_inspection_after')
+    or cleanup_document.get('cleanup_inspection')
+    or results.get('cleanup_inspection_before')
+)
+cleanup_inventory_summary = inventory_summary(cleanup_inventory)
 stage_timings = []
 for operation in ['build', 'deploy', 'cleanup']:
     for timing in results.get(operation, {}).get('stage_timings', []):
@@ -86,7 +118,8 @@ summary = {
     'build_failure_reporting': os.environ.get('BUILD_FAILURE_REPORTING', ''),
     'rollback': results.get('deploy', {}).get('rollback', 'not_attempted'),
     'cleanup': results.get('cleanup', {}).get('cleanup', 'not_attempted'),
-    'remaining_namespace_resources': 0 if results.get('cleanup', {}).get('cleanup')=='confirmed_absent' else None,
+    'remaining_namespace_resources': cleanup_inventory_summary.get('remaining_count'),
+    'cleanup_inventory': cleanup_inventory_summary,
     'stage_timings': stage_timings,
     **results.get('outcome', {}), 'timing_note': metadata_error,
 }

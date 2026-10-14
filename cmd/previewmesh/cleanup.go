@@ -27,12 +27,42 @@ type cleanupResource struct {
 	DeletionTimestamp string   `json:"deletion_timestamp,omitempty"`
 }
 type cleanupInspection struct {
-	NamespaceFinalizers []string          `json:"namespace_finalizers,omitempty"`
-	State               string            `json:"state"`
-	Scope               string            `json:"scope"`
-	NamespaceUID        string            `json:"namespace_uid,omitempty"`
-	Remaining           []cleanupResource `json:"remaining"`
-	Errors              []string          `json:"errors"`
+	NamespaceFinalizers   []string          `json:"namespace_finalizers,omitempty"`
+	State                 string            `json:"state"`
+	Scope                 string            `json:"scope"`
+	NamespaceUID          string            `json:"namespace_uid,omitempty"`
+	Remaining             []cleanupResource `json:"remaining"`
+	ResourceTypeCount     int               `json:"resource_type_count"`
+	RemainingCount        int               `json:"remaining_count"`
+	InventoryComplete     bool              `json:"inventory_complete"`
+	DuplicateCount        int               `json:"duplicate_count"`
+	DuplicateAvailability string            `json:"duplicate_availability"`
+	OrphanCount           *int              `json:"orphan_count,omitempty"`
+	OrphanAvailability    string            `json:"orphan_availability"`
+	UncheckableScopes     []string          `json:"uncheckable_scopes"`
+	Errors                []string          `json:"errors"`
+}
+
+// recordPostCleanupAbsence keeps the deletion boundary separate from a full
+// inventory, which is impossible once the Namespace itself is gone.
+func (x *runner) recordPostCleanupAbsence() {
+	x.r.Inspection = &cleanupInspection{
+		State:                 "confirmed_absent",
+		Scope:                 "target_namespace; excludes cluster-scoped and external resources",
+		Remaining:             []cleanupResource{},
+		RemainingCount:        0,
+		InventoryComplete:     false,
+		DuplicateAvailability: "unavailable",
+		OrphanAvailability:    "unavailable",
+		UncheckableScopes: []string{
+			"target-namespace-contents",
+			"cluster-scoped",
+			"registry-images",
+			"volume-filesystem",
+			"external-resources",
+		},
+		Errors: []string{},
+	}
 }
 
 // retryCleanup never adopts a replacement Namespace, including across CLI invocations.
@@ -59,7 +89,15 @@ func (x *runner) retryCleanup() error {
 // inspectCleanup discovers every listable namespaced type, including custom resources.
 // Missing permissions or API failures leave explicit evidence gaps, never an empty success.
 func (x *runner) inspectCleanup() error {
-	report := &cleanupInspection{State: "unknown", Scope: "target_namespace; excludes cluster-scoped and external resources", Remaining: []cleanupResource{}, Errors: []string{}}
+	report := &cleanupInspection{
+		State:                 "unknown",
+		Scope:                 "target_namespace; excludes cluster-scoped and external resources",
+		Remaining:             []cleanupResource{},
+		DuplicateAvailability: "unavailable",
+		OrphanAvailability:    "unavailable",
+		UncheckableScopes:     []string{"cluster-scoped", "registry-images", "volume-filesystem", "external-resources"},
+		Errors:                []string{},
+	}
 	x.r.Inspection = report
 	fail := func(err error) error {
 		report.Errors = append(report.Errors, err.Error())
@@ -72,6 +110,7 @@ func (x *runner) inspectCleanup() error {
 	}
 	if ns == nil {
 		report.State = "confirmed_absent"
+		report.UncheckableScopes = append(report.UncheckableScopes, "target-namespace-contents")
 		return nil
 	}
 	report.NamespaceUID = ns.Metadata.UID
@@ -95,6 +134,8 @@ func (x *runner) inspectCleanup() error {
 	if len(resources) == 0 {
 		return fail(errors.New("resource discovery returned no types"))
 	}
+	report.ResourceTypeCount = len(resources)
+	seen := map[string]bool{}
 	var failures []error
 	for _, resource := range resources {
 		// No label selector: unlabeled Pods, Helm history, and finalizer blockers also matter.
@@ -120,6 +161,11 @@ func (x *runner) inspectCleanup() error {
 		for _, item := range list.Items {
 			m := item.Metadata
 			report.Remaining = append(report.Remaining, cleanupResource{Resource: resource, Name: m.Name, UID: m.UID, Finalizers: m.Finalizers, DeletionTimestamp: m.DeletionTimestamp})
+			key := resource + "\x00" + m.Name
+			if seen[key] {
+				report.DuplicateCount++
+			}
+			seen[key] = true
 		}
 	}
 	// Recheck identity after the inventory: concurrent deletion/recreation invalidates the snapshot.
@@ -128,6 +174,11 @@ func (x *runner) inspectCleanup() error {
 		failures = append(failures, fail(err))
 	} else if remaining == nil || remaining.Metadata.UID != ns.Metadata.UID {
 		failures = append(failures, fail(errors.New("namespace changed during inspection; rerun inspection")))
+	}
+	report.RemainingCount = len(report.Remaining)
+	if len(failures) == 0 {
+		report.InventoryComplete = true
+		report.DuplicateAvailability = "observed"
 	}
 	return errors.Join(failures...)
 }

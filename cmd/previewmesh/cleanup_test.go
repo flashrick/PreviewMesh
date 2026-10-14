@@ -64,6 +64,9 @@ func TestCleanupRetryRecovery(t *testing.T) {
 			if success && (x.r.Cleanup != "confirmed_absent" || x.r.FailedStage != "" || x.r.Inspection.State != "confirmed_absent") {
 				t.Fatalf("result=%+v", x.r)
 			}
+			if success && x.r.Inspection.InventoryComplete {
+				t.Fatal("post-delete absence was incorrectly reported as a complete inventory")
+			}
 			if !success && x.r.Cleanup != "failure" {
 				t.Fatal(x.r.Cleanup)
 			}
@@ -106,7 +109,7 @@ func TestCleanupInspection(t *testing.T) {
 			if strings.Contains(string(b), "DO_NOT_EMIT") {
 				t.Fatal("Secret contents leaked")
 			}
-			if mode == "stuck" && (len(x.r.Inspection.Remaining) != 3 || !strings.Contains(string(b), "example.test/hold")) {
+			if mode == "stuck" && (len(x.r.Inspection.Remaining) != 3 || x.r.Inspection.RemainingCount != 3 || !x.r.Inspection.InventoryComplete || x.r.Inspection.DuplicateAvailability != "observed" || !strings.Contains(string(b), "example.test/hold")) {
 				t.Fatal(string(b))
 			}
 			if mode != "stuck" && (x.r.Inspection.State != "incomplete" || len(x.r.Inspection.Errors) == 0) {

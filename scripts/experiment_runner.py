@@ -259,13 +259,14 @@ def all_json(root, filename):
 
 
 def result_files(artifacts):
-    names = ("build.json", "deploy.json", "cleanup.json", "outcome.json")
+    names = ("build.json", "deploy.json", "cleanup.json", "cleanup-inspect.json", "outcome.json")
     results = {}
     for name in names:
         document, path = first_json(artifacts, name)
         if document is not None:
-            results[Path(name).stem] = document
-            results[Path(name).stem + "_path"] = str(path.relative_to(artifacts))
+            key = "cleanup_inspect" if name == "cleanup-inspect.json" else Path(name).stem
+            results[key] = document
+            results[key + "_path"] = str(path.relative_to(artifacts))
     return results
 
 
@@ -706,7 +707,12 @@ def resource_metrics(artifacts):
 
 def cleanup_record(results, scenario):
     cleanup = results.get("cleanup", {})
-    inspection = cleanup.get("cleanup_inspection") or cleanup.get("inspection") or {}
+    inspection = (
+        cleanup.get("cleanup_inspection")
+        or cleanup.get("inspection")
+        or results.get("cleanup_inspect")
+        or {}
+    )
     state = inspection.get("state")
     confirmed = cleanup.get("cleanup") == "confirmed_absent" or state == "confirmed_absent"
     namespace_uid = (
@@ -729,12 +735,31 @@ def cleanup_record(results, scenario):
     # Keep that identity gap explicit even when cleanup itself succeeded.
     if namespace_uid == "unavailable":
         reason = "; ".join(filter(None, (reason, "cleanup artifact did not export the namespace UID")))
+    inventory_complete = inspection.get("inventory_complete") if "inventory_complete" in inspection else None
+    duplicate_availability = inspection.get("duplicate_availability", "unavailable")
+    orphan_availability = inspection.get("orphan_availability", "unavailable")
     return {
         "namespace_uid": namespace_uid,
         "uid_guarded": bool(namespace_uid != "unavailable"),
         "namespace_absent": confirmed,
-        "related_resources_absent": confirmed if state == "confirmed_absent" else None,
+        "related_resources_absent": (
+            None
+            if "inventory_complete" in inspection and not inventory_complete
+            else confirmed if state == "confirmed_absent" else None
+        ),
         "orphan_scope": "namespace" if confirmed else "unavailable",
+        "inventory_complete": inventory_complete,
+        "inventory_scope": inspection.get("scope", "unavailable"),
+        "remaining_count": inspection.get("remaining_count"),
+        "duplicate_count": (
+            inspection.get("duplicate_count") if duplicate_availability == "observed" else None
+        ),
+        "duplicate_count_availability": duplicate_availability,
+        "orphan_count": (
+            inspection.get("orphan_count") if orphan_availability == "observed" else None
+        ),
+        "orphan_count_availability": orphan_availability,
+        "inventory_unavailable_scopes": inspection.get("uncheckable_scopes", []),
         "unavailable_reason": reason,
     }
 

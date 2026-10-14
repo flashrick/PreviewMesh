@@ -692,6 +692,7 @@ func (x *runner) cleanup() error {
 		}
 		if ns == nil {
 			x.r.Cleanup = "confirmed_absent"
+			x.recordPostCleanupAbsence()
 			return nil
 		}
 		if ns.Metadata.UID == "" {
@@ -722,6 +723,7 @@ func (x *runner) cleanup() error {
 			return err
 		}
 		x.r.Cleanup = "confirmed_absent"
+		x.recordPostCleanupAbsence()
 		return nil
 	})
 	if err != nil && x.r.Cleanup != "confirmed_absent" {

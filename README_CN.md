@@ -539,7 +539,7 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 
 `cleanup-retry` 会执行 1–10 次尝试（默认 3 次），每次重新检查归属，并发送绑定 Namespace UID 的删除请求。中断后重跑时必须保留原 UID；不要替换成新 Namespace 的 UID。它不会删除 finalizer，也不会创建资源。每个外部调用都有自己的 `--timeout`，这不是整个命令的总时限。即使后续尝试成功，失败尝试仍会保存在 `cleanup_recovery.attempts` 中。成功必须确认 Namespace 已不存在；API 错误或重试耗尽会以非零状态退出，最后一次 inspection 失败也会以非零状态退出。
 
-`cleanup-inspect` 会发现所有可列举的 namespaced resource 类型，并在目标 Namespace 内不依赖 label 过滤地建立清单，包括 Helm history、无 label 对象、删除时间戳和 finalizer。JSON 只包含资源元数据。`cleanup_inspection.state` 为 `remaining`、`confirmed_absent` 或 `incomplete`：inspection 成功且为 `remaining`，只表示清单已完成，不表示清理成功。
+`cleanup-inspect` 会发现所有可列举的 namespaced resource 类型，并在目标 Namespace 内不依赖 label 过滤地建立清单，包括 Helm history、无 label 对象、删除时间戳和 finalizer。JSON 只包含资源元数据。`cleanup_inspection.state` 为 `remaining`、`confirmed_absent` 或 `incomplete`：inspection 成功且为 `remaining`，只表示清单已完成，不表示清理成功。正常 cleanup 结果也会记录删除后的 absence boundary，但因为 Namespace 已删除而标记 `inventory_complete=false`；`duplicate_count` 只有完整 inventory 才会标为 observed，`orphan_count` 以及 cluster-scoped、registry、volume filesystem 和外部范围在独立测量前保持 unavailable。
 
 被禁止的列表、发现失败或 inspection 期间 Namespace 发生变化，会生成 `incomplete` 报告并以非零状态退出。受限 Runner 凭据可能无法访问某些发现出的类型；已经完成的列表会与错误一起保留。检查范围只有目标 Namespace。集群级存储、其他 Namespace、registry 镜像和外部资源需要单独检查。临时文件可能很快丢失，请安全保管结果 JSON 和可选的 `--evidence` CSV。
 
