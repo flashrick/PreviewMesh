@@ -821,6 +821,61 @@ def evidence_manifest(archive):
     return {"path": str(archive), "bytes": total_bytes, "sha256": manifest_hash, "file_count": len(entries)}
 
 
+def http_poll_evidence(archive, results):
+    """Summarise request rows while keeping the raw private JSONL in the manifest."""
+    polls = []
+    for operation in ("deploy", "verify"):
+        candidate = results.get(operation, {}).get("http_polls")
+        if isinstance(candidate, list):
+            polls.extend(item for item in candidate if isinstance(item, dict))
+    path = Path(archive) / "artifacts" / "http-polls.jsonl"
+    if polls:
+        return {
+            "schema_version": 1,
+            "availability": "observed",
+            "poll_count": len(polls),
+            "evidence_file": "artifacts/http-polls.jsonl" if path.exists() else "unavailable",
+        }
+    if not path.exists():
+        return {
+            "schema_version": 1,
+            "availability": "unavailable",
+            "poll_count": 0,
+            "evidence_file": "unavailable",
+            "reason": "request-level HTTP poll artifact was not retained",
+        }
+    count = 0
+    malformed = 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                if isinstance(json.loads(line), dict):
+                    count += 1
+                else:
+                    malformed += 1
+            except ValueError:
+                malformed += 1
+    except OSError:
+        malformed = 1
+    if count == 0:
+        return {
+            "schema_version": 1,
+            "availability": "unavailable",
+            "poll_count": 0,
+            "evidence_file": "artifacts/http-polls.jsonl",
+            "reason": "HTTP poll artifact contained no valid rows",
+        }
+    return {
+        "schema_version": 1,
+        "availability": "partial" if malformed else "observed",
+        "poll_count": count,
+        "evidence_file": "artifacts/http-polls.jsonl",
+        **({"reason": "some HTTP poll rows were malformed"} if malformed else {}),
+    }
+
+
 def failure_evidence(spec, results, outputs, outcome):
     """Separate a requested fault from evidence that the fault actually occurred."""
     requested = spec["conditions"].get("failure_type", "none")
@@ -918,6 +973,7 @@ def build_record(spec, archive, results, outputs, workflow_metadata, unsupported
         },
         "outcome": outcome,
         "failure_evidence": failure_evidence(spec, results, outputs, outcome),
+        "http_poll_evidence": http_poll_evidence(archive, results),
         "failure_trigger": (
             conditions.get("failure_type", "none")
             if conditions.get("failure_type", "none") != "none"
@@ -1076,6 +1132,18 @@ def validate_record(record, require_measurements=True):
                 else:
                     if recovery_ended < recovery_started:
                         errors.append("failure_evidence.recovery ends before it starts")
+
+    http_evidence = record.get("http_poll_evidence")
+    if http_evidence is not None:
+        if not isinstance(http_evidence, dict):
+            errors.append("http_poll_evidence must be an object")
+        else:
+            if http_evidence.get("availability") not in {"observed", "partial", "unavailable"}:
+                errors.append("http_poll_evidence.availability is invalid")
+            if not isinstance(http_evidence.get("poll_count"), int) or http_evidence.get("poll_count", -1) < 0:
+                errors.append("http_poll_evidence.poll_count is invalid")
+            if http_evidence.get("availability") in {"partial", "unavailable"} and not http_evidence.get("reason"):
+                errors.append("http_poll_evidence missing availability reason")
 
     cleanup = record.get("cleanup")
     if not isinstance(cleanup, dict):

@@ -102,6 +102,44 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestHTTPPollsAreRetainedBesideResult(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"status":"ok","commit_sha":%q}`, sha)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	x := runner{
+		o: options{httpTimeout: time.Second, resultFile: filepath.Join(dir, "deploy.json")},
+		r: result{URL: srv.URL},
+	}
+	if err := x.verifyHTTP(sha); err != nil {
+		t.Fatal(err)
+	}
+	if len(x.r.HTTPPolls) != 1 || x.r.HTTPPolls[0].StatusCode != http.StatusOK || !x.r.HTTPPolls[0].StatusOK {
+		t.Fatalf("poll result = %#v", x.r.HTTPPolls)
+	}
+	path := filepath.Join(dir, "http-polls.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row httpPoll
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row); err != nil {
+		t.Fatal(err)
+	}
+	if row.Attempt != 1 || row.ServedSHA != sha || row.SHAMismatch || row.LatencySeconds < 0 {
+		t.Fatalf("poll evidence = %#v", row)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("poll evidence mode = %o", info.Mode().Perm())
+	}
+}
+
 // TestRevisionVerification keeps an exact source revision distinct from an arbitrary valid SHA.
 func TestRevisionVerification(t *testing.T) {
 	sha := strings.Repeat("a", 40)

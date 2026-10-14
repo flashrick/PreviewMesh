@@ -69,6 +69,7 @@ type result struct {
 	RevisionVerification string             `json:"revision_verification"`
 	Recovery             *cleanupRecovery   `json:"cleanup_recovery,omitempty"`
 	Inspection           *cleanupInspection `json:"cleanup_inspection,omitempty"`
+	HTTPPolls            []httpPoll         `json:"http_polls,omitempty"`
 	StageTimings         []stageTiming      `json:"stage_timings,omitempty"`
 }
 
@@ -79,6 +80,20 @@ type stageTiming struct {
 	EndedAtUTC      string  `json:"ended_at_utc"`
 	DurationSeconds float64 `json:"duration_seconds"`
 	Result          string  `json:"result"`
+}
+
+// httpPoll stores request-level verification evidence without retaining response bodies or URLs.
+type httpPoll struct {
+	Attempt        int     `json:"attempt"`
+	StartedAtUTC   string  `json:"started_at_utc"`
+	EndedAtUTC     string  `json:"ended_at_utc"`
+	StatusCode     int     `json:"status_code,omitempty"`
+	StatusOK       bool    `json:"status_ok"`
+	HTTPError      bool    `json:"http_error"`
+	SHAMismatch    bool    `json:"sha_mismatch"`
+	ServedSHA      string  `json:"served_sha,omitempty"`
+	LatencySeconds float64 `json:"latency_seconds"`
+	Error          string  `json:"error,omitempty"`
 }
 
 // namespace contains the Kubernetes fields needed for ownership checks.
@@ -438,21 +453,48 @@ func health(ctx context.Context, url, sha string) (string, error) {
 
 // healthObserved records the last HTTP response separately from revision verification.
 func healthObserved(ctx context.Context, url, sha string, status *int) (string, error) {
+	return healthObservedWithRecorder(ctx, url, sha, status, nil)
+}
+
+// healthObservedWithRecorder retains each poll boundary for request-level analysis.
+func healthObservedWithRecorder(ctx context.Context, url, sha string, status *int, recorder func(httpPoll)) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	last := "no response"
 	served := ""
+	attempt := 0
 	for {
+		attempt++
+		started := time.Now().UTC()
+		poll := httpPoll{Attempt: attempt, StartedAtUTC: started.Format(time.RFC3339Nano)}
+		emit := func() {
+			ended := time.Now().UTC()
+			poll.EndedAtUTC = ended.Format(time.RFC3339Nano)
+			poll.LatencySeconds = ended.Sub(started).Seconds()
+			if recorder != nil {
+				recorder(poll)
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/health", nil)
 		if err != nil {
+			poll.HTTPError = true
+			poll.Error = "request_build_failed"
+			emit()
 			return served, err
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			poll.HTTPError = true
+			poll.Error = "request_failed"
+			emit()
 			// Ending the verification window is not a new endpoint failure.
 			if ctx.Err() == nil || last == "no response" {
 				last = "HTTP request failed"
 			}
+			if ctx.Err() != nil {
+				return served, fmt.Errorf("HTTP verification failed: %s", last)
+			}
 		} else {
+			poll.StatusCode = resp.StatusCode
 			if status != nil {
 				*status = resp.StatusCode
 			}
@@ -463,6 +505,9 @@ func healthObserved(ctx context.Context, url, sha string, status *int) (string, 
 			data, readErr := io.ReadAll(io.LimitReader(resp.Body, 65537))
 			resp.Body.Close()
 			if readErr != nil && ctx.Err() != nil {
+				poll.HTTPError = true
+				poll.Error = "response_read_failed"
+				emit()
 				if last == "no response" {
 					last = "HTTP request failed"
 				}
@@ -475,10 +520,21 @@ func healthObserved(ctx context.Context, url, sha string, status *int) (string, 
 			// Keep a valid served SHA for failure diagnostics.
 			if err == nil && shaPattern.MatchString(body.SHA) {
 				served = body.SHA
+				poll.ServedSHA = body.SHA
+			}
+			poll.StatusOK = resp.StatusCode == http.StatusOK && err == nil && body.Status == "ok"
+			poll.SHAMismatch = poll.ServedSHA != "" && revisionVerification(sha, poll.ServedSHA) == "failure"
+			if err != nil {
+				poll.HTTPError = true
+				poll.Error = "invalid_health_response"
+			} else if !poll.StatusOK || poll.SHAMismatch {
+				poll.Error = "verification_mismatch"
 			}
 			if resp.StatusCode == 200 && err == nil && body.Status == "ok" && revisionVerification(sha, body.SHA) == "success" {
+				emit()
 				return body.SHA, nil
 			}
+			emit()
 			last = "health response did not match expected status and revision"
 		}
 		select {
@@ -509,6 +565,31 @@ func (x *runner) waitReadiness() error {
 	return nil
 }
 
+// writeHTTPPoll appends request metadata beside the private result artifact.
+func (x *runner) writeHTTPPoll(poll httpPoll) error {
+	path := ""
+	if x.o.resultFile != "" {
+		path = filepath.Join(filepath.Dir(x.o.resultFile), "http-polls.jsonl")
+	} else if x.o.evidence != "" {
+		path = filepath.Join(filepath.Dir(x.o.evidence), "http-polls.jsonl")
+	}
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := json.NewEncoder(f).Encode(poll); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
+}
+
 // verifyHTTP checks the response only after Kubernetes readiness succeeds.
 func (x *runner) verifyHTTP(sha string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), x.o.httpTimeout)
@@ -517,7 +598,17 @@ func (x *runner) verifyHTTP(sha string) error {
 	x.r.HTTPVerification = "failure"
 	x.r.RevisionVerification = "not_checked"
 	x.r.ServedSHA = ""
-	served, err := healthObserved(ctx, x.r.URL, sha, &x.r.HTTPStatus)
+	x.r.HTTPPolls = nil
+	var pollWriteErr error
+	served, err := healthObservedWithRecorder(ctx, x.r.URL, sha, &x.r.HTTPStatus, func(poll httpPoll) {
+		x.r.HTTPPolls = append(x.r.HTTPPolls, poll)
+		if pollWriteErr == nil {
+			pollWriteErr = x.writeHTTPPoll(poll)
+		}
+	})
+	if pollWriteErr != nil {
+		err = errors.Join(err, fmt.Errorf("write HTTP poll evidence: %w", pollWriteErr))
+	}
 	x.r.ServedSHA = served
 	x.r.RevisionVerification = revisionVerification(sha, served)
 	if err == nil {

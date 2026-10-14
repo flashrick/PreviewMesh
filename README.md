@@ -457,6 +457,13 @@ and an evidence manifest. Unsupported or invalid runs remain retained with an
 explicit reason instead of being silently removed from the dataset. Run the
 script with `--help` for the full record and retention workflow.
 
+The `previewmesh` HTTP verifier writes one privacy-safe JSON object per poll to
+`http-polls.jsonl` beside the private result artifact. Each row contains UTC
+boundaries, status code, status/SHA checks, latency, and a bounded failure code;
+response bodies and URLs are not retained. `scripts/evaluation_summary.py`
+counts failed requests only when this file is present, otherwise it reports
+request-level evidence as unavailable.
+
 Use [`scripts/evaluation_freeze.py`](scripts/evaluation_freeze.py) after
 verifying the runner to capture the public/control revisions, tool versions,
 resource defaults, image-storage method, experiment-project versions, and
