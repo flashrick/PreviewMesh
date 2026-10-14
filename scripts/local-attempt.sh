@@ -64,7 +64,16 @@ for field, wanted in checks.items():
 PY
 }
 cleanup() {
-  bin/previewmesh cleanup "${common[@]}" --sha "$ATTEMPT_SHA" --evidence evidence/local.csv --result-file evidence/cleanup.json
+  if bin/previewmesh cleanup "${common[@]}" --sha "$ATTEMPT_SHA" --evidence evidence/local.csv --result-file evidence/cleanup.json; then
+    export OUTCOME=removed
+    return 0
+  fi
+  # Recover only the Namespace UID observed after the first failure; never guess a replacement identity.
+  namespace_uid=$(kubectl get namespace "pm-r${REPOSITORY_ID}-pr${PR_NUMBER}" --ignore-not-found -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  if [ -z "$namespace_uid" ]; then
+    return 1
+  fi
+  bin/previewmesh cleanup-retry "${common[@]}" --namespace-uid "$namespace_uid" --cleanup-attempts 3 --timeout 30s --evidence evidence/local.csv --result-file evidence/cleanup.json
   export OUTCOME=removed
 }
 inspect evidence/before.json

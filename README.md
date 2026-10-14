@@ -547,6 +547,11 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 
 `cleanup-retry` performs 1–10 attempts (default 3), rechecks ownership each time, and sends a UID-bound deletion request. Keep the original UID when rerunning it after interruption; do not substitute a replacement Namespace's UID. It never removes finalizers or creates resources. Each external call has its own `--timeout`; this is not a total command deadline. Failed attempts are retained in `cleanup_recovery.attempts`, even when a later attempt succeeds. Success requires confirmed Namespace absence; API errors and exhausted retries return a nonzero exit status. A failed final inspection also returns nonzero.
 
+The normal `scripts/local-attempt.sh` cleanup path invokes the bounded retry after
+the first cleanup failure, using only the Namespace UID freshly observed through
+the same runner credentials. If that UID cannot be read, the attempt fails
+closed instead of guessing an identity.
+
 `cleanup-inspect` discovers all listable namespaced resource types and inventories the target Namespace without label filtering, including Helm history, unlabeled objects, deletion timestamps, and finalizers. JSON contains resource metadata only. `cleanup_inspection.state` is `remaining`, `confirmed_absent`, or `incomplete`; successful inspection with `remaining` means the inventory completed, not that cleanup succeeded. The normal cleanup result also records the post-delete absence boundary, but marks `inventory_complete=false` because Namespace contents cannot be listed after deletion. `duplicate_count` is observed only for a complete inventory; `orphan_count` and cluster-scoped, registry, volume-filesystem, and external scopes remain explicitly unavailable unless independently measured. Forbidden lists, discovery failures, and a Namespace changing during inspection produce an incomplete report and nonzero exit status. Restricted runner credentials may lack access to some discovered types; completed lists are preserved alongside errors. Retain result JSON and optional `--evidence` CSV securely before temporary files are lost.
 
 </details>

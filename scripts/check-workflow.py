@@ -225,12 +225,19 @@ with open('infrastructure.jsonl', 'a') as stream:
 state = pathlib.Path(os.environ['CLUSTER_STATE'])
 namespace = 'pm-r12-pr3'
 if tool == 'kubectl':
+    if args[:3] == ['get', 'namespace', namespace] and 'jsonpath={.metadata.uid}' in args:
+        if state.exists(): print(json.loads(state.read_text())['metadata']['uid'])
+        sys.exit(0)
     if args == ['get', 'namespace', namespace, '--ignore-not-found', '-o', 'json']:
         if state.exists(): print(state.read_text())
         sys.exit(0)
     if args == ['delete', '--raw', '/api/v1/namespaces/' + namespace, '-f', '-']:
         options = json.load(sys.stdin)
         assert options['preconditions']['uid'] == json.loads(state.read_text())['metadata']['uid']
+        marker = state.with_name('cleanup-failed-once')
+        if os.environ.get('FAIL_CLEANUP_ONCE') and not marker.exists():
+            marker.write_text('1')
+            sys.exit(1)
         state.unlink()
         sys.exit(0)
     if args[:3] == ['wait', '--for=delete', 'namespace/' + namespace]:
@@ -314,6 +321,44 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
                 with (run/'evidence/combined.csv').open() as stream:
                     combined = list(csv.DictReader(stream))
                 assert not any(row['stage'] == 'workflow_to_ready' for row in combined)
+
+    # A failed normal cleanup must recover with the UID observed from the same Namespace.
+    retry_case = temp / 'cleanup-retry-normal-workflow'
+    retry_tools = retry_case / 'tools'
+    retry_tools.mkdir(parents=True)
+    retry_state = retry_case / 'namespace.json'
+    retry_state.write_text(json.dumps({'metadata': {'uid': 'cleanup-uid', 'labels': {
+        'previewmesh.local/managed-by': 'previewmesh',
+        'previewmesh.local/repository-id': '12', 'previewmesh.local/pr-number': '3'}}}))
+    shutil.copy2(binary, retry_tools / 'previewmesh')
+    for name, content in [('control', control),
+                          ('kubectl', cleanup_infrastructure),
+                          ('helm', cleanup_infrastructure),
+                          ('docker', cleanup_infrastructure),
+                          ('go', '#!/bin/sh\ncp "$MOCK_TOOLS/$(basename "$3")" "$3"\n')]:
+        path = retry_tools / name
+        path.write_text(content)
+        path.chmod(0o700)
+    retry_env = dict(os.environ, PATH=str(retry_tools)+os.pathsep+os.environ['PATH'],
+                     MOCK_TOOLS=str(retry_tools), CLUSTER_STATE=str(retry_state),
+                     FAIL_CLEANUP_ONCE='1', SCENARIO='pre_closed', REPOSITORY_ID='12',
+                     SOURCE_REPOSITORY='owner/demo', PR_NUMBER='3', BUILT_SHA='', BUILT_IMAGE='',
+                     GITHUB_SERVER_URL='https://github.com', GITHUB_REPOSITORY='owner/control',
+                     GITHUB_RUN_ID='99', GITHUB_RUN_ATTEMPT='1', PREVIEWMESH_DOMAIN_SUFFIX='preview.test')
+    retry_env.pop('PREVIEWMESH_GHCR_USER', None)
+    retry_env.pop('PREVIEWMESH_GHCR_TOKEN', None)
+    retry_run = retry_case / 'run'
+    retry_run.mkdir()
+    completed = subprocess.run(['bash', str(root/'scripts/local-attempt.sh')], cwd=retry_run,
+                               env=retry_env, capture_output=True, text=True)
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    retry_result = json.loads((retry_run/'evidence/cleanup.json').read_text())
+    assert retry_result['cleanup'] == 'confirmed_absent', retry_result
+    assert len(retry_result['cleanup_recovery']['attempts']) == 1, retry_result
+    with (retry_run/'evidence/local.csv').open() as stream:
+        retry_rows = list(csv.DictReader(stream))
+    assert any(row['stage'] == 'cleanup' and row['result'] == 'failure' for row in retry_rows), retry_rows
+    assert not retry_state.exists()
 
     # Timing metadata is available, but it must not hide missing lifecycle evidence.
     report = temp/'report'
