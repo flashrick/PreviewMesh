@@ -430,7 +430,7 @@ Repeat `--namespace` to select particular managed preview namespaces; omit it to
 
 Node CPU is reported in cores and memory in bytes from recent metrics windows, so node totals include system workloads and collection overhead. Preview values require fresh metrics for every expected container and a stable namespace identity. Summary integrals use trapezoids between adjacent available samples only; larger gaps remain uncovered. `resource_minutes` is the canonical CPU core-minute producer: it integrates `cpu_cores` over the observed window, reports `core_minute`, and is `partial` or `unavailable` when that window cannot be fully covered. Repeated recent metrics windows are retained observations, not independent samples.
 
-`helm_release_payload_bytes` counts base64-decoded Kubernetes Secret `data.release` payload bytes held in memory; it is not etcd disk usage. `pvc_requested_bytes` and `pvc_capacity_bytes` describe requested and bound PVC capacity, not filesystem use. Host filesystem use, registry storage, and volume filesystem use are unavailable to this collector.
+`helm_release_payload_bytes` counts base64-decoded Kubernetes Secret `data.release` payload bytes held in memory; it is not etcd disk usage. `pvc_requested_bytes` and `pvc_capacity_bytes` describe requested and bound PVC capacity, not filesystem use. The private summary carries a storage-boundary contract for each metric: host disk, registry image bytes, and filesystem/volume usage remain `unsupported` because they need separate privileged host or registry producers. Their unit, scope, required permission, and point-in-time window are retained in `storage_boundaries`; unsupported and unavailable values are never emitted as zero.
 
 </details>
 

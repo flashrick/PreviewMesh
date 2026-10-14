@@ -257,6 +257,29 @@ class AnalysisReportTests(unittest.TestCase):
         self.assertEqual(not_applicable["available_count"], 0)
         self.assertIsNone(not_applicable["mean"])
 
+    def test_storage_boundaries_are_reported_without_zero_filling(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            document = run_record("run-storage-boundary")
+            document["metrics"]["storage_boundaries"] = {
+                "host_disk_bytes": {
+                    "unit": "byte",
+                    "scope": "cluster",
+                    "availability": "unsupported",
+                    "producer": "separate privileged host/filesystem collector",
+                    "permission": "node filesystem access is unavailable",
+                    "window": "point-in-time sample",
+                    "reason": "host filesystem measurement requires a separate collector",
+                }
+            }
+            write_record(root, "storage", document)
+
+            report = REPORT.analyze([root], small_sample_threshold=1)
+
+            boundary = report["definitions"]["storage_boundaries"]["host_disk_bytes"]
+            self.assertEqual(boundary["availability"], "unsupported")
+            self.assertNotIn("value", boundary)
+
     def test_small_sample_flag_and_warning_are_explicit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

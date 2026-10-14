@@ -610,6 +610,14 @@ class ResourceMetricTests(unittest.TestCase):
                                 }
                             }
                         },
+                        "storage_boundaries": {
+                            "host_disk_bytes": {
+                                "unit": "byte",
+                                "scope": "cluster",
+                                "availability": "unsupported",
+                                "reason": "host filesystem measurement requires a separate collector",
+                            }
+                        },
                     }
                 )
                 + "\n",
@@ -619,6 +627,7 @@ class ResourceMetricTests(unittest.TestCase):
             metrics = RUNNER.resource_metrics(artifacts)
 
             self.assertEqual(metrics["units"]["resource_minutes"], "core_minute")
+            self.assertEqual(metrics["storage_boundaries"]["host_disk_bytes"]["availability"], "unsupported")
             self.assertTrue(metrics["measurements"]["preview:private-uid:cpu"]["available"])
             self.assertTrue(metrics["measurements"]["preview:private-uid:memory"]["available"])
             resource_minutes = metrics["measurements"]["preview:private-uid:resource_minutes"]

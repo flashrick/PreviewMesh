@@ -20,6 +20,63 @@ RESOURCE_MINUTES_DEFINITION = (
     'CPU core-minutes integrated from adjacent fresh cpu_cores observations; '
     'only the observed metrics window is included'
 )
+STORAGE_BOUNDARY_SCHEMA_VERSION = 1
+STORAGE_BOUNDARIES = {
+    'host_disk_bytes': {
+        'unit': 'byte',
+        'scope': 'cluster',
+        'availability': 'unsupported',
+        'producer': 'separate privileged host/filesystem collector',
+        'permission': 'node filesystem access is not provided by the Kubernetes metrics API',
+        'window': 'point-in-time sample; no integration in this collector',
+        'reason': 'host filesystem measurement requires a separate collector',
+    },
+    'registry_image_bytes': {
+        'unit': 'byte',
+        'scope': 'registry',
+        'availability': 'unsupported',
+        'producer': 'registry API or registry storage accounting',
+        'permission': 'registry storage read access is outside the Kubernetes namespace scope',
+        'window': 'registry snapshot; no integration in this collector',
+        'reason': 'registry storage is outside Kubernetes measurement scope',
+    },
+    'filesystem_usage_bytes': {
+        'unit': 'byte',
+        'scope': 'preview',
+        'availability': 'unsupported',
+        'producer': 'node or volume filesystem collector',
+        'permission': 'volume filesystem access is not provided by PVC metadata',
+        'window': 'point-in-time sample; no integration in this collector',
+        'reason': 'PVC capacity does not measure filesystem use',
+    },
+    'pvc_requested_bytes': {
+        'unit': 'byte',
+        'scope': 'preview',
+        'availability': 'conditional',
+        'producer': 'Kubernetes PersistentVolumeClaim spec.resources.requests.storage',
+        'permission': 'namespaced PersistentVolumeClaim read access',
+        'window': 'point-in-time object state; not filesystem usage',
+        'reason': 'unavailable when PVC listing or quantity parsing fails',
+    },
+    'pvc_capacity_bytes': {
+        'unit': 'byte',
+        'scope': 'preview',
+        'availability': 'conditional',
+        'producer': 'Kubernetes bound PersistentVolumeClaim status.capacity.storage',
+        'permission': 'namespaced PersistentVolumeClaim read access',
+        'window': 'point-in-time object state; not filesystem usage',
+        'reason': 'unavailable when PVC listing or quantity parsing fails',
+    },
+    'helm_release_payload_bytes': {
+        'unit': 'byte',
+        'scope': 'preview',
+        'availability': 'conditional',
+        'producer': 'base64-decoded Helm Secret data.release payloads',
+        'permission': 'namespaced Helm Secret read access',
+        'window': 'point-in-time object state; excludes metadata and etcd overhead',
+        'reason': 'unavailable when Helm Secret listing or payload parsing fails',
+    },
+}
 MANAGED_LABEL = 'previewmesh.local/managed-by'
 UNITS = {
     'cpu_cores': 'core', 'memory_bytes': 'byte',
@@ -273,6 +330,8 @@ def summarize(samples, interval, max_gap):
               'samples': len(samples), 'requested_interval_seconds': interval,
               'observed_duration_seconds': elapsed, 'max_gap_seconds': max_gap,
               'integration': 'trapezoidal; adjacent available samples only', 'scopes': {},
+              'storage_boundary_schema_version': STORAGE_BOUNDARY_SCHEMA_VERSION,
+              'storage_boundaries': json.loads(json.dumps(STORAGE_BOUNDARIES)),
               'limitations': ['Sampling can miss transient concurrency and resource peaks.',
                               'Node totals include system workloads and collection overhead.',
                               'Helm payload sizes exclude object metadata, database and filesystem overhead.',

@@ -748,6 +748,7 @@ def resource_metrics(artifacts):
                 "only the observed metrics window is included"
             ),
         },
+        "storage_boundaries": resource.get("storage_boundaries", {}) if resource else {},
         "coverage_seconds": {},
         "unavailable_reasons": [],
         "measurements": {},
@@ -764,6 +765,8 @@ def resource_metrics(artifacts):
         "cpu_cores": "cpu",
         "memory_bytes": "memory",
         "resource_minutes": "resource_minutes",
+        "host_disk_used_bytes": "host_disk_bytes",
+        "volume_used_bytes": "filesystem_usage_bytes",
     }
     for scope_name, scope in (resource.get("scopes") or {}).items():
         measurements = scope.get("measurements", {}) if isinstance(scope, dict) else {}

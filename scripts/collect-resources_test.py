@@ -268,6 +268,16 @@ class QueryAndStorageTests(unittest.TestCase):
         self.assertEqual(storage["pvc_requested_bytes"]["value"], 12 * 1024 ** 3)
         self.assertEqual(storage["pvc_capacity_bytes"]["value"], 8 * 1024 ** 3)
 
+    def test_storage_boundaries_keep_unsupported_metrics_explicit(self):
+        samples = [basic_sample("run", 0.0), basic_sample("run", 10.0)]
+        summary = COLLECTOR.summarize(samples, 10.0, 20.0)
+        boundaries = summary["storage_boundaries"]
+        self.assertEqual(summary["storage_boundary_schema_version"], 1)
+        self.assertEqual(boundaries["host_disk_bytes"]["availability"], "unsupported")
+        self.assertEqual(boundaries["registry_image_bytes"]["unit"], "byte")
+        self.assertEqual(boundaries["filesystem_usage_bytes"]["scope"], "preview")
+        self.assertNotIn("value", boundaries["host_disk_bytes"])
+
 
 class SampleAndAggregationTests(unittest.TestCase):
     def test_namespace_uid_replacement_invalidates_all_preview_measurements(self):

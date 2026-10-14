@@ -51,6 +51,14 @@ def record(
         "cleanup": cleanup or {},
         "metrics": {
             "unavailable_reasons": [],
+            "storage_boundaries": {
+                "host_disk_bytes": {
+                    "unit": "byte",
+                    "scope": "cluster",
+                    "availability": "unsupported",
+                    "reason": "host filesystem measurement requires a separate collector",
+                }
+            },
             "measurements": {
                 "preview:uid-1:cpu": {
                     "available": True,
@@ -168,6 +176,10 @@ class EvaluationSummaryTests(unittest.TestCase):
             self.assertIsNone(summary["cleanup"]["orphan_resources"]["value"])
             self.assertEqual(summary["cleanup"]["orphan_resources"]["availability"], "unavailable")
             self.assertEqual(summary["concurrency"]["capacity_availability"], "unavailable")
+            self.assertEqual(
+                summary["resources"]["storage_boundaries"]["host_disk_bytes"]["availability"],
+                "unsupported",
+            )
 
     def test_zero_failed_requests_remains_an_observed_zero(self):
         with tempfile.TemporaryDirectory() as temporary:

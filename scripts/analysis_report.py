@@ -341,6 +341,21 @@ def _resource_buckets(entries):
     return buckets, by_project, by_concurrency
 
 
+def _storage_boundaries(entries):
+    """Retain static storage measurement contracts without treating gaps as zero."""
+    boundaries = {}
+    for _, record in entries:
+        for name, boundary in ((record.get("metrics") or {}).get("storage_boundaries") or {}).items():
+            if isinstance(name, str) and isinstance(boundary, dict):
+                safe = {
+                    key: boundary[key]
+                    for key in ("unit", "scope", "availability", "producer", "permission", "window", "reason")
+                    if key in boundary and isinstance(boundary[key], (str, int, float, bool))
+                }
+                boundaries.setdefault(name, safe)
+    return {name: boundaries[name] for name in sorted(boundaries)}
+
+
 def _poll_failures(record_path):
     poll_paths = sorted(record_path.parent.rglob("http-polls.jsonl"))
     if not poll_paths:
@@ -553,6 +568,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
     resource_rows, resource_comparisons = _resource_rows(
         resources, project_resources, concurrency_resources, small_sample_threshold
     )
+    storage_boundaries = _storage_boundaries(entries)
     reliability_rows = _reliability_rows(entries, small_sample_threshold)
     all_rows = timing_rows + timing_comparisons + resource_rows + resource_comparisons + reliability_rows
     warnings = _warning_rows(all_rows)
@@ -573,6 +589,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
             "success_rate": "mean of one for success and zero for failure over included lifecycle records",
             "small_sample_threshold": small_sample_threshold,
             "timing_sample_unit": "one sample per timing entry; partial entries remain labelled partial",
+            "storage_boundaries": storage_boundaries,
         },
         "tables": {
             "timing_statistics": timing_rows,

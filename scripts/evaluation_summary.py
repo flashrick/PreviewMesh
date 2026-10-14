@@ -320,10 +320,14 @@ def _scope_class(scope):
 def _resource_summary(records):
     aggregates = {}
     unsupported = set()
+    storage_boundaries = {}
     running_high_water = []
     managed_high_water = []
     for record_path, record in records:
         metrics = record.get("metrics") or {}
+        for name, boundary in (metrics.get("storage_boundaries") or {}).items():
+            if isinstance(name, str) and isinstance(boundary, dict):
+                storage_boundaries.setdefault(name, boundary)
         for reason in metrics.get("unavailable_reasons", []) or []:
             unsupported.add(_reason_category(reason))
         for key, measurement in (metrics.get("measurements") or {}).items():
@@ -396,6 +400,7 @@ def _resource_summary(records):
     return {
         "by_scope": by_scope,
         "unsupported": sorted(unsupported),
+        "storage_boundaries": storage_boundaries,
         "observed_running_high_water": max(running_high_water) if running_high_water else None,
         "observed_managed_high_water": max(managed_high_water) if managed_high_water else None,
     }
@@ -653,6 +658,7 @@ def summarize(paths):
         "resources": {
             "by_scope": resources["by_scope"],
             "unsupported": resources["unsupported"],
+            "storage_boundaries": resources["storage_boundaries"],
         },
         "concurrency": {
             "planned": max(planned) if planned else None,
