@@ -119,6 +119,8 @@ elif args[:2] == ['get', 'namespace']:
     sys.exit(0)
 elif args[:2] == ['patch', 'namespace']: sys.exit(0)
 elif args[:2] == ['get', 'secret']: sys.exit(0)
+elif args[0] == 'wait' and args[1].startswith('--for=condition=PodScheduled'): sys.exit(0)
+elif args[0] == 'wait' and args[1].startswith('--for=jsonpath='): sys.exit(0)
 elif args[:2] == ['rollout', 'status']: sys.exit(1)
 elif args[0] == 'get' and args[1] in ['deployment', 'pods', 'service', 'ingress']:
     print('{}')
@@ -162,7 +164,7 @@ raise SystemExit('Unexpected infrastructure command: ' + repr([tool, *args]))
 
         if scenario.startswith('real_'):
             result = json.loads((case/'evidence/deploy.json').read_text())
-            stage = 'readiness' if scenario == 'real_readiness_failure' else 'deploy'
+            stage = 'pod_readiness' if scenario == 'real_readiness_failure' else 'deploy'
             rollback = 'failed' if scenario == 'real_rollback_failure' else 'not_available'
             assert result['result'] == 'failure' and result['failed_stage'] == stage, result
             assert result['rollback'] == rollback and result['error'], result

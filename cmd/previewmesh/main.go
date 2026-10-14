@@ -547,22 +547,67 @@ func healthObservedWithRecorder(ctx context.Context, url, sha string, status *in
 
 // waitReadiness waits for the workload, Service address, and Ingress controller status.
 func (x *runner) waitReadiness() error {
-	if _, err := x.run(nil, "kubectl", "rollout", "status", "deployment/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
-		return fmt.Errorf("deployment readiness check failed: %w", err)
-	}
 	selector := "app.kubernetes.io/instance=" + x.r.Namespace
-	if _, err := x.run(nil, "kubectl", "wait", "--for=condition=Ready", "pod", "-l", selector, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
-		return fmt.Errorf("pod readiness check failed: %w", err)
+	timeout := "--timeout=" + x.o.timeout.String()
+	checks := []struct {
+		stage string
+		args  []string
+		err   string
+	}{
+		{
+			stage: "scheduling",
+			args:  []string{"kubectl", "wait", "--for=condition=PodScheduled", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
+			err:   "pod scheduling check failed",
+		},
+		{
+			stage: "image_pull",
+			args:  []string{"kubectl", "wait", "--for=jsonpath={.status.containerStatuses[0].imageID}", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
+			err:   "image pull check failed",
+		},
+		{
+			stage: "container_start",
+			args:  []string{"kubectl", "wait", "--for=jsonpath={.status.containerStatuses[0].state.running.startedAt}", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
+			err:   "container start check failed",
+		},
+	}
+	for _, check := range checks {
+		check := check
+		if err := x.stage(check.stage, func() error {
+			if _, err := x.run(nil, check.args[0], check.args[1:]...); err != nil {
+				return fmt.Errorf("%s: %w", check.err, err)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if err := x.stage("pod_readiness", func() error {
+		if _, err := x.run(nil, "kubectl", "rollout", "status", "deployment/"+x.r.Namespace, "-n", x.r.Namespace, timeout); err != nil {
+			return fmt.Errorf("deployment readiness check failed: %w", err)
+		}
+		if _, err := x.run(nil, "kubectl", "wait", "--for=condition=Ready", "pod", "-l", selector, "-n", x.r.Namespace, timeout); err != nil {
+			return fmt.Errorf("pod readiness check failed: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	// ClusterIP assignment is the readiness signal available for this internal Service.
-	if _, err := x.run(nil, "kubectl", "wait", "--for=jsonpath={.spec.clusterIP}", "service/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
-		return fmt.Errorf("service readiness check failed: %w", err)
+	if err := x.stage("service_readiness", func() error {
+		if _, err := x.run(nil, "kubectl", "wait", "--for=jsonpath={.spec.clusterIP}", "service/"+x.r.Namespace, "-n", x.r.Namespace, timeout); err != nil {
+			return fmt.Errorf("service readiness check failed: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	// The controller must publish an ingress point before the route is considered ready.
-	if _, err := x.run(nil, "kubectl", "wait", "--for=jsonpath={.status.loadBalancer.ingress}", "ingress/"+x.r.Namespace, "-n", x.r.Namespace, "--timeout="+x.o.timeout.String()); err != nil {
-		return fmt.Errorf("ingress readiness check failed: %w", err)
-	}
-	return nil
+	return x.stage("ingress_readiness", func() error {
+		if _, err := x.run(nil, "kubectl", "wait", "--for=jsonpath={.status.loadBalancer.ingress}", "ingress/"+x.r.Namespace, "-n", x.r.Namespace, timeout); err != nil {
+			return fmt.Errorf("ingress readiness check failed: %w", err)
+		}
+		return nil
+	})
 }
 
 // writeHTTPPoll appends request metadata beside the private result artifact.

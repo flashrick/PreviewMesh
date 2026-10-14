@@ -439,6 +439,17 @@ def timing_record(scenario, outputs, workflow_metadata):
         "workflow did not emit queue stage timing",
     )
 
+    split_readiness = any(
+        item.get("stage") in {
+            "scheduling",
+            "image_pull",
+            "container_start",
+            "pod_readiness",
+            "service_readiness",
+            "ingress_readiness",
+        }
+        for item in outputs
+    )
     deployment_phases = {
         "build": (
             lambda item: item.get("stage") == "build"
@@ -446,23 +457,27 @@ def timing_record(scenario, outputs, workflow_metadata):
             "workflow did not emit image build timing",
         ),
         "scheduling": (
-            lambda item: False,
+            lambda item: item.get("stage") == "scheduling",
             "workflow artifacts did not include a Kubernetes scheduling transition",
         ),
         "image_pull": (
-            lambda item: False,
+            lambda item: item.get("stage") == "image_pull",
             "workflow artifacts did not include image-pull timing",
         ),
         "container_start": (
-            lambda item: False,
+            lambda item: item.get("stage") == "container_start",
             "workflow artifacts did not include container-start timing",
         ),
         "pod_readiness": (
-            lambda item: item.get("stage") == "readiness",
+            lambda item: item.get("stage") == ("pod_readiness" if split_readiness else "readiness"),
             "workflow did not emit Pod readiness timing",
         ),
         "service_ingress_readiness": (
-            lambda item: item.get("stage") == "readiness",
+            lambda item: (
+                item.get("stage") in {"service_readiness", "ingress_readiness"}
+                if split_readiness
+                else item.get("stage") == "readiness"
+            ),
             "workflow did not emit Service or Ingress readiness timing",
         ),
         "http_verification": (
@@ -495,15 +510,36 @@ def timing_record(scenario, outputs, workflow_metadata):
         phases["pod_readiness"] = _phase_from_outputs(
             outputs,
             *deployment_phases["pod_readiness"],
-            availability="partial",
-            reason=readiness_reason,
+            availability="observed" if split_readiness else "partial",
+            reason="" if split_readiness else readiness_reason,
         )
-        phases["service_ingress_readiness"] = _phase_from_outputs(
-            outputs,
-            *deployment_phases["service_ingress_readiness"],
-            availability="partial",
-            reason=readiness_reason,
-        )
+        service_matches = [
+            item
+            for item in outputs
+            if deployment_phases["service_ingress_readiness"][0](item)
+        ]
+        if split_readiness:
+            service_availability = (
+                "observed"
+                if {item.get("stage") for item in service_matches}
+                == {"service_readiness", "ingress_readiness"}
+                else "partial"
+            )
+            phases["service_ingress_readiness"] = (
+                _phase_from_outputs(
+                    outputs,
+                    *deployment_phases["service_ingress_readiness"],
+                    availability=service_availability,
+                    reason="" if service_availability == "observed" else readiness_reason,
+                )
+            )
+        else:
+            phases["service_ingress_readiness"] = _phase_from_outputs(
+                outputs,
+                *deployment_phases["service_ingress_readiness"],
+                availability="partial",
+                reason=readiness_reason,
+            )
         phases["http_verification"] = _phase_from_outputs(
             outputs,
             *deployment_phases["http_verification"],

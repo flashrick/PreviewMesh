@@ -457,6 +457,11 @@ and an evidence manifest. Unsupported or invalid runs remain retained with an
 explicit reason instead of being silently removed from the dataset. Run the
 script with `--help` for the full record and retention workflow.
 
+New deployment evidence separates scheduling, image pull, container start, Pod
+readiness, Service readiness, and Ingress readiness timings. Older artifacts
+that only contain a combined readiness stage remain `partial` or `unavailable`;
+they are not backfilled with invented boundaries.
+
 The `previewmesh` HTTP verifier writes one privacy-safe JSON object per poll to
 `http-polls.jsonl` beside the private result artifact. Each row contains UTC
 boundaries, status code, status/SHA checks, latency, and a bounded failure code;

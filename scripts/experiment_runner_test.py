@@ -306,6 +306,43 @@ class TimingRecordTests(unittest.TestCase):
         self.assertEqual(timings["phases"]["cleanup"][0]["availability"], "observed")
         self.assertEqual(RUNNER.validate_timings(timings), [])
 
+    def test_timing_record_uses_independent_readiness_boundaries(self):
+        stages = []
+        for index, stage in enumerate(
+            ("scheduling", "image_pull", "container_start", "pod_readiness", "service_readiness", "ingress_readiness")
+        ):
+            stages.append(
+                {
+                    "stage": stage,
+                    "raw_stage": stage,
+                    "started_at_utc": f"2026-10-09T00:00:0{index}Z",
+                    "ended_at_utc": f"2026-10-09T00:00:0{index + 1}Z",
+                    "duration_seconds": 1.0,
+                    "result": "success",
+                    "source": "combined.csv",
+                }
+            )
+
+        timings = RUNNER.timing_record(
+            "create",
+            stages,
+            {
+                "createdAt": "2026-10-09T00:00:00Z",
+                "updatedAt": "2026-10-09T00:00:07Z",
+                "conclusion": "success",
+            },
+        )
+
+        self.assertEqual(timings["phases"]["scheduling"][0]["availability"], "observed")
+        self.assertEqual(timings["phases"]["image_pull"][0]["availability"], "observed")
+        self.assertEqual(timings["phases"]["container_start"][0]["availability"], "observed")
+        self.assertEqual(timings["phases"]["pod_readiness"][0]["availability"], "observed")
+        self.assertEqual(
+            {item["raw_stage"] for item in timings["phases"]["service_ingress_readiness"]},
+            {"service_readiness", "ingress_readiness"},
+        )
+        self.assertEqual(RUNNER.validate_timings(timings), [])
+
     def test_timing_validation_requires_reasons_for_unavailable_phases(self):
         timings = RUNNER.timing_record("create", [], {})
         timings["phases"]["scheduling"][0].pop("unavailable_reason")

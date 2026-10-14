@@ -242,6 +242,15 @@ func TestReadinessChecksAllResources(t *testing.T) {
 	if strings.Index(callText, ingress) < strings.Index(callText, service) {
 		t.Fatalf("readiness checks missing or out of order: %s", callText)
 	}
+	observed := map[string]bool{}
+	for _, timing := range x.r.StageTimings {
+		observed[timing.Stage] = true
+	}
+	for _, stage := range []string{"scheduling", "image_pull", "container_start", "pod_readiness", "service_readiness", "ingress_readiness"} {
+		if !observed[stage] {
+			t.Fatalf("independent readiness stage %q was not recorded: %#v", stage, x.r.StageTimings)
+		}
+	}
 	if requests.Load() != 1 {
 		t.Fatalf("HTTP verification requests=%d, want 1", requests.Load())
 	}

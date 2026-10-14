@@ -472,6 +472,11 @@ measurement 原因、生命周期完整性、清理状态和证据 manifest。Un
 invalid 运行仍会以明确原因保留，不会静默从数据集中删除。完整的记录和
 保留流程请运行 `--help` 查看。
 
+新的 deployment evidence 会分别记录 scheduling、image pull、container
+start、Pod readiness、Service readiness 和 Ingress readiness timing。只有旧的
+合并 readiness stage 的历史 artifact 会保持 `partial` 或 `unavailable`，不
+会补造时间边界。
+
 `previewmesh` HTTP verifier 会在私有 result artifact 旁写入
 `http-polls.jsonl`，每个 poll 一行隐私安全的 JSON，包含 UTC 边界、状态码、
 status/SHA 检查、延迟和有限的失败代码；不会保留响应 body 或 URL。
