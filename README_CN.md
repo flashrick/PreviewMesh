@@ -477,6 +477,10 @@ start、Pod readiness、Service readiness 和 Ingress readiness timing。只有�
 合并 readiness stage 的历史 artifact 会保持 `partial` 或 `unavailable`，不
 会补造时间边界。
 
+PreviewMesh 不执行应用级测试。每条新的运行记录会将 `source-ci` 标为外部
+test owner，并把 `observed`、`unavailable` 或 `not_applicable` 的 test evidence
+与 deployment/HTTP outcome 分开报告。
+
 `previewmesh` HTTP verifier 会在私有 result artifact 旁写入
 `http-polls.jsonl`，每个 poll 一行隐私安全的 JSON，包含 UTC 边界、状态码、
 status/SHA 检查、延迟和有限的失败代码；不会保留响应 body 或 URL。

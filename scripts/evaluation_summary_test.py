@@ -184,6 +184,37 @@ class EvaluationSummaryTests(unittest.TestCase):
             self.assertEqual(summary["http"]["failed_requests"]["availability"], "observed")
             self.assertNotIn("request_level_http_unavailable", summary["limitations"])
 
+    def test_external_application_test_stage_is_reported_separately(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unavailable = record("run-without-test")
+            unavailable["test_stage"] = {
+                "owner": "source-ci",
+                "execution": "external",
+                "availability": "unavailable",
+                "result": "not_run",
+                "unavailable_reason": "source CI artifact was not supplied",
+            }
+            observed = record("run-with-test")
+            observed["test_stage"] = {
+                "owner": "source-ci",
+                "execution": "external",
+                "availability": "observed",
+                "result": "success",
+                "started_at_utc": "2026-10-09T00:00:00Z",
+                "ended_at_utc": "2026-10-09T00:00:01Z",
+                "duration_seconds": 1.0,
+            }
+            write_record(root, "without-test", unavailable)
+            write_record(root, "with-test", observed)
+
+            summary = SUMMARY.summarize([root])
+
+            self.assertEqual(summary["testing"]["owner"], "source-ci")
+            self.assertEqual(summary["testing"]["availability"], "partial")
+            self.assertEqual(summary["testing"]["observed"], 1)
+            self.assertEqual(summary["testing"]["failed"], 0)
+
     def test_same_run_identity_is_counted_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

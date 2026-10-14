@@ -454,6 +454,34 @@ def _cleanup_summary(records):
     }
 
 
+def _test_summary(records):
+    """Keep external application-test ownership distinct from deployment success."""
+    stages = [record.get("test_stage") for _, record in records if record.get("test_stage") is not None]
+    observed = [stage for stage in stages if isinstance(stage, dict) and stage.get("availability") == "observed"]
+    failures = sum(stage.get("result") == "failure" for stage in observed)
+    if not stages:
+        return {
+            "owner": "source-ci",
+            "execution": "external",
+            "availability": "unavailable",
+            "observed": 0,
+            "failed": 0,
+            "reason": "run records do not include an application-test stage",
+        }
+    availability = "observed" if len(observed) == len(stages) else "partial" if observed else "unavailable"
+    result = {
+        "owner": "source-ci",
+        "execution": "external",
+        "availability": availability,
+        "records": len(stages),
+        "observed": len(observed),
+        "failed": failures,
+    }
+    if availability != "observed":
+        result["reason"] = "application tests were external or not supplied for every selected record"
+    return result
+
+
 def _execution_interval(record):
     execution = record.get("execution") or {}
     if execution.get("availability") != "observed":
@@ -576,6 +604,7 @@ def summarize(paths):
     http_summary = _http_poll_summary(records)
     cleanup_summary = _cleanup_summary(records)
     project_sizes = _project_size_summary(records)
+    test_summary = _test_summary(records)
     concurrency_breakdown = _concurrency_breakdown(records)
     actual_overlap, overlap_availability, overlap_reason = _actual_overlap(considered)
     planned = [_number(record.get("conditions", {}).get("concurrency")) for _, record in records]
@@ -614,6 +643,7 @@ def summarize(paths):
             "failed_requests": http_summary,
         },
         "cleanup": cleanup_summary,
+        "testing": test_summary,
         "resources": {
             "by_scope": resources["by_scope"],
             "unsupported": resources["unsupported"],
@@ -637,6 +667,7 @@ def summarize(paths):
             | ({"recovery_time_unavailable"} if recovery_metric["availability"] == "unavailable" else set())
             | ({"duplicate_inventory_unavailable"} if cleanup_summary["duplicate_resources"]["availability"] == "unavailable" else set())
             | ({"orphan_inventory_unavailable"} if cleanup_summary["orphan_resources"]["availability"] == "unavailable" else set())
+            | ({"application_test_unavailable"} if test_summary["availability"] == "unavailable" else set())
             | ({"unsupported_project_size"} if any(item["unsupported"] for item in project_sizes) else set())
         ),
     }

@@ -53,6 +53,7 @@ TIMING_PHASES = (
 )
 TIMING_AVAILABILITIES = {"observed", "partial", "unavailable", "not_applicable"}
 EXECUTION_AVAILABILITIES = {"observed", "unavailable", "not_applicable"}
+TEST_AVAILABILITIES = {"observed", "unavailable", "not_applicable"}
 EXPECTED_STAGES = {
     "create": ("event", "build", "deploy", "readiness", "http_verify", "report"),
     "update": ("event", "build", "deploy", "readiness", "http_verify", "report"),
@@ -396,6 +397,38 @@ def _phase_from_outputs(outputs, predicate, missing_reason, availability="observ
     if not matching:
         return [_unavailable_timing("unavailable", missing_reason)]
     return [_timing_entry(item, availability=availability, reason=reason) for item in matching]
+
+
+def test_stage_record(scenario, outputs, unsupported=False):
+    """Record external application-test ownership without treating non-execution as success."""
+    observed = timing_for(outputs, "test")
+    if observed:
+        return {
+            "schema_version": 1,
+            "owner": "source-ci",
+            "execution": "external",
+            **_timing_entry(observed),
+        }
+    if unsupported:
+        reason = "unsupported condition was not dispatched"
+        availability = "not_applicable"
+    elif scenario == "close":
+        reason = "close scenario does not execute application tests"
+        availability = "not_applicable"
+    else:
+        reason = "application-level tests are owned by source CI; no test artifact was supplied"
+        availability = "unavailable"
+    return {
+        "schema_version": 1,
+        "owner": "source-ci",
+        "execution": "external",
+        "started_at_utc": None,
+        "ended_at_utc": None,
+        "duration_seconds": None,
+        "availability": availability,
+        "result": "not_run",
+        "unavailable_reason": reason,
+    }
 
 
 def _workflow_interval(workflow_metadata):
@@ -1008,6 +1041,7 @@ def build_record(spec, archive, results, outputs, workflow_metadata, unsupported
             "final": {"status": "unavailable", "reason": "workflow state snapshot not exported"},
         },
         "outcome": outcome,
+        "test_stage": test_stage_record(scenario, outputs, unsupported=unsupported),
         "failure_evidence": failure_evidence(spec, results, outputs, outcome),
         "http_poll_evidence": http_poll_evidence(archive, results),
         "failure_trigger": (
@@ -1180,6 +1214,35 @@ def validate_record(record, require_measurements=True):
                 errors.append("http_poll_evidence.poll_count is invalid")
             if http_evidence.get("availability") in {"partial", "unavailable"} and not http_evidence.get("reason"):
                 errors.append("http_poll_evidence missing availability reason")
+
+    test_stage = record.get("test_stage")
+    if test_stage is not None:
+        if not isinstance(test_stage, dict):
+            errors.append("test_stage must be an object")
+        else:
+            if test_stage.get("owner") != "source-ci":
+                errors.append("test_stage.owner must be source-ci")
+            if test_stage.get("execution") != "external":
+                errors.append("test_stage.execution must be external")
+            availability = test_stage.get("availability")
+            if availability not in TEST_AVAILABILITIES:
+                errors.append("test_stage.availability is invalid")
+            if availability in {"unavailable", "not_applicable"}:
+                if not isinstance(test_stage.get("unavailable_reason"), str) or not test_stage.get("unavailable_reason"):
+                    errors.append("test_stage missing unavailable reason")
+                if any(test_stage.get(field) is not None for field in ("started_at_utc", "ended_at_utc", "duration_seconds")):
+                    errors.append("test_stage has values for an unavailable stage")
+            elif availability == "observed":
+                try:
+                    test_started = parse_timestamp(test_stage.get("started_at_utc"))
+                    test_ended = parse_timestamp(test_stage.get("ended_at_utc"))
+                except (TypeError, ValueError):
+                    errors.append("test_stage is missing valid UTC boundaries")
+                else:
+                    if test_ended < test_started:
+                        errors.append("test_stage ends before it starts")
+                if not isinstance(test_stage.get("duration_seconds"), (int, float)) or test_stage.get("duration_seconds") < 0:
+                    errors.append("test_stage.duration_seconds is invalid")
 
     cleanup = record.get("cleanup")
     if not isinstance(cleanup, dict):

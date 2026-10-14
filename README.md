@@ -462,6 +462,10 @@ readiness, Service readiness, and Ingress readiness timings. Older artifacts
 that only contain a combined readiness stage remain `partial` or `unavailable`;
 they are not backfilled with invented boundaries.
 
+PreviewMesh does not run application-level tests. Each new run record identifies
+`source-ci` as the external test owner and reports `observed`, `unavailable`, or
+`not_applicable` test evidence separately from deployment and HTTP outcomes.
+
 The `previewmesh` HTTP verifier writes one privacy-safe JSON object per poll to
 `http-polls.jsonl` beside the private result artifact. Each row contains UTC
 boundaries, status code, status/SHA checks, latency, and a bounded failure code;
