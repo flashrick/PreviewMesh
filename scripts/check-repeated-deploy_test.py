@@ -35,6 +35,10 @@ class DuplicateDetectionTest(unittest.TestCase):
         items = self.items + [other]
         self.assertEqual(self.check(items), self.check(list(reversed(items))))
         self.assertNotEqual(self.check(items), self.check(self.items))
+        self.assertEqual(
+            self.check(module.metadata_inventory(items)),
+            self.check(items),
+        )
 
     def test_duplicate_namespace_identity(self):
         duplicate = copy.deepcopy(self.items[0])
@@ -65,6 +69,54 @@ class DuplicateDetectionTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, item['kind']):
                     self.check([other for other in self.items if other is not item])
 
+
+class IdentityEvidenceTest(unittest.TestCase):
+    def test_metadata_inventory_excludes_payloads_and_keeps_finalizers(self):
+        secret = {
+            'kind': 'Secret',
+            'metadata': {
+                'namespace': 'pm-r123-pr4',
+                'name': 'image-pull',
+                'uid': 'uid-secret',
+                'finalizers': ['example/finalizer'],
+                'labels': {'purpose': 'image-pull'},
+                'annotations': {'private': 'not-retained', 'previewmesh.local/state': 'ready'},
+            },
+            'data': {'token': 'must-not-be-retained'},
+        }
+
+        inventory = module.metadata_inventory([secret], 'pm-r123-pr4')
+
+        self.assertEqual(inventory[0]['uid'], 'uid-secret')
+        self.assertEqual(inventory[0]['finalizers'], ['example/finalizer'])
+        self.assertNotIn('data', inventory[0])
+        self.assertNotIn('private', inventory[0]['annotations'])
+
+    def test_identity_comparison_allows_only_the_requested_recreated_kind(self):
+        namespace = 'pm-r123-pr4'
+        before = [
+            {'kind': 'Deployment', 'namespace': namespace, 'name': 'preview', 'uid': 'deployment-a'},
+            {'kind': 'Service', 'namespace': namespace, 'name': 'preview', 'uid': 'service-a'},
+        ]
+        after = [dict(item) for item in before]
+        after[0]['uid'] = 'deployment-b'
+
+        module.compare_identity_indexes(before, after, 'Deployment')
+        with self.assertRaisesRegex(RuntimeError, 'identity change'):
+            module.compare_identity_indexes(before, after, 'Service')
+
+    def test_helm_history_is_append_only_and_revision_unique(self):
+        before = [{'name': 'sh.helm.release.v1.preview.v1', 'uid': 'helm-1', 'revision': '1'}]
+        after = before + [{'name': 'sh.helm.release.v1.preview.v2', 'uid': 'helm-2', 'revision': '2'}]
+
+        comparison = module.compare_helm_history(before, after)
+
+        self.assertEqual(comparison['before_count'], 1)
+        self.assertEqual(comparison['added_names'], ['sh.helm.release.v1.preview.v2'])
+        with self.assertRaisesRegex(RuntimeError, 'removed'):
+            module.compare_helm_history(after, before)
+        with self.assertRaisesRegex(RuntimeError, 'duplicate'):
+            module.compare_helm_history(before, before + [dict(before[0])])
 
 if __name__ == '__main__':
     unittest.main()

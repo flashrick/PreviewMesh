@@ -711,7 +711,7 @@ explicitly says they require a live cluster.
 | `scripts/check-installer.py` | Large offline installer suite covering configuration, credentials, checkpoints, GitHub/K3s/Traefik/WSL/Runner boundaries, downloads, and maintenance. |
 | `scripts/check-notification.mjs` | Extracts the GitHub Script from `templates/source-notify.yml` and tests repeated event dispatch in memory. |
 | `scripts/check-onboard-source.py` | Mocks GitHub Git/tree/PR APIs to verify that `setup_onboard.py` changes only the notification workflow. |
-| `scripts/check-repeated-deploy.py` | Live-cluster repeated-deployment and missing-resource check; validates ownership, Helm values, resource identity, and recovery. Its repair mode is intentionally destructive to selected preview resources. |
+| `scripts/check-repeated-deploy.py` | Live-cluster repeated-deployment and missing-resource check; validates ownership, Helm values, sanitized Namespace/Deployment/Service/Ingress/PVC/Secret identity metadata, append-only Helm history, finalizers, and recovery. `--update-sha`/`--update-image` also verify a second revision with stable preview identity. Its repair mode is intentionally destructive to selected preview resources. |
 | `scripts/check-repeated-deploy_test.py` | Offline tests for repeated-resource detection. |
 | `scripts/check-setup-ui.py` | Tests the optional terminal UI, fallback, and bootstrap adapters. |
 | `scripts/check-setup-wizard.py` | Tests wizard discovery, input validation, drafts, language, network, and port handling. |
