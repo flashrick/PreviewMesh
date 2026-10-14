@@ -741,7 +741,13 @@ def resource_metrics(artifacts):
             resource, resource_path = document, path
             break
     metrics = {
-        "units": {"cpu": "core", "memory": "byte", "storage": "byte", "resource_minutes": "unit_minute"},
+        "units": {"cpu": "core", "memory": "byte", "storage": "byte", "resource_minutes": "core_minute"},
+        "definitions": {
+            "resource_minutes": (
+                "CPU core-minutes integrated from adjacent fresh cpu_cores observations; "
+                "only the observed metrics window is included"
+            ),
+        },
         "coverage_seconds": {},
         "unavailable_reasons": [],
         "measurements": {},
@@ -754,22 +760,45 @@ def resource_metrics(artifacts):
         metrics["coverage_seconds"]["resource_collection"] = observed
     else:
         metrics["unavailable_reasons"].append("resource summary has no observed duration")
+    metric_names = {
+        "cpu_cores": "cpu",
+        "memory_bytes": "memory",
+        "resource_minutes": "resource_minutes",
+    }
     for scope_name, scope in (resource.get("scopes") or {}).items():
         measurements = scope.get("measurements", {}) if isinstance(scope, dict) else {}
-        for metric_name, measurement in measurements.items():
+        for raw_metric_name, measurement in measurements.items():
             if not isinstance(measurement, dict):
                 continue
+            metric_name = metric_names.get(raw_metric_name, raw_metric_name)
             key = f"{scope_name}:{metric_name}"
+            availability = measurement.get("availability")
+            if availability not in {"observed", "partial", "unavailable"}:
+                if measurement.get("complete") is True:
+                    availability = "observed"
+                elif measurement.get("covered_seconds", 0) > 0:
+                    availability = "partial"
+                else:
+                    availability = "unavailable"
+            value = measurement.get("value", measurement.get("integral"))
             metrics["measurements"][key] = {
-                "available": measurement.get("complete", False),
-                "unit": measurement.get("integral_unit") or measurement.get("unit"),
-                "value": measurement.get("integral"),
+                "available": availability == "observed",
+                "availability": availability,
+                "unit": measurement.get("unit") or measurement.get("integral_unit"),
+                "value": value,
                 "covered_seconds": measurement.get("covered_seconds", 0),
                 "uncovered_seconds": measurement.get("uncovered_seconds", 0),
             }
-            if not measurement.get("complete", False):
+            for field in (
+                "schema_version", "definition", "source_metric", "available_samples",
+                "unavailable_samples", "window_started_at_utc", "window_ended_at_utc",
+                "observed_duration_seconds",
+            ):
+                if field in measurement:
+                    metrics["measurements"][key][field] = measurement[field]
+            if availability != "observed":
                 metrics["unavailable_reasons"].append(
-                    f"{key} coverage is incomplete or unavailable"
+                    f"{key} coverage is {availability}"
                 )
     return metrics
 

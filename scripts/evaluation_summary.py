@@ -336,15 +336,20 @@ def _resource_summary(records):
             group_key = (_scope_class(scope), metric_name, measurement.get("unit") or "unavailable")
             group = aggregates.setdefault(
                 group_key,
-                {"values": [], "covered_seconds": 0.0, "available": 0, "total": 0},
+                {"values": [], "covered_seconds": 0.0, "available": 0, "partial": 0, "total": 0},
             )
             group["total"] += 1
-            if measurement.get("available") and _number(measurement.get("value")) is not None:
+            availability = measurement.get("availability")
+            if availability not in {"observed", "partial", "unavailable"}:
+                availability = "observed" if measurement.get("available") else "unavailable"
+            if availability == "observed" and _number(measurement.get("value")) is not None:
                 group["available"] += 1
                 group["values"].append(float(measurement["value"]))
                 covered = _number(measurement.get("covered_seconds"))
                 if covered is not None:
                     group["covered_seconds"] += covered
+            elif availability == "partial":
+                group["partial"] += 1
             else:
                 unsupported.add(_reason_category(f"{metric_name} unavailable"))
         for summary in _resource_summaries(record_path):
@@ -366,10 +371,10 @@ def _resource_summary(records):
             availability = "observed"
             value = sum(group["values"])
             reason = None
-        elif group["available"]:
+        elif group["available"] or group["partial"]:
             availability = "partial"
-            value = sum(group["values"])
-            reason = "some measurements were unavailable or incomplete"
+            value = sum(group["values"]) if group["values"] else None
+            reason = "some measurements were incomplete or unavailable"
         else:
             availability = "unavailable"
             value = None
@@ -384,6 +389,7 @@ def _resource_summary(records):
                 metric=metric_name,
                 sample_count=group["total"],
                 available_count=group["available"],
+                partial_count=group["partial"],
                 covered_seconds=group["covered_seconds"] or None,
             )
         )

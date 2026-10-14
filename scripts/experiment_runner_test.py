@@ -571,6 +571,63 @@ class CleanupRecordTests(unittest.TestCase):
         )
 
 
+class ResourceMetricTests(unittest.TestCase):
+    def test_resource_metrics_normalizes_collector_fields_and_retains_partial_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "samples": 2,
+                        "observed_duration_seconds": 10,
+                        "scopes": {
+                            "preview:private-uid": {
+                                "measurements": {
+                                    "cpu_cores": {
+                                        "unit": "core",
+                                        "integral": 0.25,
+                                        "integral_unit": "core_minute",
+                                        "complete": True,
+                                        "covered_seconds": 10,
+                                        "uncovered_seconds": 0,
+                                    },
+                                    "memory_bytes": {
+                                        "unit": "byte",
+                                        "integral": 1024,
+                                        "integral_unit": "byte_minute",
+                                        "complete": True,
+                                        "covered_seconds": 10,
+                                        "uncovered_seconds": 0,
+                                    },
+                                    "resource_minutes": {
+                                        "unit": "core_minute",
+                                        "value": 0.25,
+                                        "availability": "partial",
+                                        "covered_seconds": 5,
+                                        "uncovered_seconds": 5,
+                                    },
+                                }
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            metrics = RUNNER.resource_metrics(artifacts)
+
+            self.assertEqual(metrics["units"]["resource_minutes"], "core_minute")
+            self.assertTrue(metrics["measurements"]["preview:private-uid:cpu"]["available"])
+            self.assertTrue(metrics["measurements"]["preview:private-uid:memory"]["available"])
+            resource_minutes = metrics["measurements"]["preview:private-uid:resource_minutes"]
+            self.assertFalse(resource_minutes["available"])
+            self.assertEqual(resource_minutes["availability"], "partial")
+            self.assertAlmostEqual(resource_minutes["value"], 0.25)
+            self.assertTrue(any("resource_minutes coverage is partial" in reason for reason in metrics["unavailable_reasons"]))
+
+
 class UnsupportedRecordTests(unittest.TestCase):
     def test_unsupported_record_is_written_without_dispatching(self):
         reason = "fixture does not support the requested scenario"

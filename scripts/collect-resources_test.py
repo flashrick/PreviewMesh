@@ -322,6 +322,24 @@ class SampleAndAggregationTests(unittest.TestCase):
         self.assertFalse(cpu["complete"])
         self.assertEqual(cpu["minimum"], 1.0)
         self.assertEqual(cpu["maximum"], 7.0)
+        resource_minutes = summary["scopes"]["preview:uid-1"]["measurements"]["resource_minutes"]
+        self.assertEqual(resource_minutes["unit"], "core_minute")
+        self.assertEqual(resource_minutes["source_metric"], "cpu_cores")
+        self.assertEqual(resource_minutes["availability"], "partial")
+        self.assertAlmostEqual(resource_minutes["value"], 20 / 60)
+
+    def test_resource_minutes_is_observed_only_for_complete_cpu_window(self):
+        samples = [
+            basic_sample("run", 0.0, cpu=2.0),
+            basic_sample("run", 10.0, cpu=2.0),
+        ]
+        summary = COLLECTOR.summarize(samples, 10.0, 20.0)
+        resource_minutes = summary["scopes"]["preview:uid-1"]["measurements"]["resource_minutes"]
+        self.assertEqual(resource_minutes["availability"], "observed")
+        self.assertTrue(resource_minutes["available"])
+        self.assertAlmostEqual(resource_minutes["value"], 1 / 3)
+        self.assertEqual(resource_minutes["window_started_at_utc"], samples[0]["started_at_utc"])
+        self.assertEqual(resource_minutes["window_ended_at_utc"], samples[-1]["ended_at_utc"])
 
 
 class ConcurrencyAndCLITests(unittest.TestCase):

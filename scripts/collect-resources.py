@@ -15,6 +15,11 @@ import time
 
 
 SCHEMA_VERSION = 1
+RESOURCE_MINUTES_SCHEMA_VERSION = 1
+RESOURCE_MINUTES_DEFINITION = (
+    'CPU core-minutes integrated from adjacent fresh cpu_cores observations; '
+    'only the observed metrics window is included'
+)
 MANAGED_LABEL = 'previewmesh.local/managed-by'
 UNITS = {
     'cpu_cores': 'core', 'memory_bytes': 'byte',
@@ -298,6 +303,34 @@ def summarize(samples, interval, max_gap):
                 'covered_seconds': covered, 'uncovered_seconds': max(0, elapsed - covered),
                 'complete': bool(covered) and math.isclose(covered, elapsed),
             }
+        cpu = scope['measurements']['cpu_cores']
+        covered = cpu['covered_seconds']
+        if covered <= 0:
+            availability = 'unavailable'
+            value = None
+        elif cpu['complete']:
+            availability = 'observed'
+            value = cpu['integral']
+        else:
+            availability = 'partial'
+            value = cpu['integral']
+        scope['measurements']['resource_minutes'] = {
+            'schema_version': RESOURCE_MINUTES_SCHEMA_VERSION,
+            'definition': RESOURCE_MINUTES_DEFINITION,
+            'source_metric': 'cpu_cores',
+            'unit': 'core_minute',
+            'value': value,
+            'availability': availability,
+            'available': availability == 'observed',
+            'available_samples': cpu['available_samples'],
+            'unavailable_samples': cpu['unavailable_samples'],
+            'covered_seconds': covered,
+            'uncovered_seconds': cpu['uncovered_seconds'],
+            'complete': cpu['complete'],
+            'window_started_at_utc': samples[0].get('started_at_utc'),
+            'window_ended_at_utc': samples[-1].get('ended_at_utc'),
+            'observed_duration_seconds': elapsed,
+        }
     return result
 
 
