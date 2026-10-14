@@ -1,0 +1,60 @@
+{
+  "schema_version": "previewmesh-failure-scenarios-v1",
+  "evidence_rule": "A failure scenario is reportable only when the run record proves the trigger and recovery boundaries; a requested type alone remains unknown.",
+  "scenarios": [
+    {
+      "id": "deployment",
+      "trigger_stages": ["deploy"],
+      "recovery_actions": ["rollback", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "http",
+      "trigger_stages": ["http_verify"],
+      "recovery_actions": ["retry", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "cleanup",
+      "trigger_stages": ["cleanup"],
+      "recovery_actions": ["cleanup-retry", "manual"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "missing-resource",
+      "trigger_stages": ["deploy", "readiness"],
+      "recovery_actions": ["reconcile", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "endpoint-refused",
+      "trigger_stages": ["http_verify"],
+      "recovery_actions": ["retry", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "pod-crash",
+      "trigger_stages": ["readiness"],
+      "recovery_actions": ["restart", "rollback", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "worker-restart",
+      "trigger_stages": ["event", "deploy", "readiness", "report"],
+      "recovery_actions": ["retry", "resume", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "control-plane-outage",
+      "trigger_stages": ["deploy", "readiness", "cleanup"],
+      "recovery_actions": ["retry", "resume", "cleanup"],
+      "live_evidence_status": "unknown"
+    },
+    {
+      "id": "hosted-pr-update",
+      "trigger_stages": ["event", "deploy", "report"],
+      "recovery_actions": ["supersede", "reconcile", "cleanup"],
+      "live_evidence_status": "unknown"
+    }
+  ]
+}

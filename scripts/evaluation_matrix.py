@@ -13,7 +13,19 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 PROJECT_SIZES = {"simple", "frontend-backend", "multi-service", "unknown"}
 SCENARIOS = {"create", "update", "close", "reopen", "failure"}
-FAILURE_TYPES = {"none", "deployment", "http", "cleanup", "unsupported"}
+FAILURE_TYPES = {
+    "none",
+    "deployment",
+    "http",
+    "cleanup",
+    "missing-resource",
+    "endpoint-refused",
+    "pod-crash",
+    "worker-restart",
+    "control-plane-outage",
+    "hosted-pr-update",
+    "unsupported",
+}
 BUILD_POLICIES = {"rebuild", "reuse-cache"}
 CONCURRENCY_LEVELS = (1, 5, 10, 20)
 FORMAL_REPETITIONS = 20

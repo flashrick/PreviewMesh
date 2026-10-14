@@ -497,8 +497,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/analysis_report.py \
 `charts/failure-scenarios-total-feedback.svg`。报告按 `project_size`、
 `concurrency`、`outcome` 和 `failure_scenario` 分组。failure scenario 优先
 使用非 `none` 的 `conditions.failure_type`，否则使用失败记录的
-`failure_trigger`，再否则使用 `none`；这只是记录字段分组，不代表受控的
-失败注入实验。
+`failure_trigger`，再否则使用 `none`。新的运行记录还会保存
+`failure_evidence`；如果请求的故障类型没有观察到触发证据，则分组为
+`unknown`。这是记录证据边界，不代表每种故障都已经完成受控注入测试。
 
 记录会在不要求 measurement 的情况下验证。失败的生命周期记录仍保留在
 success/failure 分析 cohort 中；unsupported 和 invalid 记录仍保留在输入

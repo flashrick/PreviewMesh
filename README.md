@@ -485,8 +485,10 @@ record identities. The output directory contains `analysis.json`, `report.md`,
 timing comparisons by `project_size`, `concurrency`, `outcome`, and
 `failure_scenario`. A failure scenario uses a non-`none`
 `conditions.failure_type`, then a failed record's `failure_trigger`, and
-otherwise `none`; this is recorded-field grouping, not controlled failure
-injection.
+otherwise `none`. New run records also retain `failure_evidence`; a requested
+type whose trigger was not observed is grouped as `unknown`. This is a
+recorded-evidence boundary, not a claim that every failure type has been
+controlled-injection tested.
 
 Records are validated without requiring measurements. Failed lifecycle records
 remain in the success/failure analysis cohort, while unsupported and invalid
@@ -626,6 +628,8 @@ flowchart LR
 | --- | --- |
 | `config/repositories.example.json` | Public schema example for private-control registrations: repository ID, source name, application port, and Secret name. |
 | `config/repositories.json` | Current public registry file; it is empty here. A private control checkout supplies real registrations to `cmd/control`, installer checks, and Secret setup. |
+| `config/evaluation-matrix.example.json` | Public example of the versioned evaluation matrix; it contains placeholders only. |
+| `config/failure-scenarios.example.json` | Credential-free fault-injection contract and explicit live-evidence status for each recovery scenario. |
 | `config/setup.example.ini` | Commented installer configuration template for control/source repositories, directories, network, domain, ports, and token file paths; it never stores token values. |
 
 ### `ops/install/`
@@ -686,6 +690,7 @@ explicitly says they require a live cluster.
 | `scripts/analysis_report.py` | Reads validated private run records and writes privacy-safe aggregate JSON, CSV, Markdown, and SVG analysis outputs; preserves explicit missing, not-applicable, unsupported, and small-sample classifications. |
 | `scripts/analysis_report_test.py` | Focused deterministic tests for descriptive statistics, retention/exclusion policy, missing values, small samples, comparison dimensions, and generated outputs. |
 | `scripts/evaluation_matrix.py` | Validates project-size, revision, failure, repetition, image-policy, and stepped-concurrency conditions before evaluation runs begin. |
+| `scripts/failure_scenarios.py` | Validates the public fault-injection/recovery scenario contract without contacting GitHub or Kubernetes. |
 | `scripts/evaluation_freeze.py` | Captures a private evaluation freeze, selected record manifest, tool/configuration metadata, and integrity summary without copying private evidence into this checkout. |
 | `scripts/evaluation_summary.py` | Produces aggregate evaluation summaries from retained run records while preserving missing and unsupported categories. |
 | `scripts/evidence_audit.py` | Audits retained evidence completeness and reports bounded status and exclusion categories. |

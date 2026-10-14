@@ -70,6 +70,31 @@ RECOVERY_MODES = {
     "unavailable",
 }
 PROJECT_SIZES = {"simple", "frontend-backend", "multi-service", "unknown"}
+FAILURE_TYPES = {
+    "none",
+    "deployment",
+    "http",
+    "cleanup",
+    "missing-resource",
+    "endpoint-refused",
+    "pod-crash",
+    "worker-restart",
+    "control-plane-outage",
+    "hosted-pr-update",
+    "unsupported",
+}
+FAILURE_TRIGGER_STAGES = {
+    "deployment": ("deploy",),
+    "http": ("http_verify",),
+    "cleanup": ("cleanup",),
+    "missing-resource": ("deploy", "readiness"),
+    "endpoint-refused": ("http_verify",),
+    "pod-crash": ("readiness",),
+    "worker-restart": ("event", "deploy", "readiness", "report"),
+    "control-plane-outage": ("deploy", "readiness", "cleanup"),
+    "hosted-pr-update": ("event", "deploy", "report"),
+}
+FAILURE_EVIDENCE_AVAILABILITIES = {"observed", "partial", "unavailable", "not_applicable"}
 
 
 class RunnerError(Exception):
@@ -614,8 +639,8 @@ def infer_timeline(scenario, outputs, workflow_metadata):
 def expected_stages(scenario, conditions):
     stages = list(EXPECTED_STAGES.get(scenario, EXPECTED_STAGES["failure"]))
     failure_type = conditions.get("failure_type", "none")
-    if scenario == "failure" and failure_type in {"deployment", "http", "cleanup"}:
-        stages.insert(1, {"deployment": "deploy", "http": "http_verify", "cleanup": "cleanup"}[failure_type])
+    if scenario == "failure" and failure_type in FAILURE_TRIGGER_STAGES:
+        stages.insert(1, FAILURE_TRIGGER_STAGES[failure_type][0])
     return stages
 
 
@@ -771,6 +796,75 @@ def evidence_manifest(archive):
     return {"path": str(archive), "bytes": total_bytes, "sha256": manifest_hash, "file_count": len(entries)}
 
 
+def failure_evidence(spec, results, outputs, outcome):
+    """Separate a requested fault from evidence that the fault actually occurred."""
+    requested = spec["conditions"].get("failure_type", "none")
+    failed = next((item for item in outputs if item.get("result") == "failure"), None)
+    recovery = next(
+        (
+            item
+            for item in outputs
+            if item.get("stage") == "rollback" and item.get("result") == "success"
+        ),
+        None,
+    )
+    if recovery is None and spec["scenario"] in {"close", "reopen", "failure"}:
+        recovery = next(
+            (
+                item
+                for item in outputs
+                if item.get("stage") == "cleanup" and item.get("result") == "success"
+            ),
+            None,
+        )
+
+    expected_stages = set(FAILURE_TRIGGER_STAGES.get(requested, ()))
+    if requested in {"none", "unsupported"}:
+        availability = "observed" if requested == "none" and failed else "not_applicable"
+        reason = (
+            "no requested fault injection"
+            if requested == "unsupported"
+            else "no failure was observed for an untyped run"
+        )
+    elif failed is None:
+        availability = "unavailable"
+        reason = "failure trigger output was not retained"
+    elif expected_stages and failed.get("stage") in expected_stages:
+        availability = "observed"
+        reason = ""
+    else:
+        availability = "partial"
+        reason = "a failure was observed, but its stage did not match the requested fault"
+
+    trigger = {
+        "stage": failed.get("raw_stage") if failed else None,
+        "started_at_utc": failed.get("started_at_utc") if failed else None,
+        "ended_at_utc": failed.get("ended_at_utc") if failed else None,
+        "result": failed.get("result") if failed else "not_observed",
+    }
+    recovery_document = {
+        "action": recovery.get("raw_stage") if recovery else "unavailable",
+        "started_at_utc": recovery.get("started_at_utc") if recovery else None,
+        "verified_at_utc": recovery.get("ended_at_utc") if recovery else None,
+        "result": recovery.get("result") if recovery else "not_observed",
+        "availability": "observed" if recovery else "unavailable",
+    }
+    served_sha = results.get("deploy", {}).get("served_sha")
+    last_good_revision = served_sha if isinstance(served_sha, str) and SHA_RE.fullmatch(served_sha) else "unavailable"
+    document = {
+        "schema_version": 1,
+        "requested_type": requested,
+        "availability": availability,
+        "trigger": trigger,
+        "last_good_revision": last_good_revision,
+        "recovery": recovery_document,
+        "final_status": outcome,
+    }
+    if reason:
+        document["reason"] = reason
+    return document
+
+
 def build_record(spec, archive, results, outputs, workflow_metadata, unsupported=False):
     scenario = spec["scenario"]
     conditions = spec["conditions"]
@@ -798,6 +892,7 @@ def build_record(spec, archive, results, outputs, workflow_metadata, unsupported
             "final": {"status": "unavailable", "reason": "workflow state snapshot not exported"},
         },
         "outcome": outcome,
+        "failure_evidence": failure_evidence(spec, results, outputs, outcome),
         "failure_trigger": (
             conditions.get("failure_type", "none")
             if conditions.get("failure_type", "none") != "none"
@@ -910,6 +1005,52 @@ def validate_record(record, require_measurements=True):
         errors.append("recovery_mode is invalid")
     if not isinstance(record.get("failure_trigger"), str) or not record.get("failure_trigger"):
         errors.append("failure_trigger is missing")
+
+    failure_document = record.get("failure_evidence")
+    if failure_document is not None:
+        if not isinstance(failure_document, dict):
+            errors.append("failure_evidence must be an object")
+        else:
+            requested = failure_document.get("requested_type")
+            if requested not in FAILURE_TYPES:
+                errors.append("failure_evidence.requested_type is invalid")
+            availability = failure_document.get("availability")
+            if availability not in FAILURE_EVIDENCE_AVAILABILITIES:
+                errors.append("failure_evidence.availability is invalid")
+            if availability in {"partial", "unavailable", "not_applicable"}:
+                if not isinstance(failure_document.get("reason"), str) or not failure_document.get("reason"):
+                    errors.append("failure_evidence missing availability reason")
+            trigger = failure_document.get("trigger")
+            if not isinstance(trigger, dict):
+                errors.append("failure_evidence.trigger is missing")
+            elif availability == "observed":
+                if not isinstance(trigger.get("stage"), str) or not trigger.get("stage"):
+                    errors.append("failure_evidence.trigger.stage is missing")
+                try:
+                    trigger_started = parse_timestamp(trigger.get("started_at_utc"))
+                    trigger_ended = parse_timestamp(trigger.get("ended_at_utc"))
+                except (TypeError, ValueError):
+                    errors.append("failure_evidence.trigger is missing valid UTC boundaries")
+                else:
+                    if trigger_ended < trigger_started:
+                        errors.append("failure_evidence.trigger ends before it starts")
+            last_good = failure_document.get("last_good_revision")
+            if last_good != "unavailable" and (
+                not isinstance(last_good, str) or not SHA_RE.fullmatch(last_good)
+            ):
+                errors.append("failure_evidence.last_good_revision is not an immutable SHA")
+            recovery = failure_document.get("recovery")
+            if not isinstance(recovery, dict):
+                errors.append("failure_evidence.recovery is missing")
+            elif recovery.get("availability") == "observed":
+                try:
+                    recovery_started = parse_timestamp(recovery.get("started_at_utc"))
+                    recovery_ended = parse_timestamp(recovery.get("verified_at_utc"))
+                except (TypeError, ValueError):
+                    errors.append("failure_evidence.recovery is missing valid UTC boundaries")
+                else:
+                    if recovery_ended < recovery_started:
+                        errors.append("failure_evidence.recovery ends before it starts")
 
     cleanup = record.get("cleanup")
     if not isinstance(cleanup, dict):
@@ -1307,7 +1448,7 @@ def parser():
     run.add_argument("--scenario", choices=sorted(EXPECTED_STAGES), default="create")
     run.add_argument("--repetitions", type=int, default=1)
     run.add_argument("--concurrency", type=int, default=1)
-    run.add_argument("--failure-type", default="none")
+    run.add_argument("--failure-type", choices=sorted(FAILURE_TYPES), default="none")
     run.add_argument("--build-policy", default="")
     run.add_argument("--metric-interval-seconds", type=float, default=10)
     run.add_argument("--operation-timeout-seconds", type=float, default=300)

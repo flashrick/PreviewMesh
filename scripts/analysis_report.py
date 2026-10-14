@@ -214,6 +214,9 @@ def _failure_scenario(record):
     conditions = record.get("conditions") or {}
     failure_type = conditions.get("failure_type")
     if isinstance(failure_type, str) and failure_type and failure_type != "none":
+        evidence = record.get("failure_evidence")
+        if isinstance(evidence, dict) and evidence.get("availability") != "observed":
+            return "unknown"
         return failure_type[:40]
     trigger = record.get("failure_trigger")
     if (
