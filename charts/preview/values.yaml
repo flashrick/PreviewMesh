@@ -3,6 +3,8 @@ commitSHA: "0000000000000000000000000000000000000000"
 port: 8080
 hostname: preview.example.test
 imagePullSecret: ghcr-pull
+configMap:
+  projectSize: simple
 serviceAccount:
   create: true
   name: ""

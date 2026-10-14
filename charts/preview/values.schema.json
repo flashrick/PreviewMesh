@@ -28,6 +28,14 @@
     "imagePullSecret": {
       "type": "string"
     },
+    "configMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectSize"],
+      "properties": {
+        "projectSize": {"type": "string", "enum": ["simple"]}
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": false,

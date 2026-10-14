@@ -604,10 +604,15 @@ flowchart LR
 | `charts/preview/templates/deployment.yaml` | 创建非 root 应用 Deployment，设置 `PREVIEW_COMMIT_SHA` 并探测 `/health`。 |
 | `charts/preview/templates/service.yaml` | 创建选择 Deployment 的内部 ClusterIP Service。 |
 | `charts/preview/templates/ingress.yaml` | 创建 Traefik Ingress，把预览主机名映射到 Service。 |
+| `charts/preview/templates/configmap.yaml` | 向 Pod 提供不可变的请求 commit SHA 和受支持的 `simple` project-size 范围。 |
 | `charts/preview/templates/resourcequota.yaml` | 为每个 preview 应用可配置的 CPU、memory、Pod 和对象数量限制。 |
 | `charts/preview/templates/serviceaccount.yaml` | 创建 preview 专属 ServiceAccount，默认关闭 token automount。 |
 | `charts/preview/templates/role.yaml` | 默认创建空的 Namespace 级 Role；应用权限必须单独审核后显式配置。 |
 | `charts/preview/templates/rolebinding.yaml` | 只将 preview ServiceAccount 绑定到本 Namespace 的 Role。 |
+
+Chart 有意不渲染 PVC、volume 或多个应用 Deployment/Service。这些功能仍在
+受支持的单服务 PreviewMesh contract 之外；如果未来加入，必须新增
+project-size 范围、清理 inventory、storage measurement 和 live fixture evidence。
 
 ### `cmd/control/`
 

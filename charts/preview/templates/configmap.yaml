@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "preview.fullname" . }}
+  labels:
+    {{- include "preview.labels" . | nindent 4 }}
+data:
+  PREVIEW_COMMIT_SHA: {{ .Values.commitSHA | quote }}
+  PREVIEWMESH_PROJECT_SIZE: {{ .Values.configMap.projectSize | quote }}

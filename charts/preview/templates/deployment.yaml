@@ -32,7 +32,15 @@ spec:
               protocol: TCP
           env:
             - name: PREVIEW_COMMIT_SHA
-              value: {{ .Values.commitSHA | quote }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "preview.fullname" . }}
+                  key: PREVIEW_COMMIT_SHA
+            - name: PREVIEWMESH_PROJECT_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "preview.fullname" . }}
+                  key: PREVIEWMESH_PROJECT_SIZE
           readinessProbe:
             httpGet:
               path: /health

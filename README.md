@@ -597,10 +597,16 @@ flowchart LR
 | `charts/preview/templates/deployment.yaml` | Creates the non-root application Deployment, sets `PREVIEW_COMMIT_SHA`, and probes `/health`. |
 | `charts/preview/templates/service.yaml` | Creates the internal ClusterIP Service that selects the Deployment. |
 | `charts/preview/templates/ingress.yaml` | Creates the Traefik Ingress that maps the preview hostname to the Service. |
+| `charts/preview/templates/configmap.yaml` | Supplies the immutable requested commit SHA and supported `simple` project-size scope to the Pod. |
 | `charts/preview/templates/resourcequota.yaml` | Applies configurable per-preview CPU, memory, Pod, and object-count limits. |
 | `charts/preview/templates/serviceaccount.yaml` | Creates the preview-local ServiceAccount with token automount disabled by default. |
 | `charts/preview/templates/role.yaml` | Creates an empty namespace-scoped Role by default; application permissions must be explicitly reviewed. |
 | `charts/preview/templates/rolebinding.yaml` | Binds the preview ServiceAccount only to its own namespace-scoped Role. |
+
+The chart intentionally does not render PVCs, volumes, or multiple application
+Deployments/Services. Those features remain outside the supported single-service
+PreviewMesh contract; adding them requires a new project-size scope, cleanup
+inventory, storage measurement, and live fixture evidence.
 
 ### `cmd/control/`
 
