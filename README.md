@@ -460,6 +460,20 @@ and an evidence manifest. Unsupported or invalid runs remain retained with an
 explicit reason instead of being silently removed from the dataset. Run the
 script with `--help` for the full record and retention workflow.
 
+Audit the retained records without exporting run IDs or private paths:
+
+```bash
+python3 scripts/evidence_audit.py /private/evidence/previewmesh > /private/evidence/audit.json
+python3 scripts/preliminary_report.py \
+  --summary /private/evidence/evaluation-summary.json \
+  --audit /private/evidence/audit.json > /private/evidence/preliminary-report.json
+```
+
+The audit checks the unified run-record contract, manifest presence, lifecycle
+artifacts, and safe cohort availability. The preliminary report keeps the
+summary selection count and audit inventory count separate; they are not
+silently merged into one historical denominator.
+
 New deployment evidence separates scheduling, image pull, container start, Pod
 readiness, Service readiness, and Ingress readiness timings. Older artifacts
 that only contain a combined readiness stage remain `partial` or `unavailable`;

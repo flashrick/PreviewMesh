@@ -43,9 +43,20 @@ def write_manifest(archive):
 
 def base_record(scenario="create", outcome="success", valid=True):
     return {
+        "schema_version": "previewmesh-run-v1",
         "run_id": "sensitive-run-id-should-not-be-output",
         "scenario": scenario,
+        "repetition": 1,
+        "fixture": "simple-fixture",
+        "source_commit_sha": "unavailable",
+        "image_digest": "unavailable",
+        "conditions": {"project_size": "simple"},
+        "timeline": {},
+        "state": {},
         "outcome": outcome,
+        "failure_trigger": "none",
+        "recovery_mode": "none",
+        "final_served_sha": "unavailable",
         "valid": valid,
         "exclusion_reason": "" if valid else "retained evidence is incomplete",
         "stage_outputs": (
@@ -68,6 +79,7 @@ def base_record(scenario="create", outcome="success", valid=True):
             else "",
         },
         "metrics": {"unavailable_reasons": []},
+        "evidence": {"path": "private", "bytes": 0, "sha256": "0" * 64},
     }
 
 
@@ -98,6 +110,8 @@ class EvidenceAuditTests(unittest.TestCase):
 
             self.assertEqual(record["audit_status"], "complete_with_limitations")
             self.assertEqual(record["artifact_categories"]["manifest"], "present")
+            self.assertEqual(record["record_contract"]["availability"], "observed")
+            self.assertEqual(record["record_contract"]["cohort_availability"], "unavailable")
             self.assertEqual(record["artifact_categories"]["resource_evidence"], "present")
             self.assertEqual(record["artifact_categories"]["http_results"], "present")
             self.assertEqual(record["lifecycle"]["status"], "complete")
@@ -142,6 +156,21 @@ class EvidenceAuditTests(unittest.TestCase):
             self.assertEqual(record["artifact_categories"]["manifest"], "invalid")
             self.assertEqual(record["audit_status"], "incomplete_record")
             self.assertIn("manifest_integrity", record["missing_or_unavailable_reason_categories"])
+
+    def test_incomplete_run_record_contract_is_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = prepare_supported(Path(temporary))
+            document = json.loads((archive / "run-record.json").read_text(encoding="utf-8"))
+            del document["metrics"]
+            write_json(archive / "run-record.json", document)
+            write_manifest(archive)
+
+            record = AUDIT.audit([archive])["records"][0]
+
+            self.assertEqual(record["record_contract"]["availability"], "partial")
+            self.assertIn("metrics", record["record_contract"]["missing_fields"])
+            self.assertIn("run_record_contract_incomplete", record["missing_or_unavailable_reason_categories"])
+            self.assertEqual(record["audit_status"], "incomplete_record")
 
 
 if __name__ == "__main__":

@@ -68,7 +68,15 @@ class PreliminaryReportTests(unittest.TestCase):
         self.assertIn("concurrency level 5", conditions)
         self.assertIn("project size multi-service", conditions)
         self.assertIn("failure and recovery repetitions", conditions)
-        self.assertEqual(report["coverage"], {"records_summarised": 9, "records_audited": 11})
+        self.assertEqual(
+            report["coverage"],
+            {
+                "records_summarised": 9,
+                "records_audited": 11,
+                "counts_are_separate": True,
+                "reason": "summary selection and evidence-audit inventory are different source sets",
+            },
+        )
         self.assertNotIn("run-id", json.dumps(report))
 
     def test_report_rejects_non_object_inputs(self):

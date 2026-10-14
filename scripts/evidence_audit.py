@@ -9,6 +9,12 @@ import sys
 
 
 AUDIT_SCHEMA_VERSION = "previewmesh-evidence-audit-v1"
+RUN_RECORD_FIELDS = (
+    "schema_version", "run_id", "scenario", "repetition", "fixture",
+    "source_commit_sha", "image_digest", "conditions", "timeline", "cleanup",
+    "metrics", "stage_outputs", "lifecycle", "evidence", "valid",
+    "exclusion_reason",
+)
 
 
 class AuditError(Exception):
@@ -112,6 +118,36 @@ def _lifecycle_status(record):
     return "complete" if not real_missing else "partial", sorted(real_missing)
 
 
+def _record_contract(record):
+    """Check the privacy-safe run-record shape without exporting its identity."""
+    missing = [field for field in RUN_RECORD_FIELDS if field not in record]
+    for field in ("conditions", "timeline", "cleanup", "metrics", "lifecycle", "evidence"):
+        if field in record and not isinstance(record[field], dict):
+            missing.append(f"{field}.type")
+    if "stage_outputs" in record and not isinstance(record["stage_outputs"], list):
+        missing.append("stage_outputs.type")
+    evidence = record.get("evidence")
+    if isinstance(evidence, dict):
+        if not isinstance(evidence.get("path"), str) or not evidence.get("path"):
+            missing.append("evidence.path")
+        if not isinstance(evidence.get("bytes"), int) or evidence.get("bytes", -1) < 0:
+            missing.append("evidence.bytes")
+        if not isinstance(evidence.get("sha256"), str) or len(evidence.get("sha256", "")) != 64:
+            missing.append("evidence.sha256")
+    execution = record.get("execution") or {}
+    cohort_available = (
+        execution.get("availability") == "observed"
+        and isinstance(execution.get("cohort_id"), str)
+        and bool(execution.get("cohort_id"))
+    )
+    return {
+        "availability": "observed" if not missing else "partial",
+        "missing_fields": missing,
+        "cohort_availability": "observed" if cohort_available else "unavailable",
+        "private_identity_exported": False,
+    }
+
+
 def _audit_record(record_path):
     archive = record_path.parent
     record = load_json(record_path)
@@ -119,12 +155,16 @@ def _audit_record(record_path):
     outcome = record.get("outcome", "unknown")
     unsupported = outcome == "unsupported"
     reasons = set()
+    record_contract = _record_contract(record)
+    if record_contract["missing_fields"]:
+        reasons.add("run_record_contract_incomplete")
 
     manifest_status, manifest_reason = _manifest_status(archive)
     if manifest_reason:
         reasons.add(manifest_reason)
 
     artifact_categories = {
+        "run_record": record_contract["availability"],
         "conditions": "present" if (archive / "conditions.json").is_file() else "missing",
         "manifest": manifest_status,
         "validation": "present" if (archive / "validation.json").is_file() else "missing",
@@ -226,7 +266,11 @@ def _audit_record(record_path):
 
     if unsupported:
         audit_status = "unsupported_record" if not reasons else "incomplete_record"
-    elif lifecycle == "incomplete" or artifact_categories["manifest"] != "present":
+    elif (
+        lifecycle == "incomplete"
+        or artifact_categories["manifest"] != "present"
+        or record_contract["availability"] != "observed"
+    ):
         audit_status = "incomplete_record"
     elif reasons:
         audit_status = "complete_with_limitations"
@@ -236,6 +280,7 @@ def _audit_record(record_path):
         "scenario": scenario,
         "outcome": outcome,
         "artifact_categories": artifact_categories,
+        "record_contract": record_contract,
         "lifecycle": {"status": lifecycle, "missing_stages": missing_stages},
         "missing_or_unavailable_reason_categories": sorted(reasons),
         "exclusion_reason_present": exclusion_reason_present,

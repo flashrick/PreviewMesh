@@ -140,6 +140,8 @@ def build_report(summary, audit):
         "coverage": {
             "records_summarised": summary.get("selection", {}).get("records_found", 0),
             "records_audited": audit.get("records_found", 0),
+            "counts_are_separate": True,
+            "reason": "summary selection and evidence-audit inventory are different source sets",
         },
         "areas": {
             "feedback_speed": feedback,
