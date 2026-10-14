@@ -17,3 +17,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ include "preview.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
+
+{{- define "preview.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "preview.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- required "serviceAccount.name is required when serviceAccount.create is false" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}

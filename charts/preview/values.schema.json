@@ -28,6 +28,36 @@
     "imagePullSecret": {
       "type": "string"
     },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"},
+        "automount": {"type": "boolean"}
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "apiGroups": {"type": "array", "items": {"type": "string"}},
+              "resources": {"type": "array", "items": {"type": "string"}},
+              "verbs": {"type": "array", "items": {"type": "string"}},
+              "resourceNames": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["apiGroups", "resources", "verbs"]
+          }
+        }
+      }
+    },
     "resources": {
       "type": "object",
       "additionalProperties": false,

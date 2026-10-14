@@ -21,6 +21,13 @@ cluster-scoped because previews create and remove namespaces dynamically.
 Ownership labels and CLI checks protect against accidental cross-preview
 operations, but they are not tenant isolation.
 
+The Helm chart separately creates a ServiceAccount, Role, and RoleBinding in
+each preview Namespace. The default Role has no rules and token automount is
+disabled, so the application Pod has no Kubernetes API permission unless a
+reviewed chart override explicitly adds one. This namespace-scoped binding does
+not reduce the runner's control-plane ClusterRole; it is an application
+identity boundary, not a replacement for runner authorization.
+
 The manifest creates the namespace, ServiceAccount, ClusterRole, and binding. It
 does not create a kubeconfig or mint a token. Do not give the runner a
 cluster-admin kubeconfig.

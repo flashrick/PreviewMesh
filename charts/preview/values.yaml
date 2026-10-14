@@ -3,6 +3,13 @@ commitSHA: "0000000000000000000000000000000000000000"
 port: 8080
 hostname: preview.example.test
 imagePullSecret: ghcr-pull
+serviceAccount:
+  create: true
+  name: ""
+  automount: false
+rbac:
+  create: true
+  rules: []
 resources:
   requests:
     cpu: 10m

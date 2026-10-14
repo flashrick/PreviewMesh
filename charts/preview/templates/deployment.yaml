@@ -13,7 +13,8 @@ spec:
       labels:
         {{- include "preview.selectorLabels" . | nindent 8 }}
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: {{ include "preview.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       securityContext:
         seccompProfile:
           type: RuntimeDefault

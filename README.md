@@ -598,6 +598,9 @@ flowchart LR
 | `charts/preview/templates/service.yaml` | Creates the internal ClusterIP Service that selects the Deployment. |
 | `charts/preview/templates/ingress.yaml` | Creates the Traefik Ingress that maps the preview hostname to the Service. |
 | `charts/preview/templates/resourcequota.yaml` | Applies configurable per-preview CPU, memory, Pod, and object-count limits. |
+| `charts/preview/templates/serviceaccount.yaml` | Creates the preview-local ServiceAccount with token automount disabled by default. |
+| `charts/preview/templates/role.yaml` | Creates an empty namespace-scoped Role by default; application permissions must be explicitly reviewed. |
+| `charts/preview/templates/rolebinding.yaml` | Binds the preview ServiceAccount only to its own namespace-scoped Role. |
 
 ### `cmd/control/`
 
