@@ -1,21 +1,50 @@
 # PreviewMesh
 
-[中文说明](README_CN.md)
+<div align="center">
+  <p><strong>Private pull-request previews with exact-commit verification, K3s isolation, and automatic cleanup.</strong></p>
+  <p>
+    <a href="README_CN.md">中文说明</a> ·
+    <a href="#quick-start">Quick start</a> ·
+    <a href="#how-it-works">How it works</a> ·
+    <a href="#verify-a-change">Verify a change</a>
+  </p>
+  <p>
+    <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.25 or newer"></a>
+    <a href="charts/preview/Chart.yaml"><img src="https://img.shields.io/badge/Helm-3-0F1689?logo=helm&logoColor=white" alt="Helm 3"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license"></a>
+  </p>
+  <img src="assets/previewmesh-flow.svg" alt="PreviewMesh workflow: an eligible pull request becomes an exact commit, immutable image, isolated K3s preview, verified health response, and cleaned-up environment." width="100%">
+</div>
 
-PreviewMesh gives eligible pull requests a temporary application URL on a private development network. It builds the exact source commit, publishes an immutable image, deploys it to K3s, verifies `/health` and the served commit SHA, reports the result to the pull request, and removes the preview when the pull request closes.
+PreviewMesh creates a temporary application URL on a private development network for eligible pull requests. It builds the exact source commit, publishes an immutable image, deploys it to K3s, verifies `/health` and the served commit SHA, reports the result to the pull request, and removes the preview when the pull request closes.
 
 > [!WARNING]
 > This is the public PreviewMesh code repository. Keep the deployment-management repository created from it private. Never commit GitHub tokens, kubeconfigs, real repository registrations, private URLs, or runtime evidence here.
 
 ## Quick links
 
+- [Quick start](#quick-start)
 - [What you get](#what-you-get)
 - [How it works](#how-it-works)
+- [Project map](#project-map)
 - [Requirements](#requirements)
 - [Install](#install)
 - [Use a preview](#use-a-preview)
 - [Operate and troubleshoot](#operate-and-troubleshoot)
+- [Verify a change](#verify-a-change)
 - [Advanced reference](#advanced-reference)
+- [Related documentation](#related-documentation)
+
+## Quick start
+
+Use the guided installer to create or update the private deployment-management checkout. Run it from this public PreviewMesh checkout:
+
+~~~bash
+bash scripts/setup.sh init
+bash scripts/setup.sh install --config /path/to/setup.ini
+~~~
+
+Keep the public checkout, private deployment-management checkout, and application checkout in separate directories. If you are evaluating a change rather than installing infrastructure, run [Verify a change](#verify-a-change) instead.
 
 ## What you get
 
@@ -60,6 +89,18 @@ Important boundaries:
 - Preview workflows remain disabled until the private repository sets `PREVIEWMESH_ENABLED=true`.
 - The self-hosted runner must use a restricted kubeconfig on a dedicated development cluster. Do not give it a cluster-admin kubeconfig.
 - The preview URL is private-network access, not public internet hosting.
+
+## Project map
+
+| Path | Responsibility |
+| --- | --- |
+| [`cmd/previewmesh/`](cmd/previewmesh/) | Lifecycle CLI for preflight, build, deploy, verify, status, and cleanup. |
+| [`cmd/control/`](cmd/control/) | Trusted repository registration, pull-request inspection, and GitHub reporting. |
+| [`.github/workflows/preview.yml`](.github/workflows/preview.yml) | Control-plane workflow that builds, deploys, verifies, and reports a preview. |
+| [`templates/source-notify.yml`](templates/source-notify.yml) | Metadata-only application workflow that notifies the private control repository. |
+| [`charts/preview/`](charts/preview/) | Helm chart for the preview Deployment, Service, Ingress, and namespace-scoped identity. |
+| [`scripts/`](scripts/) | Guided setup, onboarding, maintenance, evidence, and local verification tools. |
+| [`ops/kubernetes/`](ops/kubernetes/) | Restricted runner RBAC and Traefik configuration for the development cluster. |
 
 ## Requirements
 
@@ -229,12 +270,47 @@ The application workflow uses `PREVIEWMESH_DISPATCH_TOKEN` to notify the private
 
 For runner permissions, see [Kubernetes access](ops/kubernetes/README.md). For a full manual setup, see [manual installation](ops/install/manual.md). For lifecycle and recovery details, see [preview lifecycle verification](ops/verification/preview-lifecycle.md).
 
+## Verify a change
+
+Run the repository's canonical local verification from the public checkout:
+
+~~~bash
+bash scripts/verify-local.sh
+~~~
+
+It checks the Go code, workflow and setup fixtures, Python validation, Bash syntax, the Helm chart, and GitHub Actions workflow syntax. It does not deploy an application or require access to GitHub, GHCR, K3s, the private network, or application credentials.
+
+For focused checks, use:
+
+~~~bash
+go test ./...
+go vet ./...
+helm lint charts/preview
+~~~
+
 ## Advanced reference
 
 <details>
 <summary>Direct CLI lifecycle</summary>
 
 The private deployment-management workflow is the recommended path because it rechecks pull-request state and handles superseded revisions and cleanup. The lower-level CLI commands are available for trusted control environments:
+
+Build both trusted command-line tools with:
+
+~~~bash
+go build -o /tmp/control ./cmd/control
+go build -o /tmp/previewmesh ./cmd/previewmesh
+~~~
+
+The companion `control` CLI validates trusted registrations and pull-request state before reporting to GitHub:
+
+| Command | Purpose |
+| --- | --- |
+| `control resolve` | Resolve one exact repository registration. |
+| `control inspect` | Validate the pull request, source repository, fork status, and author access. |
+| `control status` | Publish commit status and structured pull-request feedback. |
+
+The `previewmesh` CLI owns the deployment lifecycle:
 
 | Command | Purpose |
 | --- | --- |
@@ -263,19 +339,6 @@ scripts/update-upstream.sh --remote upstream --ref main
 ~~~
 
 Review the update branch and run local verification before pushing it or opening a pull request. The updater preserves the private repository's application registrations and does not update already-published application notification workflows automatically. Rerun `install` after merging an update when local managed files need refreshing.
-
-</details>
-
-<details>
-<summary>Local verification</summary>
-
-From a trusted control checkout, run:
-
-~~~bash
-scripts/verify-local.sh
-~~~
-
-This checks the Go code, workflow and setup fixtures, Helm chart, and shell/Python validation. It does not deploy an application or prove that external GitHub, GHCR, K3s, runner, network, or application credentials are usable.
 
 </details>
 

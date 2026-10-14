@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="title description">
+  <title id="title">PreviewMesh private pull-request preview workflow</title>
+  <desc id="description">An eligible pull request is checked against its exact commit, published as an immutable image, deployed into an owned K3s namespace, verified through health and commit checks, and removed when the pull request closes or merges.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#121d34"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#73e0c6"/>
+      <stop offset="1" stop-color="#9f8cf5"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="330" rx="24" fill="url(#background)"/>
+  <circle cx="1135" cy="28" r="120" fill="#6d5ce7" opacity="0.12"/>
+  <circle cx="42" cy="310" r="90" fill="#2dd4bf" opacity="0.08"/>
+
+  <text x="48" y="42" fill="#9fb1cf" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" letter-spacing="2.4">PREVIEWMESH / PRIVATE PREVIEW PIPELINE</text>
+  <text x="48" y="82" fill="#f7fbff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="750">A pull request becomes a verified, disposable environment.</text>
+  <text x="48" y="108" fill="#b8c5da" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Exact source  →  immutable image  →  isolated K3s namespace  →  evidence-backed URL</text>
+  <rect x="48" y="125" width="220" height="3" rx="1.5" fill="url(#accent)"/>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+    <g transform="translate(48 154)">
+      <rect width="153" height="100" rx="16" fill="#15243a" stroke="#36506f"/>
+      <text x="18" y="25" fill="#73e0c6" font-size="11" font-weight="800" letter-spacing="1.6">01 / SIGNAL</text>
+      <text x="18" y="55" fill="#f7fbff" font-size="16" font-weight="700">Pull request</text>
+      <text x="18" y="77" fill="#b8c5da" font-size="13">same repository</text>
+    </g>
+    <text x="210" y="213" fill="#73e0c6" font-size="24" font-weight="700">›</text>
+
+    <g transform="translate(235 154)">
+      <rect width="153" height="100" rx="16" fill="#15243a" stroke="#36506f"/>
+      <text x="18" y="25" fill="#7dd3fc" font-size="11" font-weight="800" letter-spacing="1.6">02 / TRUST</text>
+      <text x="18" y="55" fill="#f7fbff" font-size="16" font-weight="700">Exact SHA</text>
+      <text x="18" y="77" fill="#b8c5da" font-size="13">source revision</text>
+    </g>
+    <text x="397" y="213" fill="#7dd3fc" font-size="24" font-weight="700">›</text>
+
+    <g transform="translate(422 154)">
+      <rect width="153" height="100" rx="16" fill="#15243a" stroke="#36506f"/>
+      <text x="18" y="25" fill="#fbbf76" font-size="11" font-weight="800" letter-spacing="1.6">03 / BUILD</text>
+      <text x="18" y="55" fill="#f7fbff" font-size="16" font-weight="700">Image digest</text>
+      <text x="18" y="77" fill="#b8c5da" font-size="13">GHCR publish</text>
+    </g>
+    <text x="584" y="213" fill="#fbbf76" font-size="24" font-weight="700">›</text>
+
+    <g transform="translate(609 154)">
+      <rect width="153" height="100" rx="16" fill="#15243a" stroke="#36506f"/>
+      <text x="18" y="25" fill="#a78bfa" font-size="11" font-weight="800" letter-spacing="1.6">04 / ISOLATE</text>
+      <text x="18" y="55" fill="#f7fbff" font-size="16" font-weight="700">K3s preview</text>
+      <text x="18" y="77" fill="#b8c5da" font-size="13">owned namespace</text>
+    </g>
+    <text x="771" y="213" fill="#a78bfa" font-size="24" font-weight="700">›</text>
+
+    <g transform="translate(796 154)">
+      <rect width="153" height="100" rx="16" fill="#15243a" stroke="#36506f"/>
+      <text x="18" y="25" fill="#fda4af" font-size="11" font-weight="800" letter-spacing="1.6">05 / VERIFY</text>
+      <text x="18" y="55" fill="#f7fbff" font-size="16" font-weight="700">/health + SHA</text>
+      <text x="18" y="77" fill="#b8c5da" font-size="13">runtime proof</text>
+    </g>
+    <text x="958" y="213" fill="#fda4af" font-size="24" font-weight="700">›</text>
+
+    <g transform="translate(983 154)">
+      <rect width="153" height="100" rx="16" fill="#15243a" stroke="#36506f"/>
+      <text x="18" y="25" fill="#73e0c6" font-size="11" font-weight="800" letter-spacing="1.6">06 / RELEASE</text>
+      <text x="18" y="55" fill="#f7fbff" font-size="16" font-weight="700">Cleanup</text>
+      <text x="18" y="77" fill="#b8c5da" font-size="13">close or merge</text>
+    </g>
+  </g>
+
+  <text x="48" y="298" fill="#9fb1cf" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">Only registered, same-repository pull requests enter the build path. Preview URLs stay on the private development network.</text>
+</svg>

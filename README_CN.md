@@ -1,6 +1,20 @@
 # PreviewMesh
 
-[English](README.md)
+<div align="center">
+  <p><strong>面向拉取请求的私有预览：精确提交验证、K3s 隔离和自动清理。</strong></p>
+  <p>
+    <a href="README.md">English</a> ·
+    <a href="#快速开始">快速开始</a> ·
+    <a href="#工作原理">工作原理</a> ·
+    <a href="#验证改动">验证改动</a>
+  </p>
+  <p>
+    <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.25 或更高版本"></a>
+    <a href="charts/preview/Chart.yaml"><img src="https://img.shields.io/badge/Helm-3-0F1689?logo=helm&logoColor=white" alt="Helm 3"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT 许可证"></a>
+  </p>
+  <img src="assets/previewmesh-flow.svg" alt="PreviewMesh 工作流：符合条件的拉取请求经过精确提交、不可变镜像、隔离的 K3s 预览、健康响应验证，最后完成环境清理。" width="100%">
+</div>
 
 PreviewMesh 为符合条件的拉取请求提供一个位于私有开发网络中的临时应用 URL。它构建准确的源代码提交，发布不可变镜像，将镜像部署到 K3s，验证 `/health` 和应用返回的提交 SHA，将结果回写到拉取请求，并在拉取请求关闭后删除预览。
 
@@ -9,13 +23,28 @@ PreviewMesh 为符合条件的拉取请求提供一个位于私有开发网络�
 
 ## 快速导航
 
+- [快速开始](#快速开始)
 - [你将获得什么](#你将获得什么)
 - [工作原理](#工作原理)
+- [项目结构](#项目结构)
 - [前置条件](#前置条件)
 - [安装](#安装)
 - [使用预览](#使用预览)
 - [运维与排错](#运维与排错)
+- [验证改动](#验证改动)
 - [高级参考](#高级参考)
+- [相关文档](#相关文档)
+
+## 快速开始
+
+使用引导式安装器创建或更新私有部署管理 checkout。在公开 PreviewMesh checkout 中运行：
+
+~~~bash
+bash scripts/setup.sh init
+bash scripts/setup.sh install --config /path/to/setup.ini
+~~~
+
+公开 checkout、私有部署管理 checkout 和应用 checkout 必须放在互相分离的目录中。如果只是评估代码改动而不是安装基础设施，请直接运行[验证改动](#验证改动)。
 
 ## 你将获得什么
 
@@ -60,6 +89,18 @@ flowchart LR
 - 私有仓库设置 `PREVIEWMESH_ENABLED=true` 之前，预览工作流保持禁用。
 - 自托管 Runner 必须在专用开发集群中使用受限 kubeconfig。不要给它 cluster-admin kubeconfig。
 - 预览 URL 只能从私有网络访问，不是公开互联网托管。
+
+## 项目结构
+
+| 路径 | 职责 |
+| --- | --- |
+| [`cmd/previewmesh/`](cmd/previewmesh/) | 负责预检、构建、部署、验证、状态和清理的生命周期 CLI。 |
+| [`cmd/control/`](cmd/control/) | 负责受信任的仓库注册、拉取请求检查和 GitHub 回写。 |
+| [`.github/workflows/preview.yml`](.github/workflows/preview.yml) | 构建、部署、验证并回写预览结果的控制平面工作流。 |
+| [`templates/source-notify.yml`](templates/source-notify.yml) | 只转发元数据、通知私有控制仓库的应用工作流。 |
+| [`charts/preview/`](charts/preview/) | 预览 Deployment、Service、Ingress 和 Namespace 级身份的 Helm Chart。 |
+| [`scripts/`](scripts/) | 引导式安装、接入、维护、证据和本地验证工具。 |
+| [`ops/kubernetes/`](ops/kubernetes/) | 开发集群的受限 Runner RBAC 和 Traefik 配置。 |
 
 ## 前置条件
 
@@ -229,12 +270,47 @@ bash scripts/setup.sh cleanup --config /path/to/setup.ini
 
 Runner 权限请看 [Kubernetes 访问说明](ops/kubernetes/README.md)。完整手动安装请看[手动安装参考](ops/install/manual.md)。生命周期和恢复细节请看[预览生命周期验证](ops/verification/preview-lifecycle.md)。
 
+## 验证改动
+
+在公开 checkout 中运行项目的标准本地验证：
+
+~~~bash
+bash scripts/verify-local.sh
+~~~
+
+它会检查 Go 代码、工作流和 setup fixtures、Python 校验、Bash 语法、Helm Chart 以及 GitHub Actions 工作流语法。它不会部署应用，也不需要访问 GitHub、GHCR、K3s、私有网络或应用凭据。
+
+如需执行更小范围的检查，可以运行：
+
+~~~bash
+go test ./...
+go vet ./...
+helm lint charts/preview
+~~~
+
 ## 高级参考
 
 <details>
 <summary>直接 CLI 生命周期</summary>
 
 推荐使用私有部署管理工作流，因为它会重新检查拉取请求状态，并处理过时版本和清理。受信任的控制环境也可以使用较低层级的 CLI 命令：
+
+使用下面的命令构建两个受信任的 CLI：
+
+~~~bash
+go build -o /tmp/control ./cmd/control
+go build -o /tmp/previewmesh ./cmd/previewmesh
+~~~
+
+配套的 `control` CLI 在向 GitHub 回写之前，负责验证受信任的注册信息和拉取请求状态：
+
+| 命令 | 用途 |
+| --- | --- |
+| `control resolve` | 解析一个准确的仓库注册信息。 |
+| `control inspect` | 验证拉取请求、源仓库、Fork 状态和作者权限。 |
+| `control status` | 发布 Commit Status 和结构化的拉取请求反馈。 |
+
+`previewmesh` CLI 负责预览部署生命周期：
 
 | 命令 | 用途 |
 | --- | --- |
@@ -263,19 +339,6 @@ scripts/update-upstream.sh --remote upstream --ref main
 ~~~
 
 推送更新分支或创建 PR 前，先审核变更并运行本地检查。更新器会保留私有仓库的应用注册信息，不会自动更新已经发布到应用仓库的通知工作流。合并更新后，如果本机管理文件需要刷新，请重新运行 `install`。
-
-</details>
-
-<details>
-<summary>本地检查</summary>
-
-在受信任的控制 checkout 中运行：
-
-~~~bash
-scripts/verify-local.sh
-~~~
-
-它会检查 Go 代码、工作流和 setup fixtures、Helm Chart 以及 Shell/Python 校验。它不会部署应用，也不能证明外部 GitHub、GHCR、K3s、Runner、网络或应用凭据可用。
 
 </details>
 
