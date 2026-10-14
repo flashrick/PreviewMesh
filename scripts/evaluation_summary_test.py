@@ -28,8 +28,9 @@ def record(
     http_result="success",
     cleanup=None,
     timeline=None,
+    execution=None,
 ):
-    return {
+    document = {
         "run_id": run_id,
         "scenario": scenario,
         "outcome": outcome,
@@ -60,6 +61,9 @@ def record(
             },
         },
     }
+    if execution is not None:
+        document["execution"] = execution
+    return document
 
 
 def write_record(root, name, document):
@@ -249,6 +253,57 @@ class EvaluationSummaryTests(unittest.TestCase):
             self.assertEqual(levels[10]["status"], "not_run")
             self.assertEqual(levels[20]["status"], "not_run")
             self.assertEqual(summary["success_rate"]["lifecycle"]["denominator"], 1)
+
+    def test_concurrency_summary_reports_observed_cohort_overlap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_record(
+                root,
+                "first",
+                record(
+                    "run-first",
+                    concurrency=5,
+                    execution={
+                        "cohort_id": "cohort-test",
+                        "availability": "observed",
+                        "started_at_utc": "2026-10-09T00:00:00Z",
+                        "ended_at_utc": "2026-10-09T00:00:03Z",
+                    },
+                ),
+            )
+            write_record(
+                root,
+                "second",
+                record(
+                    "run-second",
+                    concurrency=5,
+                    execution={
+                        "cohort_id": "cohort-test",
+                        "availability": "observed",
+                        "started_at_utc": "2026-10-09T00:00:01Z",
+                        "ended_at_utc": "2026-10-09T00:00:04Z",
+                    },
+                ),
+            )
+
+            summary = SUMMARY.summarize([root])
+
+            self.assertEqual(summary["concurrency"]["actual_overlap"], 2)
+            self.assertEqual(summary["concurrency"]["actual_overlap_availability"], "observed")
+            level = next(
+                item for item in summary["concurrency"]["by_level"] if item["level"] == 5
+            )
+            self.assertEqual(level["actual_overlap"], 2)
+
+    def test_concurrency_summary_keeps_overlap_unavailable_without_windows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_record(root, "run", record("run-without-window", concurrency=5))
+
+            summary = SUMMARY.summarize([root])
+
+            self.assertIsNone(summary["concurrency"]["actual_overlap"])
+            self.assertEqual(summary["concurrency"]["actual_overlap_availability"], "unavailable")
 
 
 if __name__ == "__main__":

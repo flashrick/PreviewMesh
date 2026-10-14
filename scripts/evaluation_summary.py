@@ -454,6 +454,43 @@ def _cleanup_summary(records):
     }
 
 
+def _execution_interval(record):
+    execution = record.get("execution") or {}
+    if execution.get("availability") != "observed":
+        return None
+    started = _parse_timestamp(execution.get("started_at_utc"))
+    ended = _parse_timestamp(execution.get("ended_at_utc"))
+    cohort = execution.get("cohort_id")
+    if not started or not ended or ended < started or not isinstance(cohort, str) or not cohort:
+        return None
+    return cohort, started, ended
+
+
+def _actual_overlap(records):
+    """Return the largest coordinator overlap, keeping missing windows explicit."""
+    by_cohort = {}
+    for _, record in records:
+        interval = _execution_interval(record)
+        if interval is None:
+            continue
+        cohort, started, ended = interval
+        by_cohort.setdefault(cohort, []).append((started, ended))
+    maximum = 0
+    for intervals in by_cohort.values():
+        events = []
+        for started, ended in intervals:
+            events.append((started, 1))
+            events.append((ended, -1))
+        # End events sort first at equal timestamps so adjacent runs do not overlap.
+        active = 0
+        for _, delta in sorted(events, key=lambda item: (item[0], item[1])):
+            active += delta
+            maximum = max(maximum, active)
+    if not by_cohort:
+        return None, "unavailable", "coordinator execution windows were not retained"
+    return maximum, "observed", "maximum overlapping coordinator windows"
+
+
 def _concurrency_breakdown(records):
     groups = {}
     for record_path, record in records:
@@ -483,6 +520,7 @@ def _concurrency_breakdown(records):
             status = "observed"
         else:
             status = "not_evaluable"
+        overlap, overlap_availability, overlap_reason = _actual_overlap(selected)
         result.append(
             {
                 "level": level,
@@ -495,9 +533,9 @@ def _concurrency_breakdown(records):
                 "invalid": invalid,
                 "observed_running_high_water": resources["observed_running_high_water"] if resources else None,
                 "observed_managed_high_water": resources["observed_managed_high_water"] if resources else None,
-                "actual_overlap": None,
-                "actual_overlap_availability": "unavailable",
-                "actual_overlap_reason": "cohort-specific overlap timestamps were not retained",
+                "actual_overlap": overlap,
+                "actual_overlap_availability": overlap_availability,
+                "actual_overlap_reason": overlap_reason,
                 "status": status,
             }
         )
@@ -539,6 +577,7 @@ def summarize(paths):
     cleanup_summary = _cleanup_summary(records)
     project_sizes = _project_size_summary(records)
     concurrency_breakdown = _concurrency_breakdown(records)
+    actual_overlap, overlap_availability, overlap_reason = _actual_overlap(considered)
     planned = [_number(record.get("conditions", {}).get("concurrency")) for _, record in records]
     planned = [value for value in planned if value is not None]
     return {
@@ -587,6 +626,9 @@ def summarize(paths):
             "capacity": None,
             "capacity_availability": "unavailable",
             "capacity_reason": "the selected runs do not establish cluster capacity",
+            "actual_overlap": actual_overlap,
+            "actual_overlap_availability": overlap_availability,
+            "actual_overlap_reason": overlap_reason,
             "by_level": concurrency_breakdown,
         },
         "limitations": sorted(

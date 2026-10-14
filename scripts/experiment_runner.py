@@ -9,6 +9,7 @@ incomplete lifecycle records explicit instead of treating them as zeroes.
 
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -51,6 +52,7 @@ TIMING_PHASES = (
     "cleanup",
 )
 TIMING_AVAILABILITIES = {"observed", "partial", "unavailable", "not_applicable"}
+EXECUTION_AVAILABILITIES = {"observed", "unavailable", "not_applicable"}
 EXPECTED_STAGES = {
     "create": ("event", "build", "deploy", "readiness", "http_verify", "report"),
     "update": ("event", "build", "deploy", "readiness", "http_verify", "report"),
@@ -817,6 +819,9 @@ def build_record(spec, archive, results, outputs, workflow_metadata, unsupported
         "valid": False,
         "exclusion_reason": "",
     }
+    if spec.get("execution") is not None:
+        # Keep the coordinator window separate from workflow timestamps so overlap is measurable.
+        record["execution"] = spec["execution"]
     validation = validate_record(record, require_measurements=True)
     record["valid"] = outcome not in {"invalid", "unsupported"} and not validation["errors"]
     if validation["errors"]:
@@ -954,6 +959,31 @@ def validate_record(record, require_measurements=True):
     else:
         warnings.append("stage timings are not recorded")
 
+    execution = record.get("execution")
+    if execution is not None:
+        if not isinstance(execution, dict):
+            errors.append("execution must be an object")
+        else:
+            if not isinstance(execution.get("cohort_id"), str) or not execution.get("cohort_id"):
+                errors.append("execution.cohort_id is missing")
+            availability = execution.get("availability")
+            if availability not in EXECUTION_AVAILABILITIES:
+                errors.append("execution.availability is invalid")
+            started = execution.get("started_at_utc")
+            ended = execution.get("ended_at_utc")
+            if availability == "observed":
+                try:
+                    started_at = parse_timestamp(started)
+                    ended_at = parse_timestamp(ended)
+                except (TypeError, ValueError):
+                    errors.append("execution window is missing valid UTC boundaries")
+                else:
+                    if ended_at < started_at:
+                        errors.append("execution window ends before it starts")
+            else:
+                if not isinstance(execution.get("unavailable_reason"), str) or not execution.get("unavailable_reason"):
+                    errors.append("execution missing availability reason")
+
     evidence = record.get("evidence")
     if not isinstance(evidence, dict):
         errors.append("evidence must be an object")
@@ -1071,7 +1101,17 @@ def make_spec(fixture, scenario, repetition, args):
     }
 
 
-def run_one(config, spec, archive_root, args, unsupported_reason=""):
+def run_one(config, spec, archive_root, args, unsupported_reason="", cohort_id=""):
+    execution = {
+        "schema_version": 1,
+        "cohort_id": cohort_id or "unavailable",
+        "requested_concurrency": spec["conditions"].get("concurrency"),
+        "started_at_utc": utc_now(),
+        "ended_at_utc": None,
+        "availability": "observed",
+    }
+    spec = dict(spec)
+    spec["execution"] = execution
     archive = archive_root / spec["run_id"]
     archive.mkdir(parents=True, exist_ok=False, mode=0o700)
     os.chmod(archive, 0o700)
@@ -1085,6 +1125,11 @@ def run_one(config, spec, archive_root, args, unsupported_reason=""):
         "conditions": spec["conditions"],
     })
     if unsupported_reason:
+        execution.update({
+            "ended_at_utc": utc_now(),
+            "availability": "not_applicable",
+            "unavailable_reason": "unsupported condition was not dispatched",
+        })
         write_json_private(archive / "unsupported.json", {"reason": unsupported_reason})
         manifest = evidence_manifest(archive)
         results = {"summary": {"outcome": "unsupported"}}
@@ -1116,6 +1161,7 @@ def run_one(config, spec, archive_root, args, unsupported_reason=""):
         results["summary"] = summary
         results["summary_path"] = str(summary_path.relative_to(archive / "artifacts"))
     outputs = stage_outputs(archive / "artifacts", results)
+    execution["ended_at_utc"] = utc_now()
     manifest = evidence_manifest(archive)
     record, validation = build_record(spec, archive, results, outputs, metadata)
     record["workflow"]["run_id"] = workflow_run_id
@@ -1152,13 +1198,31 @@ def command_run(args):
                 })
         print(json.dumps({"dry_run": True, "runs": plan}, indent=2, sort_keys=True))
         return 0
-    if args.workflow_run_id and args.repetitions != 1:
-        raise RunnerError("--workflow-run-id can only be used with one repetition")
-    results = []
-    for fixture in fixtures:
-        for repetition in range(1, args.repetitions + 1):
-            spec = make_spec(fixture, args.scenario, repetition, args)
-            results.append(run_one(config, spec, archive_root, args, args.unsupported_reason))
+    if args.workflow_run_id and (args.repetitions != 1 or len(fixtures) != 1):
+        raise RunnerError("--workflow-run-id can only be used with one fixture and one repetition")
+    specs = [
+        make_spec(fixture, args.scenario, repetition, args)
+        for fixture in fixtures
+        for repetition in range(1, args.repetitions + 1)
+    ]
+    # A cohort ID lets summaries measure real runner overlap without exposing identities.
+    cohort_id = "cohort-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    worker_count = min(max(args.concurrency, 1), len(specs))
+    if worker_count == 1:
+        results = [
+            run_one(config, spec, archive_root, args, args.unsupported_reason, cohort_id)
+            for spec in specs
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(
+                    run_one, config, spec, archive_root, args, args.unsupported_reason, cohort_id
+                )
+                for spec in specs
+            ]
+            # Preserve matrix order while workers dispatch independently.
+            results = [future.result() for future in futures]
     print(json.dumps({"runs": results}, indent=2, sort_keys=True))
     return 0 if all(not item["validation"]["errors"] for item in results) else 1
 

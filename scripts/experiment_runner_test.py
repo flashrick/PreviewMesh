@@ -356,6 +356,36 @@ class RecordValidationTests(unittest.TestCase):
         self.assertEqual(validation["errors"], [])
         self.assertTrue(record["valid"])
 
+    def test_observed_execution_window_validates(self):
+        record = success_record()
+        record["execution"] = {
+            "schema_version": 1,
+            "cohort_id": "cohort-test",
+            "requested_concurrency": 5,
+            "started_at_utc": "2026-10-09T00:00:00Z",
+            "ended_at_utc": "2026-10-09T00:00:02Z",
+            "availability": "observed",
+        }
+
+        validation = RUNNER.validate_record(record)
+
+        self.assertEqual(validation["errors"], [])
+
+    def test_execution_window_rejects_missing_boundary(self):
+        record = success_record()
+        record["execution"] = {
+            "schema_version": 1,
+            "cohort_id": "cohort-test",
+            "requested_concurrency": 5,
+            "started_at_utc": "2026-10-09T00:00:00Z",
+            "ended_at_utc": None,
+            "availability": "observed",
+        }
+
+        validation = RUNNER.validate_record(record)
+
+        self.assertIn("execution window is missing valid UTC boundaries", validation["errors"])
+
     def test_close_success_record_allows_missing_build_identity(self):
         record = success_record()
         record.update(
