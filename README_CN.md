@@ -604,6 +604,7 @@ flowchart LR
 | `charts/preview/templates/deployment.yaml` | 创建非 root 应用 Deployment，设置 `PREVIEW_COMMIT_SHA` 并探测 `/health`。 |
 | `charts/preview/templates/service.yaml` | 创建选择 Deployment 的内部 ClusterIP Service。 |
 | `charts/preview/templates/ingress.yaml` | 创建 Traefik Ingress，把预览主机名映射到 Service。 |
+| `charts/preview/templates/resourcequota.yaml` | 为每个 preview 应用可配置的 CPU、memory、Pod 和对象数量限制。 |
 
 ### `cmd/control/`
 

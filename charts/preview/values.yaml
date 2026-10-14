@@ -10,3 +10,15 @@ resources:
   limits:
     cpu: 100m
     memory: 64Mi
+resourceQuota:
+  enabled: true
+  hard:
+    "requests.cpu": "1"
+    "requests.memory": 1Gi
+    "limits.cpu": "2"
+    "limits.memory": 2Gi
+    pods: "5"
+    "count/deployments.apps": "2"
+    "count/services": "2"
+    "count/ingresses.networking.k8s.io": "2"
+    "count/secrets": "5"

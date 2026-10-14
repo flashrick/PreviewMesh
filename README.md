@@ -597,6 +597,7 @@ flowchart LR
 | `charts/preview/templates/deployment.yaml` | Creates the non-root application Deployment, sets `PREVIEW_COMMIT_SHA`, and probes `/health`. |
 | `charts/preview/templates/service.yaml` | Creates the internal ClusterIP Service that selects the Deployment. |
 | `charts/preview/templates/ingress.yaml` | Creates the Traefik Ingress that maps the preview hostname to the Service. |
+| `charts/preview/templates/resourcequota.yaml` | Applies configurable per-preview CPU, memory, Pod, and object-count limits. |
 
 ### `cmd/control/`
 
