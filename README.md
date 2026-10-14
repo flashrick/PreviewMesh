@@ -502,7 +502,7 @@ record identities. The output directory contains `analysis.json`, `report.md`,
 `charts/concurrency-total-feedback.svg`, and
 `charts/failure-scenarios-total-feedback.svg`. The report groups
 timing comparisons by `project_size`, `concurrency`, `outcome`, and
-`failure_scenario`. A failure scenario uses a non-`none`
+`failure_scenario`, and safe synthetic `cohort` labels. A failure scenario uses a non-`none`
 `conditions.failure_type`, then a failed record's `failure_trigger`, and
 otherwise `none`. New run records also retain `failure_evidence`; a requested
 type whose trigger was not observed is grouped as `unknown`. This is a
@@ -515,8 +515,10 @@ records remain retained in the input evidence and are reported as exclusion
 categories rather than entering lifecycle denominators. Missing or malformed
 measurements are counted and omitted from statistics; `not_applicable` values
 are counted separately and are also omitted. Neither category is converted to
-zero. The default small-sample threshold is five observed values, and sample
-standard deviation is unavailable for fewer than two values. The focused
+zero. Every statistic includes attempted, observed, missing, and
+not-applicable denominator counts, and `analysis.json` records source schema,
+selection, exclusions, safe cohort labels, and grouping dimensions. The default
+small-sample threshold is five observed values, and sample standard deviation is unavailable for fewer than two values. The focused
 regression command is:
 
 ```bash

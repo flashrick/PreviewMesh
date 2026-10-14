@@ -21,7 +21,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from experiment_runner import TIMING_PHASES, validate_record  # noqa: E402
+from experiment_runner import SCHEMA_VERSION, TIMING_PHASES, validate_record  # noqa: E402
 
 
 ANALYSIS_SCHEMA_VERSION = "previewmesh-analysis-report-v1"
@@ -139,6 +139,11 @@ def descriptive_stats(
         "maximum": None,
         "stddev": None,
         "small_sample": len(observed) < small_sample_threshold,
+        "denominator_attempted": attempted,
+        "denominator_observed": len(observed),
+        "denominator_missing": missing,
+        "denominator_not_applicable": not_applicable,
+        "denominator_basis": "observed values for descriptive statistics; attempted values for rates",
     }
     notes = []
     if not observed:
@@ -239,6 +244,7 @@ def _record_entries(paths):
     exclusions = {}
     duplicates = 0
     conflicts = 0
+    cohort_labels = {}
     for path in candidates:
         try:
             record = load_json(path)
@@ -261,6 +267,17 @@ def _record_entries(paths):
         if any(previous[0] == run_id and previous[1] != evidence_hash for previous in seen):
             conflicts += 1
         seen.add(identity)
+        execution = record.get("execution") or {}
+        raw_cohort = execution.get("cohort_id") if execution.get("availability") == "observed" else None
+        if isinstance(raw_cohort, str) and raw_cohort:
+            if raw_cohort not in cohort_labels:
+                cohort_labels[raw_cohort] = f"cohort-{len(cohort_labels) + 1}"
+            cohort = cohort_labels[raw_cohort]
+        else:
+            cohort = "unavailable"
+        # Keep cohort grouping useful without exporting private coordinator IDs.
+        record = dict(record)
+        record["_analysis_cohort"] = cohort
         entries.append((path, record))
     if not entries:
         raise AnalysisError("no validated run records were found")
@@ -270,6 +287,7 @@ def _record_entries(paths):
         "exclusions": exclusions,
         "duplicates": duplicates,
         "conflicts": conflicts,
+        "cohort_labels": sorted(set(cohort_labels.values())),
     }
 
 
@@ -279,18 +297,21 @@ def _timing_buckets(entries):
     by_concurrency = {}
     by_outcome = {}
     by_failure_scenario = {}
+    by_cohort = {}
     for _, record in entries:
         project = _safe_group_value((record.get("conditions") or {}).get("project_size"))
         concurrency_value = (record.get("conditions") or {}).get("concurrency")
         concurrency = str(int(concurrency_value)) if isinstance(concurrency_value, int) and concurrency_value > 0 else "unknown"
         outcome = record.get("outcome") if record.get("outcome") in {"success", "failure"} else "unknown"
         failure_scenario = _failure_scenario(record)
+        cohort = record.get("_analysis_cohort", "unavailable")
         project_buckets = by_project.setdefault(project, {phase: _new_bucket() for phase in TIMING_PHASES})
         concurrency_buckets = by_concurrency.setdefault(concurrency, {phase: _new_bucket() for phase in TIMING_PHASES})
         outcome_buckets = by_outcome.setdefault(outcome, {phase: _new_bucket() for phase in TIMING_PHASES})
         failure_scenario_buckets = by_failure_scenario.setdefault(
             failure_scenario, {phase: _new_bucket() for phase in TIMING_PHASES}
         )
+        cohort_buckets = by_cohort.setdefault(cohort, {phase: _new_bucket() for phase in TIMING_PHASES})
         phases = (record.get("timings") or {}).get("phases") or {}
         for phase in TIMING_PHASES:
             phase_entries = phases.get(phase)
@@ -306,19 +327,23 @@ def _timing_buckets(entries):
                 _add_bucket(concurrency_buckets[phase], value, availability)
                 _add_bucket(outcome_buckets[phase], value, availability)
                 _add_bucket(failure_scenario_buckets[phase], value, availability)
-    return overall, by_project, by_concurrency, by_outcome, by_failure_scenario
+                _add_bucket(cohort_buckets[phase], value, availability)
+    return overall, by_project, by_concurrency, by_outcome, by_failure_scenario, by_cohort
 
 
 def _resource_buckets(entries):
     buckets = {}
     by_project = {}
     by_concurrency = {}
+    by_cohort = {}
     for _, record in entries:
         project = _safe_group_value((record.get("conditions") or {}).get("project_size"))
         concurrency_value = (record.get("conditions") or {}).get("concurrency")
         concurrency = str(int(concurrency_value)) if isinstance(concurrency_value, int) and concurrency_value > 0 else "unknown"
+        cohort = record.get("_analysis_cohort", "unavailable")
         project_buckets = by_project.setdefault(project, {})
         concurrency_buckets = by_concurrency.setdefault(concurrency, {})
+        cohort_buckets = by_cohort.setdefault(cohort, {})
         measurements = (record.get("metrics") or {}).get("measurements") or {}
         for key, measurement in measurements.items():
             if not isinstance(key, str) or not isinstance(measurement, dict):
@@ -332,13 +357,15 @@ def _resource_buckets(entries):
             bucket = buckets.setdefault(bucket_key, _new_bucket())
             project_bucket = project_buckets.setdefault(bucket_key, _new_bucket())
             concurrency_bucket = by_concurrency.setdefault(concurrency, {}).setdefault(bucket_key, _new_bucket())
+            cohort_bucket = cohort_buckets.setdefault(bucket_key, _new_bucket())
             available = measurement.get("available") is True
             value = measurement.get("value") if available else None
             availability = "observed" if available and _number(value) is not None else "unavailable"
             _add_bucket(bucket, value, availability)
             _add_bucket(project_bucket, value, availability)
             _add_bucket(concurrency_bucket, value, availability)
-    return buckets, by_project, by_concurrency
+            _add_bucket(cohort_bucket, value, availability)
+    return buckets, by_project, by_concurrency, by_cohort
 
 
 def _storage_boundaries(entries):
@@ -492,7 +519,7 @@ def _stats_row(metric, unit, bucket, threshold, **extra):
     return row
 
 
-def _timing_rows(overall, by_project, by_concurrency, by_outcome, by_failure_scenario, threshold):
+def _timing_rows(overall, by_project, by_concurrency, by_outcome, by_failure_scenario, by_cohort, threshold):
     rows = []
     for phase in TIMING_PHASES:
         rows.append(_stats_row(f"phase:{phase}", "second", overall[phase], threshold))
@@ -502,6 +529,7 @@ def _timing_rows(overall, by_project, by_concurrency, by_outcome, by_failure_sce
         ("concurrency", by_concurrency),
         ("outcome", by_outcome),
         ("failure_scenario", by_failure_scenario),
+        ("cohort", by_cohort),
     ):
         for group, phase_buckets in sorted(groups.items()):
             for phase in TIMING_PHASES:
@@ -518,12 +546,16 @@ def _timing_rows(overall, by_project, by_concurrency, by_outcome, by_failure_sce
     return rows, comparisons
 
 
-def _resource_rows(buckets, by_project, by_concurrency, threshold):
+def _resource_rows(buckets, by_project, by_concurrency, by_cohort, threshold):
     rows = []
     for metric, bucket in sorted(buckets.items()):
         rows.append(_stats_row(f"resource:{metric}", "recorded", bucket, threshold))
     comparisons = []
-    for dimension, groups in (("project_size", by_project), ("concurrency", by_concurrency)):
+    for dimension, groups in (
+        ("project_size", by_project),
+        ("concurrency", by_concurrency),
+        ("cohort", by_cohort),
+    ):
         for group, metric_buckets in sorted(groups.items()):
             for metric, bucket in sorted(metric_buckets.items()):
                 comparisons.append(
@@ -590,6 +622,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
         concurrency_timing,
         outcome_timing,
         failure_scenario_timing,
+        cohort_timing,
     ) = _timing_buckets(timing_entries)
     timing_rows, timing_comparisons = _timing_rows(
         overall_timing,
@@ -597,11 +630,12 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
         concurrency_timing,
         outcome_timing,
         failure_scenario_timing,
+        cohort_timing,
         small_sample_threshold,
     )
-    resources, project_resources, concurrency_resources = _resource_buckets(timing_entries)
+    resources, project_resources, concurrency_resources, cohort_resources = _resource_buckets(timing_entries)
     resource_rows, resource_comparisons = _resource_rows(
-        resources, project_resources, concurrency_resources, small_sample_threshold
+        resources, project_resources, concurrency_resources, cohort_resources, small_sample_threshold
     )
     storage_boundaries = _storage_boundaries(entries)
     capacity = _capacity_contract(entries)
@@ -613,10 +647,35 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
         warnings.append("incomplete lifecycle records remain included for available measurements")
     if selection["excluded"]:
         warnings.append("excluded records are reported by category and omitted from metric denominators")
+    cohort_counts = {}
+    for _, record in entries:
+        cohort = record.get("_analysis_cohort", "unavailable")
+        cohort_counts[cohort] = cohort_counts.get(cohort, 0) + 1
+    provenance = {
+        "input_format": "validated run-record.json",
+        "source_schema_version": SCHEMA_VERSION,
+        "record_counts": {
+            "candidates": document["candidates"],
+            "validated": len(entries),
+            "included_lifecycle": len(considered),
+            "excluded": sum(selection["excluded"].values()),
+        },
+        "excluded_categories": selection["excluded"],
+        "duplicates_removed": document["duplicates"],
+        "identity_conflicts": document["conflicts"],
+        "cohorts": {
+            "declared_count": len(document["cohort_labels"]),
+            "safe_labels": document["cohort_labels"],
+            "record_counts": dict(sorted(cohort_counts.items())),
+        },
+        "group_dimensions": ["project_size", "concurrency", "failure_scenario", "cohort"],
+        "paths_emitted": False,
+    }
     return {
         "schema_version": ANALYSIS_SCHEMA_VERSION,
         "generated_by": "scripts/analysis_report.py",
         "selection": selection,
+        "provenance": provenance,
         "capacity": capacity,
         "definitions": {
             "quantile_method": "linear interpolation at position (n - 1) * probability",
@@ -626,6 +685,7 @@ def analyze(paths, small_sample_threshold=DEFAULT_SMALL_SAMPLE_THRESHOLD):
             "success_rate": "mean of one for success and zero for failure over included lifecycle records",
             "small_sample_threshold": small_sample_threshold,
             "timing_sample_unit": "one sample per timing entry; partial entries remain labelled partial",
+            "denominator_contract": "each statistic reports attempted, observed, missing, and not-applicable counts; descriptive values use observed values and rates use attempted values",
             "storage_boundaries": storage_boundaries,
         },
         "tables": {
@@ -739,6 +799,8 @@ def _markdown_table(rows):
         "metric", "dimension", "group", "unit", "sample_count", "available_count",
         "missing_count", "not_applicable_count", "availability", "mean", "median",
         "p90", "p95", "p99", "maximum", "stddev", "small_sample",
+        "denominator_attempted", "denominator_observed", "denominator_missing",
+        "denominator_not_applicable",
     ]
     header = "| " + " | ".join(columns) + " |"
     separator = "| " + " | ".join("---" for _ in columns) + " |"
@@ -765,6 +827,10 @@ def _markdown_report(report):
         f"- Exclusions by category: `{json.dumps(selection['excluded'], sort_keys=True)}`",
         f"- Duplicate identities removed: {selection['duplicates_removed']}",
         f"- Identity conflicts retained: {selection['identity_conflicts']}",
+        "",
+        "## Provenance and denominators",
+        "",
+        f"- `{json.dumps(report['provenance'], sort_keys=True)}`",
         "",
         "## Definitions",
         "",

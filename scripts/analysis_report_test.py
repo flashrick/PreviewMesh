@@ -197,6 +197,8 @@ class AnalysisReportTests(unittest.TestCase):
         self.assertAlmostEqual(stats["mean"], 3.0)
         self.assertAlmostEqual(stats["stddev"], sqrt(2.5))
         self.assertFalse(stats["small_sample"])
+        self.assertEqual(stats["denominator_attempted"], 5)
+        self.assertEqual(stats["denominator_observed"], 5)
 
     def test_failed_runs_remain_included_in_reliability_statistics(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -287,6 +289,37 @@ class AnalysisReportTests(unittest.TestCase):
             self.assertNotIn("value", boundary)
             self.assertEqual(report["capacity"]["availability"], "observed")
             self.assertEqual(report["capacity"]["baseline_kinds"], ["idle"])
+
+    def test_provenance_tracks_safe_cohorts_and_group_denominators(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = run_record("run-cohort-a")
+            first["execution"] = {
+                "cohort_id": "private-cohort-a",
+                "availability": "observed",
+                "started_at_utc": "2026-10-09T00:00:00Z",
+                "ended_at_utc": "2026-10-09T00:00:01Z",
+            }
+            second = run_record("run-cohort-b", outcome="failure")
+            second["execution"] = {
+                "cohort_id": "private-cohort-b",
+                "availability": "observed",
+                "started_at_utc": "2026-10-09T00:00:02Z",
+                "ended_at_utc": "2026-10-09T00:00:03Z",
+            }
+            write_record(root, "first", first)
+            write_record(root, "second", second)
+
+            report = REPORT.analyze([root], small_sample_threshold=1)
+
+            self.assertEqual(report["provenance"]["cohorts"]["declared_count"], 2)
+            self.assertEqual(report["provenance"]["cohorts"]["safe_labels"], ["cohort-1", "cohort-2"])
+            cohort_rows = [
+                row for row in report["tables"]["comparisons"]
+                if row.get("dimension") == "cohort" and row.get("metric") == "phase:total_feedback"
+            ]
+            self.assertEqual([row["group"] for row in cohort_rows], ["cohort-1", "cohort-2"])
+            self.assertTrue(all("denominator_attempted" in row for row in cohort_rows))
 
     def test_small_sample_flag_and_warning_are_explicit(self):
         with tempfile.TemporaryDirectory() as temporary:
