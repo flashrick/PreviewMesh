@@ -446,7 +446,7 @@ identities and the evidence may contain workflow and Kubernetes output.
 python3 scripts/experiment_runner.py run \
   --config /private/config/experiment.json \
   --evidence-root /private/evidence/previewmesh \
-  --scenario create --repetitions 3 --concurrency 1 --dry-run
+  --scenario create --repetitions 20 --concurrency 1 --dry-run
 python3 scripts/experiment_runner.py validate /private/evidence/previewmesh
 python3 scripts/evaluation_matrix.py /private/config/evaluation-matrix.json
 ```

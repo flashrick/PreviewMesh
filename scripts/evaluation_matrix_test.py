@@ -42,7 +42,7 @@ def base_matrix():
         "fixtures": [{"name": "simple", "project_size": "simple", "support": "supported", "source_commit_sha": SHA}],
         "conditions": [{
             "id": "baseline", "fixture": "simple", "project_size": "simple", "scenario": "create",
-            "commit_version": SHA, "concurrency": 1, "failure_type": "none", "repetitions": 3,
+            "commit_version": SHA, "concurrency": 1, "failure_type": "none", "repetitions": 20,
             "build_policy": "rebuild", "support": "supported",
         }],
     }
@@ -55,13 +55,13 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(result["supported_condition_count"], 1)
         self.assertTrue(any("concurrency 5" in warning for warning in result["warnings"]))
 
-    def test_supported_condition_requires_three_repetitions_and_commit(self):
+    def test_supported_condition_requires_twenty_repetitions_and_commit(self):
         matrix = base_matrix()
-        matrix["conditions"][0]["repetitions"] = 2
+        matrix["conditions"][0]["repetitions"] = 3
         matrix["conditions"][0]["commit_version"] = "unavailable"
         result = MATRIX.validate_matrix(matrix)
         self.assertFalse(result["valid"])
-        self.assertIn("condition baseline needs at least 3 repetitions", result["errors"])
+        self.assertIn("condition baseline needs exactly 20 repetitions", result["errors"])
         self.assertIn("condition baseline needs an immutable commit_version", result["errors"])
 
     def test_policy_mixing_in_a_comparison_group_is_rejected(self):

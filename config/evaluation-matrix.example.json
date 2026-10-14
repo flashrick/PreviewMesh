@@ -51,7 +51,7 @@
       "commit_version": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "concurrency": 1,
       "failure_type": "none",
-      "repetitions": 3,
+      "repetitions": 20,
       "build_policy": "rebuild",
       "support": "supported"
     },

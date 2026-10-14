@@ -16,6 +16,7 @@ SCENARIOS = {"create", "update", "close", "reopen", "failure"}
 FAILURE_TYPES = {"none", "deployment", "http", "cleanup", "unsupported"}
 BUILD_POLICIES = {"rebuild", "reuse-cache"}
 CONCURRENCY_LEVELS = (1, 5, 10, 20)
+FORMAL_REPETITIONS = 20
 
 
 class MatrixError(Exception):
@@ -170,8 +171,10 @@ def validate_matrix(matrix):
         if support == "supported":
             if project_size not in supported_sizes:
                 errors.append(f"condition {identifier} uses an unsupported project size")
-            if not isinstance(repetitions, int) or repetitions < 3:
-                errors.append(f"condition {identifier} needs at least 3 repetitions")
+            if repetitions != FORMAL_REPETITIONS:
+                errors.append(
+                    f"condition {identifier} needs exactly {FORMAL_REPETITIONS} repetitions"
+                )
             commit = condition.get("commit_version")
             if not immutable(commit, SHA_RE):
                 errors.append(f"condition {identifier} needs an immutable commit_version")
