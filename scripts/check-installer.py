@@ -128,6 +128,59 @@ class InstallerTests(unittest.TestCase):
         expected = "\n".join(line[4:] for line in expected.splitlines())
         return expected if values is None else values
 
+    def traefik_network_app(self, argument_observations, *, container_name="traefik"):
+        """Expose ready-but-stale controller arguments without any real host operations."""
+        app = self.instance()
+        app.c = copy.copy(app.c)
+        app.c.lan_ip = "127.0.0.1"
+        app.check_dns = lambda: None
+        app.wsl = False
+        app.state.setdefault("files", {})[
+            "/etc/systemd/system/previewmesh-ingress.socket"] = "synthetic-managed-file"
+        expected = self.traefik_values(None)
+        observed = []
+        host_operations = []
+
+        def kube(*args, **kwargs):
+            if "get" in args and "helmchartconfig" in args:
+                payload = {"spec": {"valuesContent": expected}}
+            elif args[:2] == ("apply", "-f"):
+                return subprocess.CompletedProcess(args, 0, "", "")
+            elif "get" in args and "service" in args:
+                payload = {"spec": {"type": "ClusterIP", "clusterIP": "127.0.0.1"}}
+            elif "rollout" in args and "status" in args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            elif "get" in args and ("deployment" in args or "deployment/traefik" in args):
+                index = min(len(observed), len(argument_observations) - 1)
+                arguments = copy.deepcopy(argument_observations[index])
+                observed.append(arguments)
+                # All snapshots are ready; only the actual controller configuration differs.
+                payload = {
+                    "metadata": {"generation": 2},
+                    "spec": {"replicas": 1, "template": {"spec": {"containers": [
+                        {"name": container_name, "args": arguments}]}}},
+                    "status": {"observedGeneration": 2, "replicas": 1,
+                               "updatedReplicas": 1, "readyReplicas": 1,
+                               "availableReplicas": 1,
+                               "conditions": [{"type": "Available", "status": "True"}]},
+                }
+            else:
+                self.fail("unexpected controller readiness fixture call: " + repr(args))
+            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+        def host_operation(label, result):
+            host_operations.append((label, len(observed)))
+            return result
+
+        app.kube = Mock(side_effect=kube)
+        # Record the side-effect boundary rather than executing maintenance or system commands.
+        app.run = lambda *args, **kwargs: host_operation(
+            "run", subprocess.CompletedProcess((), 0, "", ""))
+        app.managed = lambda *args, **kwargs: host_operation("managed", False)
+        app.http_probe = lambda *args, **kwargs: host_operation("http_probe", None)
+        app.powershell = lambda *args, **kwargs: self.fail("unexpected Windows operation")
+        return app, observed, host_operations
+
     def run_tty(self, arguments, input_text="", timeout=5):
         """Run the shell entry point with a PTY so its TTY-only language menu is exercised."""
         master, slave = pty.openpty()
@@ -1140,6 +1193,61 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(str(error.exception), "APPLY_BOUNDARY")
                 self.assertTrue(any(args[:2] == ("apply", "-f") for args in calls))
 
+    def test_network_rejects_ready_traefik_without_loopback_argument_before_host_changes(self):
+        app, observed, host_operations = self.traefik_network_app([[]])
+        with patch.object(installer.time, "sleep"), self.assertRaises(config.SetupError):
+            app.network()
+        self.assertTrue(observed)
+        self.assertFalse(any("rollout" in call.args for call in app.kube.call_args_list))
+        self.assertEqual(host_operations, [])
+
+    def test_network_rejects_ready_traefik_with_published_service_before_host_changes(self):
+        arguments = ["--providers.kubernetesingress.ingressendpoint.ip=127.0.0.1",
+                     "--providers.kubernetesingress.ingressendpoint.publishedservice=kube-system/traefik"]
+        app, observed, host_operations = self.traefik_network_app([arguments])
+        with patch.object(installer.time, "sleep"), self.assertRaises(config.SetupError):
+            app.network()
+        self.assertTrue(observed)
+        self.assertFalse(any("rollout" in call.args for call in app.kube.call_args_list))
+        self.assertEqual(host_operations, [])
+
+    def test_network_rejects_invalid_traefik_publication_before_host_changes(self):
+        endpoint = "--providers.kubernetesingress.ingressendpoint."
+        loopback = endpoint + "ip=127.0.0.1"
+        cases = {
+            "duplicate IP": ([loopback, loopback], "traefik"),
+            "mismatched IP": ([endpoint + "ip=127.0.0.2"], "traefik"),
+            "hostname override": ([loopback, endpoint + "hostname=localhost"], "traefik"),
+            "empty published service": ([loopback, endpoint + "publishedservice="], "traefik"),
+            "scalar arguments": (loopback, "traefik"),
+            "non-string argument": ([loopback, None], "traefik"),
+            "null arguments": (None, "traefik"),
+            "only sidecar arguments": ([loopback], "sidecar"),
+        }
+        for label, (arguments, container_name) in cases.items():
+            with self.subTest(case=label):
+                app, observed, host_operations = self.traefik_network_app(
+                    [arguments], container_name=container_name)
+                with patch.object(installer.time, "sleep"), self.assertRaises(config.SetupError):
+                    app.network()
+                self.assertTrue(observed)
+                self.assertFalse(any("rollout" in call.args for call in app.kube.call_args_list))
+                self.assertEqual(host_operations, [])
+
+    def test_network_waits_for_traefik_arguments_before_host_changes(self):
+        loopback = "--providers.kubernetesingress.ingressendpoint.ip=127.0.0.1"
+        published = "--providers.kubernetesingress.ingressendpoint.publishedservice=kube-system/traefik"
+        snapshots = [[], [loopback, published], [loopback]]
+        app, observed, host_operations = self.traefik_network_app(snapshots)
+        with patch.object(installer.time, "sleep"):
+            app.network()
+        self.assertGreaterEqual(len(observed), len(snapshots))
+        self.assertEqual(observed[:len(snapshots)], snapshots)
+        self.assertEqual(sum("rollout" in call.args for call in app.kube.call_args_list), 1)
+        self.assertTrue(host_operations)
+        self.assertTrue(all(count >= len(snapshots) for _, count in host_operations),
+                        "Host changes started before the controller arguments matched")
+
     def test_network_accepts_semantically_equivalent_traefik_yaml_at_apply_boundary(self):
         values = (
             "# harmless formatting-only comment\n"
@@ -1204,6 +1312,7 @@ class InstallerTests(unittest.TestCase):
         get_args = ("-n", "kube-system", "get", "helmchartconfig", "traefik",
                     "--ignore-not-found", "-o", "json")
         service_args = ("-n", "kube-system", "get", "service", "traefik", "-o", "json")
+        deployment_args = ("-n", "kube-system", "get", "deployment", "traefik", "-o", "json")
         rollout_args = ("-n", "kube-system", "rollout", "status", "deployment/traefik",
                         "--timeout=180s")
 
@@ -1217,6 +1326,11 @@ class InstallerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, "", "")
             if args == service_args:
                 payload = {"spec": {"type": "ClusterIP", "clusterIP": "10.0.0.10"}}
+                return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+            if args == deployment_args:
+                payload = {"spec": {"template": {"spec": {"containers": [{
+                    "name": "traefik", "args": [
+                        "--providers.kubernetesingress.ingressendpoint.ip=127.0.0.1"]}]}}}}
                 return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
             if args == rollout_args:
                 return subprocess.CompletedProcess(args, 0, "", "")
@@ -1234,6 +1348,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(sum(args == get_args for args in kube_calls), 2)
         self.assertGreaterEqual(sum(args[:2] == ("apply", "-f") for args in kube_calls), 1)
         self.assertEqual(sum(args == service_args for args in kube_calls), 2)
+        self.assertEqual(sum(args == deployment_args for args in kube_calls), 2)
         self.assertEqual(sum(args == rollout_args for args in kube_calls), 2)
         self.assertEqual(probes, ["127.0.0.1", "192.168.1.20"] * 2)
         self.assertTrue(any(args[-1:] == ["--refresh-ingress"] for args in run_calls))
@@ -1247,6 +1362,7 @@ class InstallerTests(unittest.TestCase):
         get_args = ("-n", "kube-system", "get", "helmchartconfig", "traefik",
                     "--ignore-not-found", "-o", "json")
         service_args = ("-n", "kube-system", "get", "service", "traefik", "-o", "json")
+        deployment_args = ("-n", "kube-system", "get", "deployment", "traefik", "-o", "json")
         rollout_args = ("-n", "kube-system", "rollout", "status", "deployment/traefik",
                         "--timeout=180s")
 
@@ -1258,6 +1374,11 @@ class InstallerTests(unittest.TestCase):
             if args == service_args:
                 return subprocess.CompletedProcess(args, 0, json.dumps({
                     "spec": {"type": "ClusterIP", "clusterIP": "10.0.0.10"}}), "")
+            if args == deployment_args:
+                payload = {"spec": {"template": {"spec": {"containers": [{
+                    "name": "traefik", "args": [
+                        "--providers.kubernetesingress.ingressendpoint.ip=127.0.0.1"]}]}}}}
+                return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
             if args == rollout_args:
                 return subprocess.CompletedProcess(args, 0, "", "")
             self.fail("unexpected WSL network kube call: " + repr(args))

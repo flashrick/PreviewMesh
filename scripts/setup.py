@@ -749,11 +749,27 @@ class Installer:
         self.kube("apply", "-f", ROOT / "ops/kubernetes/traefik-helmchartconfig.yaml")
         for _ in range(60):
             service = json.loads(self.kube("-n", "kube-system", "get", "service", "traefik", "-o", "json").stdout)
-            if service["spec"]["type"] == "ClusterIP" and service["spec"].get("clusterIP") not in (None, "None", ""):
+            deployment = json.loads(self.kube("-n", "kube-system", "get", "deployment", "traefik", "-o", "json").stdout)
+            containers = deployment.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+            if not isinstance(containers, list):
+                containers = []
+            arguments = next((container.get("args", []) for container in containers
+                              if isinstance(container, dict) and container.get("name") == "traefik"), [])
+            if not isinstance(arguments, list) or not all(isinstance(argument, str) for argument in arguments):
+                arguments = []
+            # An old healthy Deployment can remain while Helm applies new values.
+            # Check its actual publication settings before changing host routing.
+            endpoint = "--providers.kubernetesingress.ingressendpoint."
+            addresses = [argument for argument in arguments if argument.lower().startswith(endpoint + "ip")]
+            conflicting = any(argument.lower().startswith((endpoint + "publishedservice", endpoint + "hostname"))
+                              for argument in arguments)
+            if (service["spec"]["type"] == "ClusterIP"
+                    and service["spec"].get("clusterIP") not in (None, "None", "")
+                    and addresses == [endpoint + "ip=127.0.0.1"] and not conflicting):
                 break
             time.sleep(2)
         else:
-            raise SetupError("Traefik did not become ready / Traefik 未就绪，请检查 K3s 服务。")
+            raise SetupError("Traefik did not apply the required ingress readiness settings; inspect its HelmChartConfig and install job / Traefik 未应用所需入口配置，请检查 HelmChartConfig 和 Helm 安装任务。")
         self.kube("-n", "kube-system", "rollout", "status", "deployment/traefik", "--timeout=180s")
         # Maintenance owns this generated value after initial installation.
         self.run(["sudo", "/usr/bin/python3", "/usr/local/lib/previewmesh/maintain.py", "--refresh-ingress"])

@@ -697,13 +697,18 @@ def cleanup_record(results, scenario):
             "orphan_scope": "unavailable",
             "unavailable_reason": reason,
         }
+    reason = "" if confirmed else "cleanup absence was not confirmed"
+    # A final absence check cannot recover a deleted Namespace's UID.
+    # Keep that identity gap explicit even when cleanup itself succeeded.
+    if namespace_uid == "unavailable":
+        reason = "; ".join(filter(None, (reason, "cleanup artifact did not export the namespace UID")))
     return {
         "namespace_uid": namespace_uid,
         "uid_guarded": bool(namespace_uid != "unavailable"),
         "namespace_absent": confirmed,
         "related_resources_absent": confirmed if state == "confirmed_absent" else None,
         "orphan_scope": "namespace" if confirmed else "unavailable",
-        "unavailable_reason": "" if confirmed else "cleanup absence was not confirmed",
+        "unavailable_reason": reason,
     }
 
 

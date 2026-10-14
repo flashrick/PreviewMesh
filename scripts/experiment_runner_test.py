@@ -387,6 +387,123 @@ class RecordValidationTests(unittest.TestCase):
         self.assertTrue(record["valid"])
 
 
+class CleanupRecordTests(unittest.TestCase):
+    def build_cleanup_record(self, *, inspection=False, namespace_uid=None):
+        """Exercise the collector seam with generic, credential-free artifacts."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        archive = Path(temporary.name)
+        (archive / "artifacts").mkdir()
+        cleanup = {
+            "namespace": "preview-fixture",
+            "cleanup": "confirmed_absent",
+            "result": "success",
+            "stage_timings": [
+                {
+                    "stage": stage,
+                    "started_at_utc": started,
+                    "ended_at_utc": ended,
+                    "duration_seconds": 1,
+                    "result": "success",
+                }
+                for stage, started, ended in (
+                    ("cleanup", "2020-01-01T00:00:01Z", "2020-01-01T00:00:02Z"),
+                    ("report", "2020-01-01T00:00:02Z", "2020-01-01T00:00:03Z"),
+                )
+            ],
+        }
+        if inspection:
+            cleanup["cleanup_inspection"] = {"state": "confirmed_absent"}
+        if namespace_uid is not None:
+            cleanup["namespace_uid"] = namespace_uid
+        RUNNER.write_json_private(archive / "artifacts" / "cleanup.json", cleanup)
+        options = SimpleNamespace(
+            concurrency=1,
+            build_policy="rebuild",
+            failure_type="none",
+            metric_interval_seconds=10,
+            operation_timeout_seconds=300,
+            http_timeout_seconds=60,
+        )
+        spec = RUNNER.make_spec({"name": "cleanup-fixture"}, "close", 1, options)
+        metadata = {
+            "databaseId": "fixture-workflow",
+            "createdAt": "2020-01-01T00:00:00Z",
+            "updatedAt": "2020-01-01T00:00:04Z",
+            "conclusion": "success",
+        }
+        results = RUNNER.result_files(archive / "artifacts")
+        outputs = RUNNER.stage_outputs(archive / "artifacts", results)
+        return RUNNER.build_record(spec, archive, results, outputs, metadata)
+
+    def assert_operational_acceptance_without_measurements(self, record, validation):
+        self.assertEqual(
+            RUNNER.validate_record(record, require_measurements=False)["errors"],
+            [],
+        )
+        # Operational cleanup acceptance must not become a formal dataset pass.
+        self.assertFalse(record["valid"])
+        self.assertEqual(
+            validation["errors"],
+            ["required measurements are missing or incomplete"],
+        )
+        self.assertTrue(record["metrics"]["unavailable_reasons"])
+
+    def test_confirmed_cleanup_unknown_uid_without_inspection(self):
+        record, validation = self.build_cleanup_record()
+
+        cleanup = record["cleanup"]
+        self.assertEqual(cleanup["namespace_uid"], "unavailable")
+        self.assertFalse(cleanup["uid_guarded"])
+        self.assertTrue(cleanup["namespace_absent"])
+        self.assertIsNone(cleanup["related_resources_absent"])
+        self.assertEqual(
+            cleanup["unavailable_reason"],
+            "cleanup artifact did not export the namespace UID",
+        )
+        self.assert_operational_acceptance_without_measurements(record, validation)
+
+    def test_confirmed_cleanup_unknown_uid_with_inspection(self):
+        record, validation = self.build_cleanup_record(inspection=True)
+
+        cleanup = record["cleanup"]
+        self.assertEqual(cleanup["namespace_uid"], "unavailable")
+        self.assertFalse(cleanup["uid_guarded"])
+        self.assertTrue(cleanup["namespace_absent"])
+        self.assertTrue(cleanup["related_resources_absent"])
+        self.assertEqual(
+            cleanup["unavailable_reason"],
+            "cleanup artifact did not export the namespace UID",
+        )
+        self.assert_operational_acceptance_without_measurements(record, validation)
+
+    def test_confirmed_cleanup_known_uid_control(self):
+        record, validation = self.build_cleanup_record(
+            inspection=True, namespace_uid="fixture-namespace-uid"
+        )
+
+        cleanup = record["cleanup"]
+        self.assertEqual(cleanup["namespace_uid"], "fixture-namespace-uid")
+        self.assertTrue(cleanup["uid_guarded"])
+        self.assertTrue(cleanup["namespace_absent"])
+        self.assertTrue(cleanup["related_resources_absent"])
+        self.assertEqual(cleanup["unavailable_reason"], "")
+        self.assert_operational_acceptance_without_measurements(record, validation)
+
+    def test_validator_still_rejects_unknown_uid_with_empty_reason(self):
+        record, _ = self.build_cleanup_record(inspection=True)
+        record["cleanup"]["unavailable_reason"] = ""
+
+        self.assertEqual(
+            RUNNER.validate_record(record, require_measurements=False)["errors"],
+            ["cleanup missing unavailable reason"],
+        )
+        self.assertIn(
+            "required measurements are missing or incomplete",
+            RUNNER.validate_record(record)["errors"],
+        )
+
+
 class UnsupportedRecordTests(unittest.TestCase):
     def test_unsupported_record_is_written_without_dispatching(self):
         reason = "fixture does not support the requested scenario"
