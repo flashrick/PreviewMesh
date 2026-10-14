@@ -26,13 +26,20 @@ def base_matrix():
             "image_storage_method": "ghcr",
         },
         "planned_concurrency_levels": [1, 5, 10, 20],
+        "scope": {
+            "supported_project_sizes": ["simple"],
+            "unsupported_project_sizes": {
+                "frontend-backend": "single-service contract",
+                "multi-service": "single-service contract",
+            },
+        },
         "defaults": {
             "build_policy": "rebuild",
             "metric_interval_seconds": 10,
             "operation_timeout_seconds": 300,
             "http_timeout_seconds": 60,
         },
-        "fixtures": [{"name": "simple", "project_size": "simple", "source_commit_sha": SHA}],
+        "fixtures": [{"name": "simple", "project_size": "simple", "support": "supported", "source_commit_sha": SHA}],
         "conditions": [{
             "id": "baseline", "fixture": "simple", "project_size": "simple", "scenario": "create",
             "commit_version": SHA, "concurrency": 1, "failure_type": "none", "repetitions": 3,
@@ -78,6 +85,13 @@ class MatrixTests(unittest.TestCase):
         result = MATRIX.validate_matrix(matrix)
         self.assertFalse(result["valid"])
         self.assertIn("unsupported condition unsupported needs unsupported_reason", result["errors"])
+
+    def test_scope_rejects_supported_fixture_marked_unsupported(self):
+        matrix = base_matrix()
+        matrix["fixtures"][0]["support"] = "unsupported"
+        result = MATRIX.validate_matrix(matrix)
+        self.assertFalse(result["valid"])
+        self.assertIn("fixture simple conflicts with the declared project-size scope", result["errors"])
 
 
 if __name__ == "__main__":

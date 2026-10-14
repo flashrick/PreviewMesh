@@ -45,6 +45,32 @@ def validate_matrix(matrix):
     if planned_levels != list(CONCURRENCY_LEVELS):
         errors.append("planned_concurrency_levels must be [1, 5, 10, 20]")
 
+    scope = matrix.get("scope")
+    supported_sizes = set()
+    unsupported_sizes = {}
+    if not isinstance(scope, dict):
+        errors.append("scope must be an object")
+    else:
+        supported = scope.get("supported_project_sizes")
+        if not isinstance(supported, list) or len(set(supported)) != len(supported):
+            errors.append("scope.supported_project_sizes must be a unique list")
+        else:
+            supported_sizes = set(supported)
+            if not supported_sizes or not supported_sizes <= PROJECT_SIZES - {"unknown"}:
+                errors.append("scope.supported_project_sizes must name supported project sizes")
+        unsupported = scope.get("unsupported_project_sizes")
+        if not isinstance(unsupported, dict):
+            errors.append("scope.unsupported_project_sizes must be an object")
+        else:
+            unsupported_sizes = unsupported
+            for size, reason in unsupported.items():
+                if size not in PROJECT_SIZES - {"unknown"}:
+                    errors.append(f"scope lists invalid unsupported project size {size}")
+                if not isinstance(reason, str) or not reason.strip():
+                    errors.append(f"scope.unsupported_project_sizes.{size} needs a reason")
+        if supported_sizes & set(unsupported_sizes):
+            errors.append("scope cannot mark a project size both supported and unsupported")
+
     revision = matrix.get("revision")
     if not isinstance(revision, dict):
         errors.append("revision must be an object")
@@ -86,6 +112,14 @@ def validate_matrix(matrix):
         if size not in PROJECT_SIZES:
             errors.append(f"fixture {name} has an invalid project_size")
         fixture_sizes[name] = size
+        support = fixture.get("support")
+        if support not in {None, "supported", "unsupported"}:
+            errors.append(f"fixture {name} has an invalid support value")
+        expected_support = "supported" if size in supported_sizes else "unsupported"
+        if support is not None and support != expected_support:
+            errors.append(f"fixture {name} conflicts with the declared project-size scope")
+        if expected_support == "unsupported" and not isinstance(fixture.get("unsupported_reason"), str):
+            errors.append(f"fixture {name} needs unsupported_reason")
         sha = fixture.get("source_commit_sha")
         if sha != "unavailable" and not immutable(sha, SHA_RE):
             errors.append(f"fixture {name} is missing an immutable source_commit_sha")
@@ -134,6 +168,8 @@ def validate_matrix(matrix):
         if support not in {"supported", "unsupported"}:
             errors.append(f"condition {identifier} has an invalid support value")
         if support == "supported":
+            if project_size not in supported_sizes:
+                errors.append(f"condition {identifier} uses an unsupported project size")
             if not isinstance(repetitions, int) or repetitions < 3:
                 errors.append(f"condition {identifier} needs at least 3 repetitions")
             commit = condition.get("commit_version")
@@ -141,6 +177,8 @@ def validate_matrix(matrix):
                 errors.append(f"condition {identifier} needs an immutable commit_version")
             supported_counts[concurrency] = supported_counts.get(concurrency, 0) + 1
         else:
+            if project_size in supported_sizes:
+                errors.append(f"condition {identifier} marks a supported project size unsupported")
             if not isinstance(condition.get("unsupported_reason"), str) or not condition["unsupported_reason"].strip():
                 errors.append(f"unsupported condition {identifier} needs unsupported_reason")
         policy = condition.get("build_policy")

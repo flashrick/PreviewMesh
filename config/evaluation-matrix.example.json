@@ -7,6 +7,13 @@
     "image_storage_method": "ghcr"
   },
   "planned_concurrency_levels": [1, 5, 10, 20],
+  "scope": {
+    "supported_project_sizes": ["simple"],
+    "unsupported_project_sizes": {
+      "frontend-backend": "The supported PreviewMesh contract is one application container per preview.",
+      "multi-service": "The supported PreviewMesh contract is one application container per preview."
+    }
+  },
   "defaults": {
     "build_policy": "rebuild",
     "metric_interval_seconds": 10,
@@ -17,16 +24,21 @@
     {
       "name": "simple-project",
       "project_size": "simple",
+      "support": "supported",
       "source_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
     {
       "name": "frontend-backend-project",
       "project_size": "frontend-backend",
+      "support": "unsupported",
+      "unsupported_reason": "The supported PreviewMesh contract is one application container per preview.",
       "source_commit_sha": "unavailable"
     },
     {
       "name": "multi-service-project",
       "project_size": "multi-service",
+      "support": "unsupported",
+      "unsupported_reason": "The supported PreviewMesh contract is one application container per preview.",
       "source_commit_sha": "unavailable"
     }
   ],
