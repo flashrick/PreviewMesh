@@ -634,7 +634,12 @@ class Installer:
         except (SetupError, OSError, ValueError, KeyError, StopIteration) as error:
             reason = self.redact(str(error))
             self.stage_results[number] = ("failed", reason)
-            self.ui.status("error", reason, chinese=self.zh)
+            self.ui.status(
+                "error",
+                "Stage failed; see the failure message below." if not self.zh else
+                "阶段失败；具体错误见下方。",
+                chinese=self.zh,
+            )
             raise
         except (KeyboardInterrupt, EOFError):
             self.stage_results[number] = ("cancelled", "stage interrupted")
@@ -1387,14 +1392,17 @@ class Installer:
             self.say(f"Completed [{number}/8]: {en}", f"已完成 [{number}/8]：{zh}")
         for number, (result, reason) in self.stage_results.items():
             localized = {"reused": "复用", "rerun": "重新执行", "failed": "失败", "cancelled": "已取消"}.get(result, result)
-            self.say(f"Recovery [{number}/8]: {result}: {reason}",
-                     f"恢复结果 [{number}/8]：{localized}：{reason}")
+            if result == "failed":
+                self.say(f"Recovery [{number}/8]: {result}",
+                         f"恢复结果 [{number}/8]：{localized}")
+            else:
+                self.say(f"Recovery [{number}/8]: {result}: {reason}",
+                         f"恢复结果 [{number}/8]：{localized}：{reason}")
         if len(self.completed_stages) < 8:
             completed = {item[0] for item in self.completed_stages}
             remaining = ", ".join(str(number) for number in range(1, 9) if number not in completed)
             self.say(f"Installation incomplete. Stages still requiring completion: {remaining}. Application onboarding is not yet verified.",
                      f"安装尚未完成。仍需完成阶段：{remaining}。应用接入尚未验证。")
-            self.ui.progress_line(8, [item[0] for item in self.completed_stages], chinese=self.zh)
 
     def enable(self):
         self.run(["gh", "variable", "set", "PREVIEWMESH_DOMAIN_SUFFIX", "--repo", self.c.control, "--body", self.c.suffix])

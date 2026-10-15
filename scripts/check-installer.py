@@ -27,6 +27,32 @@ import setup_resume as resume
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class SetupShellTests(unittest.TestCase):
+    @unittest.skipUnless(
+        Path("/usr/bin/python3").is_file() and os.access("/usr/bin/python3", os.X_OK),
+        "/usr/bin/python3 is unavailable",
+    )
+    def test_setup_shell_uses_system_python_when_path_python3_is_unusable(self):
+        with tempfile.TemporaryDirectory(prefix="previewmesh-bad-python-") as temporary:
+            fake_python = Path(temporary) / "python3"
+            fake_python.write_text("#!/bin/sh\nexit 73\n")
+            fake_python.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = os.pathsep.join((temporary, environment.get("PATH", "")))
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts/setup.sh"), "--help"],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: setup.py", result.stdout)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="previewmesh-installer-")
@@ -1258,16 +1284,47 @@ class InstallerTests(unittest.TestCase):
 
     def test_failed_stage_is_reported_without_turning_into_a_completed_checkpoint(self):
         app = self.instance()
-        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(config.SetupError):
+        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(config.SetupError) as error:
             app.step(1, "Prepare", "准备", lambda: (_ for _ in ()).throw(config.SetupError("action failed")))
 
         self.assertEqual(app.stage_results[1][0], "failed")
         self.assertIn("ERROR", output.getvalue())
-        self.assertIn("action failed", output.getvalue())
+        self.assertIn("Stage failed; see the failure message below.", output.getvalue())
+        self.assertNotIn("action failed", output.getvalue())
+        self.assertEqual(str(error.exception), "action failed")
         self.assertNotIn("1", app.state.get("completed", {}))
         reusable, reason = app.checkpoints.assess(1, app.checkpoints.inputs(1))
         self.assertFalse(reusable)
         self.assertIn("interrupted", reason)
+
+    def test_install_main_prints_setup_error_body_only_once(self):
+        error_body = "same setup error body"
+        with patch.object(installer, "load_config", return_value=self.c), \
+             patch.object(installer, "prompt_capable", return_value=False), \
+             patch.object(installer.Installer, "dependencies",
+                          side_effect=config.SetupError(error_body)) as dependencies, \
+             patch.object(installer.Checkpoints, "inputs", return_value={}), \
+             patch.object(installer.Checkpoints, "assess",
+                          return_value=(False, "synthetic test checkpoint")), \
+             patch.object(installer.Checkpoints, "record"), \
+             patch.object(installer.Installer, "save"), \
+             patch.object(Path, "home", return_value=self.work), \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "install", "--config", str(self.config_path),
+             ]), contextlib.redirect_stdout(io.StringIO()) as stdout, \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            result = installer.main()
+
+        combined = stdout.getvalue() + stderr.getvalue()
+        self.assertEqual(result, 1)
+        dependencies.assert_called_once_with()
+        self.assertEqual(combined.count(error_body), 1, combined)
+        self.assertIn("Stage failed; see the failure message below.", combined)
+        self.assertIn(error_body, stderr.getvalue())
+        self.assertNotIn(error_body, stdout.getvalue())
+        self.assertIn("Recovery [1/8]: failed", stdout.getvalue())
+        self.assertNotIn(f"Recovery [1/8]: failed: {error_body}", combined)
+        self.assertNotIn(f"FAILED     Prepare installation tools. {error_body}", combined)
 
     def test_secrets_never_in_log_or_verbose_output(self):
         app = self.instance()

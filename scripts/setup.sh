@@ -38,7 +38,7 @@ say() {
     *) printf '%s / %s\n' "$1" "$2" ;;
   esac
 }
-if ! command -v python3 >/dev/null 2>&1; then
+if ! command -v python3 >/dev/null 2>&1 && [ ! -x /usr/bin/python3 ]; then
   if [ "$command_name" != install ]; then
     say 'Python 3 is missing. Run: sudo apt-get update && sudo apt-get install -y python3' \
       '缺少 Python 3。请执行：sudo apt-get update && sudo apt-get install -y python3' >&2
@@ -54,10 +54,17 @@ if ! command -v python3 >/dev/null 2>&1; then
   sudo apt-get install -y python3 python3-yaml ca-certificates
 fi
 
+# Ubuntu installs python3-yaml for the system interpreter. Keep the installer
+# on that interpreter even when an activated venv or pyenv shadows python3.
+if [ -x /usr/bin/python3 ]; then
+  setup_python=/usr/bin/python3
+else
+  setup_python=$(command -v python3)
+fi
+
 # Prepare the optional UI in a user-owned virtual environment only when the
 # caller can actually use interactive terminal controls. This keeps CI and
 # redirected commands offline and leaves the system Python installation alone.
-setup_python=python3
 ui_mode=${PREVIEWMESH_UI:-auto}
 ui_disabled=0
 case "$ui_mode" in
@@ -69,7 +76,7 @@ if [ "$template_mode" -eq 0 ] && [ "$help_mode" -eq 0 ] \
   && [ "$ui_disabled" -eq 0 ] && [ -t 0 ] && [ -t 1 ] \
   && [ "${TERM:-}" != dumb ] \
   && { [ -z "${CI:-}" ] || [ "$ci_interactive" -eq 1 ]; }; then
-  if ! python3 -c 'import rich, questionary' >/dev/null 2>&1; then
+  if ! "$setup_python" -c 'import rich, questionary' >/dev/null 2>&1; then
     if [ -n "${PREVIEWMESH_UI_VENV:-}" ]; then
       ui_venv=$PREVIEWMESH_UI_VENV
     elif [ -n "${XDG_CACHE_HOME:-}" ]; then
@@ -78,9 +85,19 @@ if [ "$template_mode" -eq 0 ] && [ "$help_mode" -eq 0 ] \
       ui_venv="${HOME:-$root}/.cache/previewmesh/ui-venv"
     fi
     say 'Preparing the enhanced terminal UI (one-time setup).' '正在准备增强终端界面（首次运行一次）。'
-    if ui_python=$(python3 "$root/scripts/setup_ui_bootstrap.py" \
+    if ui_python=$("$setup_python" "$root/scripts/setup_ui_bootstrap.py" \
       --root "$root" --venv "$ui_venv" 2>/dev/null); then
-      setup_python=$ui_python
+      # Reuse the UI packages while retaining the system interpreter so apt's
+      # python3-yaml remains visible to every installer stage.
+      if ui_site=$(
+        "$ui_python" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null
+      ) && [ -d "$ui_site" ]; then
+        if [ -n "${PYTHONPATH:-}" ]; then
+          export PYTHONPATH="$ui_site:$PYTHONPATH"
+        else
+          export PYTHONPATH="$ui_site"
+        fi
+      fi
       say 'Enhanced terminal UI is ready.' '增强终端界面已准备好。'
     else
       say 'UI dependencies unavailable; continuing with plain text. Retry after checking network or python3-venv.' \
