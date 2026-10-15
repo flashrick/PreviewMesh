@@ -119,6 +119,22 @@ class SetupUITests(unittest.TestCase):
         self.assertIn("bash setup.sh doctor", text)
         self.assertIn("\x1b[", text)
 
+    @unittest.skipUnless(setup_ui.Console is not None, "Rich is not installed")
+    def test_rich_success_status_uses_terminal_green(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYBuffer()
+        with patch.object(setup_ui.sys, "stdout", output), \
+             patch.object(setup_ui, "interactive_capable", return_value=True), \
+             patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": ""}):
+            setup_ui.TerminalUI().status("success", "configuration / 配置", chinese=True)
+
+        text = output.getvalue()
+        self.assertIn("\x1b[32m✓ ", text)
+        self.assertIn("\x1b[32m通过", text)
+
     def test_questionary_selection_uses_arrow_shortcuts_when_available(self):
         fake = FakeQuestionary("beta")
         with patch.object(setup_ui, "questionary", fake), \

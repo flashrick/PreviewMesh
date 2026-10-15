@@ -35,7 +35,7 @@ _STYLE_TOKENS = {
     "heading": "bold #7aa2f7",
     "muted": "dim #8b949e",
     "info": "#56b6c2",
-    "success": "#98c379",
+    "success": "green",
     "warning": "#e5c07b",
     "error": "#e06c75",
     "skipped": "dim #8b949e",
