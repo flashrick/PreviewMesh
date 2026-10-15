@@ -297,6 +297,16 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("请编辑", output)
         self.assertIn("language = zh-CN", destination.read_text())
 
+    def test_init_prompts_for_sudo_authentication_after_saving_configuration(self):
+        destination = self.work / "sudo/setup.ini"
+        result_code, output = self.run_tty(
+            ["init", "--template", "--language=zh-CN", "--config", str(destination)],
+            input_text="1\nyes\n")
+
+        self.assertEqual(result_code, 0, output)
+        self.assertIn("sudo -v", output)
+        self.assertIn("安装前", output)
+
     def test_init_reports_existing_installation_and_can_decline(self):
         state_path = self.work / ".local/share/previewmesh/install-state.json"
         state_path.parent.mkdir(parents=True)
@@ -355,6 +365,7 @@ class InstallerTests(unittest.TestCase):
              patch("builtins.input", side_effect=["1", "yes"]), \
              patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
              patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer, "announce_sudo_authentication") as announce_sudo, \
              patch.object(installer.sys, "argv", [
                  str(ROOT / "scripts/setup.py"), "init", "--language", "en",
                  "--config", str(self.config_path)
@@ -364,6 +375,7 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        announce_sudo.assert_called_once_with("en")
         cleanup_call.assert_called_once_with("1", self.config_path, "en")
         self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
         state = json.loads(state_path.read_text())

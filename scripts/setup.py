@@ -174,6 +174,15 @@ def announce_local_installation_reset(language):
     ))
 
 
+def announce_sudo_authentication(language):
+    """Ask the operator to cache sudo authentication before starting install."""
+    TerminalUI().message(localized(
+        language,
+        "Before running install, run this once in the same terminal:\n  sudo -v",
+        "安装前，请在同一个终端中先执行一次：\n  sudo -v",
+    ))
+
+
 def clear_local_configuration(config_path):
     """Remove the selected installation's old active config and draft."""
     path = Path(config_path).expanduser().absolute()
@@ -1626,9 +1635,11 @@ def main():
             if not args.template:
                 from setup_wizard import run_wizard
                 if markers:
-                    run_wizard(args.config, ROOT, language=language, load_existing=False)
+                    saved = run_wizard(args.config, ROOT, language=language, load_existing=False)
                 else:
-                    run_wizard(args.config, ROOT, language=language)
+                    saved = run_wizard(args.config, ROOT, language=language)
+                if saved:
+                    announce_sudo_authentication(language)
                 return 0
             path = args.config.expanduser().absolute()
             if path.exists() or path.is_symlink():
@@ -1639,6 +1650,7 @@ def main():
             atomic_write(path, template)
             label, next_step = ("请编辑", "然后执行") if language == "zh-CN" else ("Edit", "Then run")
             print(f"{label}: {path}\n{next_step}: bash {shlex.quote(str(ROOT / 'scripts/setup.sh'))} install --config {shlex.quote(str(path))}")
+            announce_sudo_authentication(language)
             return 0
         if args.command == "install" and prompt_capable():
             prepare_interactive_install_config(args.config, language or "en")
