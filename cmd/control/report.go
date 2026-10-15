@@ -22,7 +22,7 @@ type reportEvidence struct {
 	StageTimings         []statusrecord.Timing `json:"stage_timings"`
 }
 
-// markdown uses explicit unknowns so missing evidence never looks successful.
+// markdown keeps verbose evidence available without overwhelming the result summary.
 func (e reportEvidence) markdown() string {
 	cell := func(value string) string {
 		if value == "" {
@@ -45,9 +45,9 @@ func (e reportEvidence) markdown() string {
 		{"Revision verification", e.RevisionVerification}, {"Failed stage", e.FailedStage},
 		{"Rollback", e.Rollback}, {"Cleanup", e.Cleanup},
 	}
-	body := "\n| Check | Observed result |\n| --- | --- |\n"
+	body := "\n<details>\n<summary><strong>Deployment checks</strong></summary>\n\n| Check | Observed result |\n| --- | --- |\n"
 	for _, row := range rows {
 		body += "| " + row[0] + " | " + cell(row[1]) + " |\n"
 	}
-	return body + "\nRuntime observations are a snapshot at the end of the attempt, after rollback if attempted. Service/Ingress presence alone does not establish reachability.\n"
+	return body + "\nRuntime observations are a snapshot at the end of the attempt, after rollback if attempted. Service/Ingress presence alone does not establish reachability.\n\n</details>\n"
 }

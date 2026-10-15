@@ -62,6 +62,14 @@ func TestReportStatus(t *testing.T) {
 						t.Errorf("incorrect preview link: %s", body)
 					}
 					if tc.preview {
+						previewIndex := strings.Index(body, "[Open preview]")
+						detailsIndex := strings.Index(body, "<details>")
+						if previewIndex < 0 || detailsIndex < 0 || previewIndex > detailsIndex {
+							t.Errorf("preview action is not prominent: %s", body)
+						}
+						if !strings.Contains(body, "> [!TIP]") || !strings.Contains(body, "<summary><strong>Deployment checks</strong></summary>") {
+							t.Errorf("missing modern result structure: %s", body)
+						}
 						for _, want := range []string{"Recommended sslip.io addresses need no hosts edits", "manual suffixes require client DNS/hosts configuration", "Preview access guide"} {
 							if !strings.Contains(body, want) {
 								t.Errorf("missing access guidance %q in comment %q", want, body)

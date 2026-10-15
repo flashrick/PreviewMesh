@@ -231,9 +231,20 @@ func reportStatus(a api, r registration, pr, sha, status, description, target, r
 	if !comment {
 		return statusErr
 	}
-	// Append an attempt result so older revisions cannot overwrite newer feedback.
+	// Escape user-controlled description text before placing it in Markdown.
 	escape := strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;", "`", "\\`", "\n", " ", "\r", " ")
-	body := fmt.Sprintf("### PreviewMesh deployment\n\nStatus: **%s** — %s\n\nCommit: `%s`\n\n[Workflow run](<%s>)\n", status, escape.Replace(description), sha, runURL)
+	// Put the verified preview action in the first viewport of the comment.
+	alert := "NOTE"
+	if status == "failure" {
+		alert = "CAUTION"
+	} else if status == "success" && target != runURL {
+		alert = "TIP"
+	}
+	body := fmt.Sprintf("### PreviewMesh deployment\n\n> [!%s]\n> Status: **%s**\n>\n> %s\n", alert, status, escape.Replace(description))
+	if status == "success" && target != runURL {
+		body += fmt.Sprintf(">\n> **[Open preview](<%s>) ↗**\n>\n> Open from the allowed preview network. Recommended sslip.io addresses need no hosts edits when DNS resolves; manual suffixes require client DNS/hosts configuration. [Preview access guide](https://github.com/flashrick/PreviewMesh/blob/main/ops/install/access.md).\n", target)
+	}
+	body += fmt.Sprintf("\n| Commit | Workflow |\n| :--- | :--- |\n| `%s` | [Workflow run](<%s>) |\n", sha, runURL)
 	details := reportEvidence{}
 	if len(evidence) > 0 {
 		details = evidence[0]
@@ -251,10 +262,6 @@ func reportStatus(a api, r registration, pr, sha, status, description, target, r
 		}
 		data, _ := json.Marshal(record)
 		body += "\n" + statusrecord.Marker + string(data) + " -->\n"
-	}
-	if status == "success" && target != runURL {
-		// Keep PR readers on the same access instructions as installation and status.
-		body += fmt.Sprintf("\n[Open preview](<%s>)\n\nOpen from the allowed preview network. Recommended sslip.io addresses need no hosts edits when DNS resolves; manual suffixes require client DNS/hosts configuration. [Preview access guide](https://github.com/flashrick/PreviewMesh/blob/main/ops/install/access.md).\n", target)
 	}
 	commentErr := a.request("POST", "/repos/"+r.Source+"/issues/"+pr+"/comments", map[string]string{"body": body}, nil)
 	if commentErr != nil {
