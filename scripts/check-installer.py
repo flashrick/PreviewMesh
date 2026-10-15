@@ -889,6 +889,25 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("python3-yaml", installs[0])
         app.preflight.assert_called_once_with()
 
+    def test_dependencies_reports_sudo_authentication_when_no_terminal_is_available(self):
+        app = self.instance()
+        app.preflight = Mock()
+        app.tool = lambda name: "/usr/bin/" + name
+
+        def run(args, **kwargs):
+            if args == ["sudo", "-n", "-v"]:
+                return subprocess.CompletedProcess(args, 1, "", "sudo: a password is required")
+            self.fail("sudo should not prompt without a terminal: " + repr(args))
+
+        app.run = run
+        with patch.object(installer.sys.stdin, "isatty", return_value=False), \
+             patch.object(installer.sys.stdout, "isatty", return_value=False), \
+             self.assertRaises(config.SetupError) as error:
+            app.dependencies()
+
+        self.assertIn("interactive terminal", str(error.exception).lower())
+        self.assertIn("sudo -v", str(error.exception))
+
     def test_registry_merge_preserves_unrelated_and_names(self):
         original = [{"repository_id": "12", "source_repository": "owner/app", "port": 80, "source_secret": "ESTABLISHED"},
                     {"repository_id": "13", "source_repository": "team/other", "port": 3000, "source_secret": "OTHER"}]

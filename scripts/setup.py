@@ -543,8 +543,24 @@ class Installer:
         try:
             completed = subprocess.run(args, cwd=cwd, input=input, env=effective, text=True,
                                        capture_output=not interactive, timeout=timeout)
-        except (OSError, subprocess.TimeoutExpired):
-            raise SetupError(f"Command unavailable or timed out / 命令无法执行或超时: {Path(args[0]).name}")
+        except FileNotFoundError as error:
+            raise SetupError(
+                f"Command unavailable / 命令不可用: {Path(args[0]).name} ({error.strerror or 'not found'})"
+            ) from error
+        except PermissionError as error:
+            raise SetupError(
+                f"Command unavailable or permission denied / 命令不可用或权限不足: "
+                f"{Path(args[0]).name} ({error.strerror or 'permission denied'})"
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            raise SetupError(
+                f"Command timed out / 命令超时: {Path(args[0]).name} after {timeout}s"
+            ) from error
+        except OSError as error:
+            raise SetupError(
+                f"Command unavailable / 命令不可用: {Path(args[0]).name} "
+                f"({error.strerror or error})"
+            ) from error
         output = (completed.stdout or "") + (completed.stderr or "")
         safe = self.redact(output)
         if self.command == "install":
@@ -645,9 +661,22 @@ class Installer:
             if not self.origin_matches(origin, self.c.control):
                 raise SetupError("The PreviewMesh code directory cannot be the deployment management directory / PreviewMesh 代码目录不能用作部署管理目录。")
 
+    def authenticate_sudo(self):
+        """Avoid a hidden sudo password prompt when the installer has no TTY."""
+        cached = self.run(["sudo", "-n", "-v"], check=False, timeout=10)
+        if cached.returncode == 0:
+            return
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise SetupError(
+                "sudo authentication is required, but no interactive terminal is available. "
+                "Run `sudo -v` in a real terminal, then rerun the same command. / "
+                "需要 sudo 身份验证，但当前没有可交互终端。请在真实终端先执行 `sudo -v`，再重跑同一命令。"
+            )
+        self.run(["sudo", "-v"], interactive=True, timeout=60)
+
     def dependencies(self):
         self.preflight()
-        self.run(["sudo", "-v"], interactive=True)
+        self.authenticate_sudo()
         self.say("Installing missing tools; existing compatible versions are reused.",
                  "安装缺少的工具；已安装且兼容的版本会直接复用。")
         required = {"git": "git", "curl": "curl", "ip": "iproute2", "ss": "iproute2",
