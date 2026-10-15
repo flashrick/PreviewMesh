@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +33,414 @@ from setup_ui import TerminalUI, prompt_capable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path.home() / ".config/previewmesh/setup.ini"
 SYSTEM_CONFIG = Path("/etc/previewmesh/installation.json")
+SYSTEM_INSTALLATION_MARKERS = (
+    SYSTEM_CONFIG,
+    Path("/etc/previewmesh/ingress.env"),
+    Path("/usr/local/lib/previewmesh/maintain.py"),
+    Path("/usr/local/lib/previewmesh/ingress-route.py"),
+    Path("/etc/systemd/system/previewmesh-maintenance.timer"),
+    Path("/etc/systemd/system/previewmesh-ingress.socket"),
+)
+INSTALLATION_STATE_DIR = ".local/share/previewmesh"
+FILE_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+
+
+def existing_installation_markers(home=None, config_path=None):
+    """Find configuration, runtime and service traces from a prior install."""
+    account_home = Path.home() if home is None else Path(home)
+    state_dir = account_home / INSTALLATION_STATE_DIR
+    candidates = [
+        state_dir / "install-state.json",
+        state_dir / "install-state.json.bak",
+        *SYSTEM_INSTALLATION_MARKERS,
+    ]
+    if config_path is not None:
+        configured_path = Path(config_path).expanduser().absolute()
+        candidates.extend((configured_path, config_draft_path(configured_path)))
+    try:
+        candidates.extend(sorted(
+            path for path in state_dir.iterdir()
+            if path.name == "runner" or path.name.startswith("runner-")
+        ))
+    except OSError:
+        pass
+    # Runner units are dynamic, so inspect only units whose contents point to
+    # PreviewMesh-managed state instead of treating unrelated self-hosted
+    # runners as this installation's traces.
+    try:
+        for unit in sorted(Path("/etc/systemd/system").glob("actions.runner.*.service")):
+            if unit.is_symlink() or not unit.is_file():
+                continue
+            try:
+                content = unit.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            if str(state_dir) in content or "previewmesh-runner.yaml" in content:
+                candidates.append(unit)
+    except OSError:
+        pass
+    markers = []
+    for path in dict.fromkeys(candidates):
+        try:
+            if path.exists() or path.is_symlink():
+                markers.append(path)
+        except OSError:
+            # An inaccessible marker should not make init fail before it can explain the situation.
+            continue
+    return markers
+
+
+def reset_local_installation_state(home=None, config_path=None):
+    """Reset ownership/checkpoint metadata without touching runtime resources."""
+    account_home = Path.home() if home is None else Path(home)
+    state_dir = account_home / INSTALLATION_STATE_DIR
+    state_path = state_dir / "install-state.json"
+    backup_path = state_dir / "install-state.json.bak"
+    log_path = state_dir / "setup.log"
+    lock_path = state_dir / "install.lock"
+    draft_path = config_draft_path(config_path) if config_path is not None else None
+    local_files = (state_path, backup_path, log_path, lock_path, draft_path)
+
+    for path in local_files:
+        if path is None:
+            continue
+        try:
+            if path.is_symlink():
+                raise SetupError(f"Refusing symlink / 拒绝符号链接: {path}")
+            if path.exists() and not path.is_file():
+                raise SetupError(f"Expected a regular file / 需要普通文件: {path}")
+        except OSError as error:
+            raise SetupError(f"Cannot inspect local installation metadata / 无法检查本地安装元数据: {path}") from error
+
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = lock_path.open("a+")
+    acquired = False
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError as error:
+            raise SetupError("An installer is running; finish it before reinitializing / 安装器正在运行，请完成后再重新初始化。") from error
+
+        preserved_files = {}
+        # Preserve only hashes of files PreviewMesh already manages; do not carry
+        # forward the old repository owner, checkpoints, runner identity or IDs.
+        for candidate in (state_path, backup_path):
+            if not candidate.exists():
+                continue
+            try:
+                value = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError):
+                continue
+            files = value.get("files", {}) if isinstance(value, dict) else {}
+            if not isinstance(files, dict):
+                continue
+            for path, digest in files.items():
+                if isinstance(path, str) and isinstance(digest, str) and FILE_FINGERPRINT.fullmatch(digest):
+                    preserved_files[path] = digest
+            # Prefer the active state; consult the backup only when it is damaged
+            # or has an unusable shape.
+            break
+
+        atomic_write(state_path, json.dumps({
+            "files": preserved_files,
+            "reinitialize_runner": True,
+        }, indent=2) + "\n")
+        for path in (backup_path, log_path, draft_path):
+            if path is None:
+                continue
+            path.unlink(missing_ok=True)
+    except SetupError:
+        raise
+    except OSError as error:
+        raise SetupError("Cannot reset local installation metadata; check its permissions and retry / 无法重置本地安装元数据，请检查权限后重试。") from error
+    finally:
+        if acquired:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+        if acquired:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError as error:
+                raise SetupError("Cannot remove the completed install lock / 无法删除已完成的安装锁文件。") from error
+
+
+def announce_local_installation_reset(language):
+    """Tell the operator what was reset and what was deliberately preserved."""
+    TerminalUI().message(localized(
+        language,
+        "Local installer ownership, checkpoints and logs were reset; project files and running services were preserved.",
+        "本地安装器归属、断点和日志已重置；项目文件及运行中的服务均已保留。",
+    ))
+
+
+def clear_local_configuration(config_path):
+    """Remove the selected installation's old active config and draft."""
+    path = Path(config_path).expanduser().absolute()
+    draft_path = config_draft_path(path)
+    for candidate in (path, draft_path):
+        try:
+            if candidate.is_symlink():
+                raise SetupError(f"Refusing symlink / 拒绝符号链接: {candidate}")
+            if candidate.exists() and not candidate.is_file():
+                raise SetupError(f"Expected a regular file / 需要普通文件: {candidate}")
+        except OSError as error:
+            raise SetupError(f"Cannot inspect local configuration / 无法检查本地配置: {candidate}") from error
+    try:
+        for candidate in (path, draft_path):
+            candidate.unlink(missing_ok=True)
+    except OSError as error:
+        raise SetupError("Cannot clear the previous configuration / 无法清除旧配置。") from error
+
+
+def localized(language, english, chinese):
+    """Keep pre-configuration prompts readable before a language is selected."""
+    if language == "zh-CN":
+        return chinese
+    if language == "en":
+        return english
+    return f"{english} / {chinese}"
+
+
+def confirm_reinitialization(language, markers):
+    """Choose a cumulative cleanup level before reinitializing an installation."""
+    ui = TerminalUI()
+    ui.message(localized(
+        language,
+        "An existing PreviewMesh installation was detected:",
+        "检测到当前系统已有 PreviewMesh 安装记录：",
+    ))
+    for marker in markers:
+        ui.message(f"  - {marker}")
+    if not prompt_capable():
+        raise SetupError(localized(
+            language,
+            "PreviewMesh is already installed. Run init in an interactive terminal and confirm reinitialization; no changes were made.",
+            "当前系统已安装 PreviewMesh。请在交互式终端中运行 init 并确认是否重新初始化；本次未修改任何内容。",
+        ))
+
+    levels = [
+        (
+            "1",
+            localized(
+                language,
+                "Reinitialize settings and installer state only; keep local services, Runner files, checkouts, K3s and remote resources",
+                "只重新初始化设置和安装器状态；保留本机服务、Runner 文件、checkout、K3s 和远端资源",
+            ),
+        ),
+        (
+            "2",
+            localized(
+                language,
+                "Level 1 plus immediately remove local PreviewMesh services and Runner files; keep K3s, remote Runner registration, checkouts and remote resources",
+                "级别 1 + 立即删除本机 PreviewMesh 服务和 Runner 文件；保留 K3s、远端 Runner 登记、本地 checkout 和远端资源",
+            ),
+        ),
+        (
+            "3",
+            localized(
+                language,
+                "Level 2 plus immediately remove configured local control/source checkouts; keep K3s and all remote resources",
+                "级别 2 + 立即删除配置中的本地 control/source checkout；保留 K3s 和所有远端资源",
+            ),
+        ),
+    ]
+    ui.message(localized(
+        language,
+        "Choose the cleanup level before restarting the configuration wizard:",
+        "请选择重新启动配置向导前要执行的清理级别：",
+    ))
+    for level, description in levels:
+        ui.message(f"  {level}. {description}")
+
+    answer = ui.select(
+        localized(language, "Reinitialize PreviewMesh configuration cleanup level", "重新初始化 PreviewMesh 配置清理级别"),
+        [f"{level} - {description}" for level, description in levels],
+        instruction=localized(language, "Choose 1, 2 or 3; cancel to leave the installation unchanged",
+                              "选择 1、2 或 3；取消则保持现有安装不变"),
+        manual_label=localized(language, "Cancel", "取消"),
+    )
+    normalized = str(answer or "").strip().lower()
+    if normalized in ("q", "quit", "cancel", "c", "no", "n", "false"):
+        answer = None
+    else:
+        answer = next(
+            (level for level, _ in levels
+             if normalized == level or normalized.startswith(f"{level} -")),
+            None,
+        )
+    if answer is None:
+        ui.message(localized(
+            language,
+            "Initialization cancelled; the existing installation was not changed.",
+            "已取消初始化；现有安装未做任何修改。",
+        ))
+        return False
+
+    confirmation = {
+        "1": localized(
+            language,
+            "Proceed with level 1? The new configuration replaces the old settings; local services, Runner files, checkouts, K3s and remote resources remain.",
+            "继续执行级别 1 吗？新配置会替换旧设置；本机服务、Runner 文件、checkout、K3s 和远端资源都会保留。",
+        ),
+        "2": localized(
+            language,
+            "Proceed with level 2? Before the new configuration wizard starts, local PreviewMesh services and Runner files will be removed. K3s, the remote Runner registration, checkouts and remote resources remain.",
+            "继续执行级别 2 吗？新配置向导启动前会删除本机 PreviewMesh 服务和 Runner 文件；K3s、远端 Runner 登记、本地 checkout 和远端资源都会保留。",
+        ),
+        "3": localized(
+            language,
+            "Proceed with level 3? Before the new configuration wizard starts, local PreviewMesh services, Runner files and configured control/source checkouts will be removed. K3s and remote resources remain.",
+            "继续执行级别 3 吗？新配置向导启动前会删除本机 PreviewMesh 服务、Runner 文件和配置中的 control/source checkout；K3s 和远端资源都会保留。",
+        ),
+    }[answer]
+    if not ui.confirm(confirmation, default=False):
+        ui.message(localized(
+            language,
+            "Initialization cancelled; the existing installation was not changed.",
+            "已取消初始化；现有安装未做任何修改。",
+        ))
+        return False
+    if answer == "3":
+        repository_confirmation = ui.line(localized(
+            language,
+            "Type DELETE-LOCAL-REPOSITORIES to remove the configured local control/source checkouts",
+            "请输入 DELETE-LOCAL-REPOSITORIES 以删除配置中的本地 control/source checkout",
+        ))
+        if repository_confirmation != "DELETE-LOCAL-REPOSITORIES":
+            ui.message(localized(
+                language,
+                "Initialization cancelled; the existing installation was not changed.",
+                "已取消初始化；现有安装未做任何修改。",
+            ))
+            return False
+    ui.message(localized(
+        language,
+        f"Starting cleanup level {answer} now; the new configuration wizard will start after cleanup.",
+        f"即将立即执行级别 {answer} 清理；清理完成后才会启动新配置向导。",
+    ))
+    return answer
+
+
+def run_with_loading(label, action):
+    """Show a small TTY spinner while a selected cleanup action is running."""
+    if not sys.stdout.isatty() or os.environ.get("CI"):
+        return action()
+    frames = "|/-\\"
+    stop = threading.Event()
+
+    def animate():
+        index = 0
+        while not stop.is_set():
+            sys.stdout.write(f"\r{label} {frames[index % len(frames)]}")
+            sys.stdout.flush()
+            index += 1
+            stop.wait(0.12)
+
+    worker = threading.Thread(target=animate, daemon=True)
+    worker.start()
+    try:
+        return action()
+    finally:
+        stop.set()
+        worker.join()
+        sys.stdout.write("\r" + (" " * (len(label) + 2)) + "\r")
+        sys.stdout.flush()
+
+
+def previewmesh_token_files(home=None):
+    """Find default PreviewMesh token files without reading their contents."""
+    account_home = Path.home() if home is None else Path(home)
+    secrets_dir = account_home / ".config" / "previewmesh" / "secrets"
+    try:
+        if secrets_dir.is_symlink() or not secrets_dir.is_dir():
+            return []
+        return sorted(path for path in secrets_dir.glob("*.token")
+                      if path.exists() or path.is_symlink())
+    except OSError as error:
+        raise SetupError(f"Cannot inspect PreviewMesh token directory / 无法检查 PreviewMesh Token 目录: {secrets_dir}") from error
+
+
+def cleanup_previewmesh_tokens_before_init(config_path, language):
+    """Ask about default token files after the selected reset has completed."""
+    token_files = previewmesh_token_files()
+    if not token_files:
+        return False
+
+    ui = TerminalUI()
+    ui.message(localized(
+        language,
+        "PreviewMesh token files were found in the default secrets directory:",
+        "在默认 secrets 目录中发现 PreviewMesh Token 文件：",
+    ))
+    for path in token_files:
+        ui.message(f"  - {path}")
+    if not ui.confirm(localized(
+        language,
+        "Remove these token files before starting the new configuration wizard?",
+        "是否在启动新的配置向导前删除这些 Token 文件？",
+    ), default=False):
+        ui.message(localized(
+            language,
+            "Token files were kept; continuing to the new configuration wizard.",
+            "已保留 Token 文件，继续进入新的配置向导。",
+        ))
+        return False
+
+    from cleanup import main as cleanup_main
+
+    result = run_with_loading(
+        localized(language, "Loading token cleanup", "正在加载 Token 清理"),
+        lambda: cleanup_main([
+            "cleanup",
+            "--select", "credentials",
+            "--config", str(config_path),
+            "--language", language or "en",
+            "--yes",
+        ]),
+    )
+    if result:
+        raise SetupError(localized(
+            language,
+            "Token cleanup did not complete; the new configuration wizard was not started.",
+            "Token 清理未完成；新配置向导尚未启动。",
+        ))
+    return True
+
+
+def cleanup_reinitialized_installation(level, config_path, language):
+    """Apply the selected level against old paths before the new wizard."""
+    if level == "1":
+        return run_with_loading(
+            localized(language, "Loading cleanup level 1", "正在加载级别 1 清理"),
+            lambda: (clear_local_configuration(config_path),
+                     reset_local_installation_state(config_path=config_path)),
+        )
+    from cleanup import main as cleanup_main
+    cleanup_args = [
+        "cleanup",
+        "--level", level,
+        "--config", str(config_path),
+        "--language", language or "en",
+        "--yes",
+    ]
+    # Init level 3 is the explicit confirmation to remove the old checkout,
+    # including its uncommitted, untracked and ignored files.
+    if level == "3":
+        cleanup_args.append("--allow-dirty-repositories")
+
+    result = run_with_loading(
+        localized(language, f"Loading cleanup level {level}", f"正在加载级别 {level} 清理"),
+        lambda: cleanup_main(cleanup_args),
+    )
+    if result:
+        raise SetupError(
+            localized(
+                language,
+                f"Cleanup level {level} did not complete; the new configuration wizard was not started.",
+                f"级别 {level} 清理未完成；新配置向导尚未启动。",
+            )
+        )
 
 
 def suggested_token_name(role, repository):
@@ -624,8 +1033,43 @@ class Installer:
             release = self.api("repos/actions/runner/releases/latest")
         return runner_release(app, release)
 
+    def runner_directory(self):
+        """Keep an old control repository's Runner alive while preparing a new one."""
+        legacy = self.home / "runner"
+        target = f"https://github.com/{self.c.control}"
+
+        def scoped_directory():
+            suffix = re.sub(r"[^a-zA-Z0-9_-]", "-", str(self.control_id or "new"))
+            directory = self.home / ("runner-" + suffix)
+            marker = directory / ".runner"
+            if marker.exists():
+                try:
+                    settings = json.loads(marker.read_text(encoding="utf-8-sig"))
+                except (OSError, UnicodeError, ValueError):
+                    raise SetupError("Scoped Runner metadata is unreadable; preserve it and inspect the Runner service / 隔离的 Runner 元数据无法读取，请保留并检查 Runner 服务。")
+                if settings.get("gitHubUrl", "").lower().rstrip("/") != target.lower():
+                    raise SetupError("Scoped Runner belongs to another repository / 隔离的 Runner 属于其他仓库。")
+                return directory
+            if directory.exists() and any(directory.iterdir()):
+                raise SetupError(f"Unexpected runner directory / Runner 目录冲突: {directory}")
+            return directory
+
+        allow_scoped = bool(self.state.get("reinitialize_runner"))
+        marker = legacy / ".runner"
+        if marker.exists():
+            try:
+                settings = json.loads(marker.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, ValueError):
+                return scoped_directory() if allow_scoped else legacy
+            if settings.get("gitHubUrl", "").lower().rstrip("/") == target.lower():
+                return legacy
+            return scoped_directory() if allow_scoped else legacy
+        if legacy.exists() and any(legacy.iterdir()):
+            return scoped_directory() if allow_scoped else legacy
+        return legacy
+
     def runner(self):
-        directory = self.home / "runner"
+        directory = self.runner_directory()
         name = "previewmesh-" + self.control_id + "-" + re.sub(r"[^a-zA-Z0-9_-]", "-", socket.gethostname())[:40]
         target = f"https://github.com/{self.c.control}"
         if (directory / ".runner").exists():
@@ -681,7 +1125,9 @@ class Installer:
             self.run(["sudo", "systemctl", "restart", service])
         else:
             self.run(["sudo", "systemctl", "start", service])
-        self.state.update(runner_name=name, runner_service=service, runner_restart_pending=False)
+        self.state.update(runner_name=name, runner_service=service,
+                          runner_directory=str(directory), runner_restart_pending=False)
+        self.state.pop("reinitialize_runner", None)
         self.save()
         for _ in range(30):
             runners = self.all_runners()
@@ -1139,9 +1585,21 @@ def main():
         if language is None and prompt_capable():
             language = choose_language()
         if args.command == "init":
+            markers = existing_installation_markers(config_path=args.config)
+            reinitialize_level = confirm_reinitialization(language, markers) if markers else None
+            if markers and not reinitialize_level:
+                return 0
+            if reinitialize_level:
+                cleanup_reinitialized_installation(reinitialize_level, args.config, language)
+                if reinitialize_level == "1":
+                    announce_local_installation_reset(language)
+                cleanup_previewmesh_tokens_before_init(args.config, language)
             if not args.template:
                 from setup_wizard import run_wizard
-                run_wizard(args.config, ROOT, language=language)
+                if markers:
+                    run_wizard(args.config, ROOT, language=language, load_existing=False)
+                else:
+                    run_wizard(args.config, ROOT, language=language)
                 return 0
             path = args.config.expanduser().absolute()
             if path.exists() or path.is_symlink():

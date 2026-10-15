@@ -1,7 +1,7 @@
 # Run from setup.sh. No secrets are passed to Windows.
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Apply', 'Refresh', 'Check')][string]$Mode = 'Check',
+    [ValidateSet('Install', 'Apply', 'Refresh', 'Check', 'Remove')][string]$Mode = 'Check',
     [string]$Distro,
     [string]$LanIP,
     [string]$AllowedSubnet = 'auto'
@@ -29,10 +29,10 @@ function Get-LanInterface([string]$Address) {
     return $interface
 }
 function New-SetupResultPath { return [IO.Path]::GetTempFileName() }
-function Invoke-AdministratorSetup([string]$ScriptPath) {
+function Invoke-AdministratorSetup([string]$ScriptPath, [string]$Operation = 'Apply') {
     $resultPath = New-SetupResultPath
     try {
-        $apply = '& ' + (Quote-Argument $ScriptPath) + ' -Mode Apply -Distro ' + (Quote-Argument $Distro) +
+        $apply = '& ' + (Quote-Argument $ScriptPath) + ' -Mode ' + (Quote-Argument $Operation) + ' -Distro ' + (Quote-Argument $Distro) +
             ' -LanIP ' + (Quote-Argument $LanIP) + ' -AllowedSubnet ' + (Quote-Argument $AllowedSubnet)
         $quotedResult = Quote-Argument $resultPath
         # RunAs cannot redirect standard streams. Return the child error through a caller-readable file.
@@ -136,6 +136,43 @@ if ($Mode -eq 'Refresh') {
     $running = ((& wsl.exe --list --running --quiet) -join [Environment]::NewLine).Replace([string][char]0, '')
     if (-not ($running -split "\r?\n" | Where-Object { $_.Trim() -eq $Distro })) { exit 0 }
 }
+if ($Mode -eq 'Remove') {
+    if (-not (Test-Path -LiteralPath $configPath)) { exit 0 }
+    $saved = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+    if (-not $Distro) { $Distro = [string]$saved.distro }
+    if ($saved.distro -and $Distro -and $saved.distro -ne $Distro) {
+        throw 'The saved PreviewMesh Windows installation belongs to a different WSL distribution.'
+    }
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Invoke-AdministratorSetup -ScriptPath $PSCommandPath -Operation Remove
+        exit 0
+    }
+    if ($saved.network_mode -eq 'nat' -and $saved.lan_ip) {
+        & netsh.exe interface portproxy delete v4tov4 "listenaddress=$($saved.lan_ip)" listenport=18080 | Out-Null
+    }
+    if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) {
+        Remove-NetFirewallRule -Name $ruleName
+    }
+    if ((Get-Command Get-NetFirewallHyperVRule -ErrorAction SilentlyContinue) -and
+        (Get-NetFirewallHyperVRule -Name $hypervName -ErrorAction SilentlyContinue)) {
+        Remove-NetFirewallHyperVRule -Name $hypervName
+    }
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    }
+    if (Test-Path -LiteralPath $installedScript) {
+        Remove-Item -LiteralPath $installedScript -Force
+    }
+    if (Test-Path -LiteralPath $configPath) {
+        Remove-Item -LiteralPath $configPath -Force
+    }
+    if (Test-Path -LiteralPath $directory) {
+        $remaining = @(Get-ChildItem -LiteralPath $directory -Force)
+        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $directory -Force }
+    }
+    exit 0
+}
 if ($Distro -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') { throw 'Unsupported WSL distribution name.' }
 $address = [System.Net.IPAddress]::Parse($LanIP)
 if ($address.AddressFamily -ne 'InterNetwork') { throw 'A LAN IPv4 address is required.' }
@@ -148,7 +185,7 @@ if ($Mode -eq 'Install') {
     # Check LAN and mirrored prerequisites before UAC; recheck after elevation.
     [void](Get-LanInterface -Address $LanIP)
     Assert-MirroredHostAccess -NetworkMode (Get-WslNetworkMode)
-    Invoke-AdministratorSetup -ScriptPath $PSCommandPath
+    Invoke-AdministratorSetup -ScriptPath $PSCommandPath -Operation Apply
     exit 0
 }
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())

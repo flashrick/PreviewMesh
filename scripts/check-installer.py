@@ -187,7 +187,7 @@ class InstallerTests(unittest.TestCase):
         process = subprocess.Popen(
             ["bash", str(ROOT / "scripts/setup.sh"), *arguments],
             cwd=ROOT, stdin=slave, stdout=slave, stderr=slave, close_fds=True,
-            env=dict(os.environ, PREVIEWMESH_UI="plain"))
+            env=dict(os.environ, HOME=str(self.work), PREVIEWMESH_UI="plain"))
         os.close(slave)
         output = bytearray()
         deadline = time.monotonic() + timeout
@@ -275,28 +275,442 @@ class InstallerTests(unittest.TestCase):
                 config.load_config(self.config_path, ROOT)
         self.assertFalse((self.work / "control").exists())
 
-    def test_init_does_not_overwrite(self):
+    def test_init_does_not_overwrite_when_reinitialization_is_declined(self):
         destination = self.work / "new/setup.ini"
-        command = ["bash", str(ROOT / "scripts/setup.sh"), "init", "--template", "--config", str(destination)]
-        result = subprocess.run(command, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        command = ["init", "--template", "--config", str(destination)]
+        result_code, output = self.run_tty(command, input_text="1\n1\nyes\n")
+        self.assertEqual(result_code, 0, output)
         self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
         original = destination.read_text()
-        result = subprocess.run(command, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
+        result_code, output = self.run_tty(command, input_text="1\n4\n")
+        self.assertEqual(result_code, 0, output)
         self.assertEqual(destination.read_text(), original)
 
     def test_template_language_option_writes_selected_language_without_prompt(self):
         destination = self.work / "zh/setup.ini"
-        result = subprocess.run(
-            ["bash", str(ROOT / "scripts/setup.sh"), "init", "--template",
-             "--language=zh-CN", "--config", str(destination)],
-            capture_output=True, text=True)
+        result_code, output = self.run_tty(
+            ["init", "--template", "--language=zh-CN", "--config", str(destination)],
+            input_text="1\nyes\n")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("Select language", result.stdout + result.stderr)
-        self.assertIn("请编辑", result.stdout)
+        self.assertEqual(result_code, 0, output)
+        self.assertNotIn("Select language", output)
+        self.assertIn("请编辑", output)
         self.assertIn("language = zh-CN", destination.read_text())
+
+    def test_init_reports_existing_installation_and_can_decline(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["1", "no"]) as user_input, \
+             patch("setup_wizard.run_wizard") as run_wizard, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()) as stdout, \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertIn("existing PreviewMesh installation", stdout.getvalue())
+        self.assertIn("Reinitialize PreviewMesh configuration", user_input.call_args_list[0].args[0])
+        self.assertIn("Proceed with level 1", user_input.call_args_list[1].args[0])
+        self.assertIn("not changed", stdout.getvalue())
+        run_wizard.assert_not_called()
+
+    def test_init_reinitialization_starts_a_fresh_wizard(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({
+            "control": "old/control",
+            "control_id": "7",
+            "stages": {"1": {"status": "complete"}},
+            "files": {"/etc/previewmesh/installation.json": "a" * 64},
+        }))
+        backup_path = state_path.with_suffix(".json.bak")
+        backup_path.write_text("old backup")
+        log_path = state_path.with_name("setup.log")
+        log_path.write_text("old log")
+        draft_path = self.config_path.with_name(self.config_path.name + ".draft")
+        draft_path.write_text("old draft")
+        runner_marker = state_path.parent / "runner" / ".runner"
+        runner_marker.parent.mkdir()
+        runner_marker.write_text("old runner")
+        events = []
+
+        real_cleanup = installer.cleanup_reinitialized_installation
+
+        def cleanup(level, config_path, language):
+            events.append(("cleanup", level, config_path, language))
+            return real_cleanup(level, config_path, language)
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            return True
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["1", "yes"]), \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        cleanup_call.assert_called_once_with("1", self.config_path, "en")
+        self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
+        state = json.loads(state_path.read_text())
+        self.assertNotIn("control", state)
+        self.assertNotIn("control_id", state)
+        self.assertNotIn("stages", state)
+        self.assertEqual(state["files"]["/etc/previewmesh/installation.json"], "a" * 64)
+        self.assertFalse(backup_path.exists())
+        self.assertFalse(log_path.exists())
+        self.assertFalse(draft_path.exists())
+        self.assertTrue(runner_marker.exists())
+
+    def test_init_cleans_default_tokens_before_starting_wizard_when_confirmed(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        token = self.work / ".config/previewmesh/secrets/preview.token"
+        token.parent.mkdir(parents=True)
+        token.write_text("synthetic-token\n")
+        events = []
+
+        def reinitialize(level, config_path, language):
+            events.append(("reinitialize", level, config_path, language))
+
+        def cleanup_tokens(args):
+            events.append(("token-cleanup", args))
+            token.unlink()
+            return 0
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            self.assertFalse(token.exists())
+            return True
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["1", "yes", "yes"]), \
+             patch("cleanup.main", side_effect=cleanup_tokens) as cleanup_main, \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=reinitialize), \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual([event[0] for event in events],
+                         ["reinitialize", "token-cleanup", "wizard"])
+        cleanup_main.assert_called_once_with([
+            "cleanup", "--select", "credentials", "--config", str(self.config_path),
+            "--language", "en", "--yes",
+        ])
+        self.assertFalse(token.exists())
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+
+    def test_init_keeps_default_tokens_and_starts_wizard_when_cleanup_is_declined(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        token = self.work / ".config/previewmesh/secrets/preview.token"
+        token.parent.mkdir(parents=True)
+        token.write_text("synthetic-token\n")
+        events = []
+
+        def reinitialize(level, config_path, language):
+            events.append(("reinitialize", level, config_path, language))
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            self.assertTrue(token.exists())
+            return True
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["1", "yes", "no"]), \
+             patch("cleanup.main") as cleanup_main, \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=reinitialize), \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual([event[0] for event in events], ["reinitialize", "wizard"])
+        cleanup_main.assert_not_called()
+        self.assertTrue(token.exists())
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+
+    def test_init_does_not_start_wizard_when_token_cleanup_fails(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        token = self.work / ".config/previewmesh/secrets/preview.token"
+        token.parent.mkdir(parents=True)
+        token.write_text("synthetic-token\n")
+        events = []
+
+        def reinitialize(level, config_path, language):
+            events.append(("reinitialize", level, config_path, language))
+
+        def cleanup_tokens(args):
+            events.append(("token-cleanup", args))
+            return 1
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["1", "yes", "yes"]), \
+             patch("cleanup.main", side_effect=cleanup_tokens) as cleanup_main, \
+             patch("setup_wizard.run_wizard") as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=reinitialize), \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 1)
+        self.assertEqual([event[0] for event in events], ["reinitialize", "token-cleanup"])
+        cleanup_main.assert_called_once()
+        run_wizard.assert_not_called()
+        self.assertTrue(token.exists())
+        self.assertIn("wizard was not started", stderr.getvalue())
+
+    def test_level_2_cleanup_runs_before_new_wizard_with_active_config(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        events = []
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            return True
+
+        def cleanup(level, config_path, language):
+            events.append(("cleanup", level, config_path, language))
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["2", "yes"]) as user_input, \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        cleanup_call.assert_called_once()
+        self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
+        self.assertEqual(events[0][1], "2")
+        self.assertEqual(events[0][2], self.config_path)
+        self.assertEqual(events[0][3], "en")
+        cleanup_call.assert_called_once_with("2", self.config_path, "en")
+        self.assertEqual(user_input.call_count, 2)
+        self.assertIn("cleanup level", user_input.call_args_list[0].args[0].lower())
+        self.assertIn("Proceed with level 2", user_input.call_args_list[1].args[0])
+
+    def test_level_3_cleanup_runs_before_new_wizard_and_requires_repository_confirmation(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        events = []
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            return True
+
+        def cleanup(level, config_path, language):
+            events.append(("cleanup", level, config_path, language))
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["3", "yes", "DELETE-LOCAL-REPOSITORIES"]) as user_input, \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        cleanup_call.assert_called_once()
+        self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
+        self.assertEqual(events[0][1], "3")
+        self.assertEqual(events[0][2], self.config_path)
+        self.assertEqual(events[0][3], "en")
+        cleanup_call.assert_called_once_with("3", self.config_path, "en")
+        self.assertEqual(user_input.call_count, 3)
+        self.assertIn("Proceed with level 3", user_input.call_args_list[1].args[0])
+        self.assertIn("DELETE-LOCAL-REPOSITORIES", user_input.call_args_list[2].args[0])
+
+    def test_level_3_reinitialization_forwards_dirty_repository_override(self):
+        with patch("cleanup.main", return_value=0) as cleanup_main, \
+             patch.object(installer.sys.stdout, "isatty", return_value=False):
+            installer.cleanup_reinitialized_installation("3", self.config_path, "en")
+
+        cleanup_main.assert_called_once()
+        cleanup_args = cleanup_main.call_args.args[0]
+        self.assertIn("--allow-dirty-repositories", cleanup_args)
+
+    def test_level_2_wizard_cancel_does_not_undo_cleanup(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        events = []
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            return False
+
+        def cleanup(level, config_path, language):
+            events.append(("cleanup", level, config_path, language))
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["2", "yes"]), \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        cleanup_call.assert_called_once()
+        self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
+        self.assertEqual(events[0][1], "2")
+        self.assertEqual(events[0][2], self.config_path)
+        cleanup_call.assert_called_once_with("2", self.config_path, "en")
+
+    def test_level_3_wizard_cancel_does_not_undo_cleanup(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+        events = []
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            return False
+
+        def cleanup(level, config_path, language):
+            events.append(("cleanup", level, config_path, language))
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["3", "yes", "DELETE-LOCAL-REPOSITORIES"]), \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        cleanup_call.assert_called_once()
+        self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
+        self.assertEqual(events[0][1], "3")
+        self.assertEqual(events[0][2], self.config_path)
+        cleanup_call.assert_called_once_with("3", self.config_path, "en")
+
+    def test_run_with_loading_executes_action_directly_without_tty(self):
+        events = []
+
+        def action():
+            events.append("action")
+            return "completed"
+
+        with patch.object(installer.sys.stdout, "isatty", return_value=False):
+            result = installer.run_with_loading("Loading", action)
+
+        self.assertEqual(result, "completed")
+        self.assertEqual(events, ["action"])
+
+    def test_reinitialized_runner_uses_a_new_directory_for_another_control(self):
+        app = self.instance()
+        app.control_id = "42"
+        app.state["reinitialize_runner"] = True
+        legacy_marker = app.home / "runner" / ".runner"
+        legacy_marker.parent.mkdir(parents=True)
+        legacy_marker.write_text(json.dumps({
+            "gitHubUrl": "https://github.com/old/control",
+            "agentId": 9,
+            "agentName": "old-runner",
+        }))
+
+        directory = app.runner_directory()
+
+        self.assertEqual(directory, app.home / "runner-42")
+        self.assertTrue(legacy_marker.exists())
+        self.assertFalse(directory.exists())
+
+    def test_level_1_wizard_cancel_keeps_cleanup_changes(self):
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        original = json.dumps({"control": "old/control", "control_id": "7"})
+        state_path.write_text(original)
+        events = []
+
+        real_cleanup = installer.cleanup_reinitialized_installation
+
+        def cleanup(level, config_path, language):
+            events.append(("cleanup", level, config_path, language))
+            return real_cleanup(level, config_path, language)
+
+        def wizard(*args, **kwargs):
+            events.append(("wizard", args, kwargs))
+            return False
+
+        with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+             patch.object(installer, "prompt_capable", return_value=True), \
+             patch("builtins.input", side_effect=["1", "yes"]), \
+             patch("setup_wizard.run_wizard", side_effect=wizard) as run_wizard, \
+             patch.object(installer, "cleanup_reinitialized_installation", side_effect=cleanup) as cleanup_call, \
+             patch.object(installer.sys, "argv", [
+                 str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                 "--config", str(self.config_path)
+             ]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "home", return_value=self.work):
+                result = installer.main()
+
+        self.assertEqual(result, 0)
+        run_wizard.assert_called_once_with(self.config_path, ROOT, language="en", load_existing=False)
+        cleanup_call.assert_called_once_with("1", self.config_path, "en")
+        self.assertEqual([event[0] for event in events], ["cleanup", "wizard"])
+        self.assertEqual(json.loads(state_path.read_text()), {
+            "files": {},
+            "reinitialize_runner": True,
+        })
+        self.assertFalse(self.config_path.exists())
 
     def test_tty_init_template_passes_language_once_to_python(self):
         for choice, language, edit_prompt, next_prompt in (
@@ -306,7 +720,7 @@ class InstallerTests(unittest.TestCase):
                 destination = self.work / ("tty-" + language + "/setup.ini")
                 returncode, output = self.run_tty(
                     ["init", "--template", "--config", str(destination)],
-                    input_text=choice + chr(10))
+                    input_text=choice + chr(10) + "1\nyes\n")
 
                 self.assertEqual(returncode, 0)
                 self.assertEqual(output.count("Select language / 请选择语言:"), 1)

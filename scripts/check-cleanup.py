@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Focused regression checks for the selectable cleanup command."""
 import json
+import fcntl
 import os
 from pathlib import Path
 import subprocess
@@ -39,11 +40,21 @@ def fixture(home: Path) -> dict[str, Path]:
     config_dir = home / ".config" / "previewmesh"
     state_dir = home / ".local" / "share" / "previewmesh"
     control_dir = home / "control"
+    source_dir = home / "application"
     config_dir.mkdir(parents=True)
     (state_dir / "runner").mkdir(parents=True)
     (state_dir / "tools").mkdir(parents=True)
     (state_dir / "bin").mkdir(parents=True)
     (control_dir / "config").mkdir(parents=True)
+    source_dir.mkdir(parents=True)
+    for repository, origin in (
+        (control_dir, "https://github.com/new-owner/new-control.git"),
+        (source_dir, "https://github.com/new-owner/application.git"),
+    ):
+        subprocess.run(["git", "-C", str(repository), "init", "--quiet"], check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repository), "remote", "add", "origin", origin],
+                       check=True, capture_output=True, text=True)
     token = config_dir / "secrets" / "keep.token"
     token.parent.mkdir()
     (config_dir / "setup.ini").write_text(
@@ -51,7 +62,9 @@ def fixture(home: Path) -> dict[str, Path]:
         + str(control_dir)
         + "\n\n[credentials]\ndispatch_token_file = "
         + str(token)
-        + "\n",
+        + "\n\n[source:app]\nrepository = new-owner/application\n"
+        + "directory = " + str(source_dir) + "\nport = 8080\n"
+        + "token_file = " + str(config_dir / "secrets" / "application.token") + "\n",
         encoding="utf-8",
     )
     for path in (
@@ -70,6 +83,14 @@ def fixture(home: Path) -> dict[str, Path]:
     (state_dir / "install-state.json").write_text(
         json.dumps({"control": "old-owner/old-control"}), encoding="utf-8"
     )
+    (state_dir / "runner" / ".runner").write_text(
+        json.dumps({
+            "gitHubUrl": "https://github.com/old-owner/old-control",
+            "agentId": 42,
+            "agentName": "previewmesh-old",
+        }),
+        encoding="utf-8",
+    )
     (state_dir / "keep-me").touch()
     token.touch()
     return {
@@ -80,6 +101,8 @@ def fixture(home: Path) -> dict[str, Path]:
         "tools": state_dir / "tools",
         "binary": state_dir / "bin" / "gh",
         "credential": control_dir / "config" / "previewmesh-runner.yaml",
+        "control": control_dir,
+        "source": source_dir,
         "keep": state_dir / "keep-me",
         "token": token,
     }
@@ -92,8 +115,10 @@ def main() -> None:
         result = run(home, "--select", "config,state", "--yes")
         assert result.returncode == 0, result.stderr
         assert "ownership mismatch" in result.stdout
-        for key in ("config", "draft", "state", "runner", "tools", "binary", "credential"):
+        for key in ("config", "draft", "state"):
             assert not paths[key].exists(), key
+        for key in ("runner", "tools", "binary", "credential"):
+            assert paths[key].exists(), key
         assert paths["keep"].exists(), "unknown local state was removed"
         assert paths["token"].exists(), "token file was removed"
 
@@ -111,6 +136,46 @@ def main() -> None:
         assert result.returncode == 0, result.stderr
         assert not paths["token"].exists(), "selected token file was kept"
         assert paths["config"].exists(), "unselected config was removed"
+
+    with tempfile.TemporaryDirectory(prefix="previewmesh-cleanup-tier2-") as directory:
+        home = Path(directory)
+        paths = fixture(home)
+        result = run(home, "--level", "2", "--dry-run", "--yes")
+        assert result.returncode == 0, result.stderr
+        for key in ("config", "draft", "state", "runner", "tools", "binary", "credential"):
+            assert paths[key].exists(), key
+        assert paths["token"].exists(), "tier 2 removed credentials unexpectedly"
+        assert "Would remove" in result.stdout, result.stdout
+        assert "Would delete" not in result.stdout, "tier 2 selected remote Runner deletion"
+
+    with tempfile.TemporaryDirectory(prefix="previewmesh-cleanup-tier3-") as directory:
+        home = Path(directory)
+        paths = fixture(home)
+        result = run(home, "--level", "3", "--allow-dirty-repositories", "--dry-run", "--yes")
+        assert result.returncode == 0, result.stderr
+        for key in ("config", "draft", "state", "runner", "tools", "binary", "credential", "control", "source"):
+            assert paths[key].exists(), key
+        assert "Would remove local repository" in result.stdout, result.stdout
+
+    with tempfile.TemporaryDirectory(prefix="previewmesh-cleanup-dirty-repositories-") as directory:
+        home = Path(directory)
+        paths = fixture(home)
+        result = run(home, "--level", "3", "--dry-run", "--yes")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert paths["control"].exists() and paths["source"].exists()
+        assert "uncommitted" in result.stdout + result.stderr
+
+    with tempfile.TemporaryDirectory(prefix="previewmesh-cleanup-lock-") as directory:
+        home = Path(directory)
+        paths = fixture(home)
+        lock_path = home / ".local" / "share" / "previewmesh" / "install.lock"
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = run(home, "--level", "1", "--yes")
+            assert result.returncode == 1, result.stdout + result.stderr
+            assert paths["config"].exists() and paths["state"].exists()
+            assert "already running" in result.stdout + result.stderr
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
     with tempfile.TemporaryDirectory(prefix="previewmesh-cleanup-noninteractive-") as directory:
         result = run(Path(directory))
