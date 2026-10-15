@@ -6,7 +6,7 @@
 
 本文是手工流程。自动 `install` 命令会在本地准备 source 通知文件，但不会提交、推送、创建或合并 source 改动。如果 `.github/workflows/previewmesh-notify.yml` 不存在，就创建该文件；如果已经是预期的当前模板，则保持不变；如果与需要更新配置值的精确当前或历史 PreviewMesh 模板，或此前由安装器管理的版本匹配，则自动升级，并在旁边保存旧内容为 `previewmesh-notify.yml.previewmesh.bak`。如果发现自定义工作流，则保留原文件，同时在旁边生成完整的当前工作流 `previewmesh-notify.yml.previewmesh-proposed` 和比较文件 `previewmesh-notify.yml.previewmesh.patch`；这不会使安装阶段失败。
 
-用户不必逐行复制 patch。请审核完整的 proposed 文件，patch 只作为可选的变更摘要。之后可以按 source 仓库的正常审核流程调整或替换工作流并提交，也可以执行 `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO` 审核远端默认分支，再添加 `--create-pr` 创建可审核的接入 PR。接入命令只提交通知工作流，不会自动合并。下面的手工步骤仍适用于希望自行复制和编辑工作流的情况。
+用户不必逐行复制 patch。请审核完整的 proposed 文件，patch 只作为可选的变更摘要。第 7 节以简短的 status/diff/add/cached-diff/check/commit/push 命令作为主流程；`onboard-source` 只是可选的 PR 辅助入口。下面的手工步骤仍适用于希望自行复制和编辑工作流的情况。
 
 `.previewmesh.bak`、`.previewmesh-proposed` 和 `.previewmesh.patch` 是本地审核产物；除非你有意保留，否则不要将它们提交到应用仓库。
 
@@ -425,7 +425,7 @@ curl --noproxy '*' --silent --show-error --max-time 5 -o /dev/null -w '%{http_co
 - 如果已经是预期的当前模板，则保持不变。如果与需要更新配置值的精确当前或历史 PreviewMesh 模板，或此前由安装器管理的版本匹配，则会升级，并在旁边保存 `previewmesh-notify.yml.previewmesh.bak`。
 - 如果是自定义工作流，原文件保持不动。请审核完整的 `previewmesh-notify.yml.previewmesh-proposed`；`previewmesh-notify.yml.previewmesh.patch` 只用于查看简要比较。安装阶段会继续，不需要手工逐行复制 patch。
 
-如果 proposed 文件符合预期，请保留确实需要的自定义行为，然后替换或调整受 Git 管理的工作流，检查 `git diff`，再按 source 仓库的正常拉取请求流程提交并推送。也可以从公开模板 checkout 运行下面的引导式接入命令：
+如果 proposed 文件符合预期，请保留确实需要的自定义行为，然后替换或调整受 Git 管理的工作流，并使用下面的本地审核命令。如果希望使用可选的 PR 辅助入口，可以从公开模板 checkout 运行：
 
 ```bash
 cd "$TEMPLATE_DIR"
@@ -435,7 +435,7 @@ bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOUR
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOURCE_REPOSITORY" --create-pr
 ```
 
-请按需审核或修改这个 PR，然后将它合并到 source 仓库默认分支。接入命令不会自动合并。
+请按需审核或修改这个 PR，然后将它合并到 source 仓库默认分支。接入命令不会自动合并；如果采用本地审核流程，就不需要运行它。
 
 如果只使用本手工流程，并且工作流文件不存在，复用前面设置的两个项目路径，将模板复制到存放应用代码的 **source 仓库**：
 
@@ -453,7 +453,20 @@ PREVIEWMESH_CONTROL_OWNER: YOUR_GITHUB_OWNER
 PREVIEWMESH_CONTROL_REPOSITORY: previewmesh-control
 ```
 
-Owner 是 `CONTROL_REPOSITORY` 中 `/` 前面的部分，repository 是后面的部分。按照你的正常代码审核流程，将文件提交并合并或推送到 source 仓库的默认分支。在该仓库启用 Actions，并确认第 6 步已经保存 `PREVIEWMESH_DISPATCH_TOKEN`，然后再创建测试 PR。每个已登记的 source 仓库都需要配置一次。
+Owner 是 `CONTROL_REPOSITORY` 中 `/` 前面的部分，repository 是后面的部分。审核完整工作流后，执行下面这组简短命令：
+
+```bash
+cd "$SOURCE_DIR"
+git status --short
+git diff -- .github/workflows/previewmesh-notify.yml
+git add -- .github/workflows/previewmesh-notify.yml
+git diff --cached
+git diff --cached --check
+git commit -m "Update PreviewMesh source notification"
+git push origin HEAD
+```
+
+对于新创建的文件，请先查看完整内容，再执行 `git add`。该命令只指定工作流文件，因此不要暂存 `.previewmesh.bak`、`.previewmesh-proposed` 或 `.previewmesh.patch`。如果当前分支就是 source 仓库的默认分支，`git push origin HEAD` 可以直接发布；否则请遵循该仓库策略，自行创建或更新拉取请求。在该仓库启用 Actions，并确认第 6 步已经保存 `PREVIEWMESH_DISPATCH_TOKEN`，然后再创建测试 PR。每个已登记的 source 仓库都需要配置一次。
 
 PR 打开、重新打开、收到新提交（`synchronize`）或关闭时，通知工作流都会发送请求。它会跳过 Fork PR，只传递元数据；不要在这个 `pull_request_target` Job 中加入检出或执行 PR 代码的步骤。Control 工作流会在部署前后检查当前 PR head，如果已经有更新的提交，就不会将旧版本报告为 ready。
 

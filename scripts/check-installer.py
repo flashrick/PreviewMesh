@@ -2613,8 +2613,15 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(config.SetupError):
             app.systemd_value("KUBECONFIG=a\nExecStart=bad")
 
-    def test_completion_reports_stage_summary_and_source_onboarding_actions(self):
+    def test_completion_reports_stage_summary_and_source_publish_instructions(self):
         app = self.instance()
+        source_target = app.c.sources[0].directory / ".github/workflows/previewmesh-notify.yml"
+        source_target.parent.mkdir(parents=True, exist_ok=True)
+        source_target.write_text("custom workflow\n")
+        proposed = Path(str(source_target) + ".previewmesh-proposed")
+        patch = Path(str(source_target) + ".previewmesh.patch")
+        proposed.write_text("proposed workflow\n")
+        patch.write_text("workflow patch\n")
         app.c.sources.append(config.Source(
             "second", "team/second", self.work / "second", 3000,
             self.work / "secrets/second.token"))
@@ -2631,11 +2638,11 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("Completed [1/8]: Stage 1", text)
         self.assertIn("Next steps", text)
         self.assertIn("owner/app: notification is not merged on the default branch.", text)
-        self.assertIn("Review the diff (read-only):", text)
-        self.assertIn("Create the onboarding PR (reviewed; not auto-merged):", text)
-        self.assertIn("setup.sh onboard-source", text)
-        self.assertIn("--source owner/app", text)
-        self.assertIn("--create-pr", text)
+        self.assertIn("custom workflow was preserved", text)
+        self.assertIn("git diff --no-index", text)
+        self.assertIn("git add -- .github/workflows/previewmesh-notify.yml", text)
+        self.assertIn("git push origin HEAD", text)
+        self.assertNotIn("setup.sh onboard-source", text)
         self.assertIn("team/second: notification is merged on the default branch.", text)
         self.assertIn("Check after merging", text)
         self.assertIn("Verify a real preview", text)

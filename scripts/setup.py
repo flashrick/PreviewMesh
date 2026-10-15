@@ -1503,6 +1503,116 @@ class Installer:
             args += ["--source", source]
         return shlex.join(args)
 
+    def source_publish_instructions(self, source):
+        """Show short local Git steps instead of hiding publication behind a long command."""
+        relative = ".github/workflows/previewmesh-notify.yml"
+        target = source.directory / relative
+        proposed = target.with_name(target.name + ".previewmesh-proposed")
+        patch = target.with_name(target.name + ".previewmesh.patch")
+        backup = target.with_name(target.name + ".previewmesh.bak")
+        custom = False
+        if target.is_file() and not target.is_symlink():
+            try:
+                content = target.read_text(encoding="utf-8")
+                template = (ROOT / "templates/source-notify.yml").read_text()
+                owner, repository = self.c.control.split("/")
+                expected = template.replace("YOUR_GITHUB_OWNER", owner).replace(
+                    "YOUR_CONTROL_REPOSITORY", repository)
+                known_template = self.is_rendered_notification_template(content, template)
+                for legacy_path in (ROOT / "templates").glob("source-notify-legacy*.yml"):
+                    known_template = known_template or self.is_rendered_notification_template(
+                        content, legacy_path.read_text())
+                custom = content != expected and not known_template
+            except (OSError, UnicodeError, ValueError):
+                # The source stage already reports unreadable or unsafe files;
+                # keep completion focused on the commands needed for recovery.
+                custom = False
+
+        self.ui.message(
+            f"工作目录：{source.directory}\n审核：{target}"
+            if self.zh else
+            f"Working directory: {source.directory}\nReview: {target}"
+        )
+        if custom:
+            self.ui.status(
+                "warning",
+                f"{source.repository}：已保留自定义工作流，请谨慎合并 PreviewMesh 变更。"
+                if self.zh else
+                f"{source.repository}: custom workflow was preserved; merge PreviewMesh changes deliberately",
+                chinese=self.zh,
+            )
+            if proposed.is_file() and patch.is_file():
+                self.ui.message(
+                    f"建议工作流：{proposed}\n对比 patch：{patch}\n"
+                    "请编辑受 Git 管理的工作流并保留有意的自定义逻辑；不要把 .previewmesh.* 审核文件加入提交。"
+                    if self.zh else
+                    f"Proposed workflow: {proposed}\nComparison patch: {patch}\n"
+                    "Edit the tracked workflow and keep intentional custom behavior. Do not add the .previewmesh.* review files."
+                )
+                self.ui.command(
+                    f"git diff --no-index -- {relative} {proposed.name} || true",
+                    label="Compare the custom and proposed workflows:"
+                    if not self.zh else "比较自定义工作流和建议工作流：",
+                )
+            else:
+                self.ui.message(
+                    "没有可用的 proposed 文件；请审核现有工作流并手动合并 PreviewMesh 必需步骤，不要提交 .previewmesh.* 审核文件。"
+                    if self.zh else
+                    "No proposed artifact is available; review the existing workflow and merge the required PreviewMesh steps manually. Do not add .previewmesh.* review files."
+                )
+        else:
+            if backup.is_file():
+                self.ui.message(
+                    f"备份：{backup}（审核产物，请勿提交）"
+                    if self.zh else
+                    f"Backup: {backup} (review artifact; do not commit)"
+                )
+            self.ui.message(
+                "Review the workflow, then publish only the tracked workflow file."
+                if not self.zh else
+                "请先审核工作流，然后只发布受 Git 管理的工作流文件。"
+            )
+        self.ui.command(
+            "git status --short",
+            label="Check the source checkout:"
+            if not self.zh else "检查 source checkout：",
+        )
+        self.ui.command(
+            f"git diff -- {relative}",
+            label="Review tracked changes:"
+            if not self.zh else "审核已跟踪文件的变更：",
+        )
+        self.ui.command(
+            f"git add -- {relative}",
+            label="Stage only the notification workflow:"
+            if not self.zh else "只暂存通知工作流：",
+        )
+        self.ui.command(
+            f"git diff --cached -- {relative}",
+            label="Review the staged workflow:"
+            if not self.zh else "审核已暂存的工作流：",
+        )
+        self.ui.command(
+            "git diff --cached --check",
+            label="Check the staged patch:"
+            if not self.zh else "检查已暂存的 patch：",
+        )
+        self.ui.command(
+            'git commit -m "Add PreviewMesh notification workflow"',
+            label="Commit after review:"
+            if not self.zh else "审核后提交：",
+        )
+        self.ui.command(
+            "git push origin HEAD",
+            label="Push the current branch:"
+            if not self.zh else "推送当前分支：",
+        )
+        self.ui.message(
+            "If the current branch is the default branch, this publishes it there. If the push is rejected by branch protection or the branch is not the default, use the repository's normal PR process and merge it into the default branch."
+            if not self.zh else
+            "如果当前分支就是默认分支，这会直接发布到默认分支。如果分支保护拒绝推送，或当前不是默认分支，请按仓库的正常 PR 流程提交并合并到默认分支。"
+        )
+
     def source_verification(self, *, include_onboarding=None):
         """Explain the remaining application steps without hiding remote-vs-local state."""
         if include_onboarding is None:
@@ -1513,18 +1623,20 @@ class Installer:
                        if self.source_status.get(source.repository) != "merged"]
             if pending and self.zh:
                 onboarding_body = (
-                    "作用：检查应用默认分支上的通知工作流是否与当前部署管理仓库匹配。\n"
-                    "第一条命令只查看远端差异，不修改 GitHub；第二条命令在确认后创建接入 PR，也不会自动合并。"
+                    "作用：把应用通知工作流发布到应用仓库的默认分支。\n"
+                    "请先审核本地文件；如果安装器保留了自定义工作流，请从 proposed 文件合并 PreviewMesh 必需内容，同时保留有意的自定义逻辑。\n"
+                    "下面是短的本地 Git 操作。安装器不会替用户提交、推送或合并应用改动。"
                 )
             elif pending:
                 onboarding_body = (
-                    "Purpose: compare the workflow on each application's default branch with the current deployment management repository.\n"
-                    "The first command only reviews the remote diff; the second creates an onboarding PR after confirmation and never merges it automatically."
+                    "Purpose: publish the application notification workflow to each application's default branch.\n"
+                    "Review the local file first; if the installer preserved a custom workflow, merge the required PreviewMesh changes from the proposed file while keeping intentional custom behavior.\n"
+                    "The short local Git steps below do not commit, push or merge application changes automatically."
                 )
             elif self.zh:
-                onboarding_body = "所有已配置应用的通知工作流均已合并到默认分支，无需重复执行接入命令。"
+                onboarding_body = "所有已配置应用的通知工作流均已合并到默认分支，无需重复执行发布操作。"
             else:
-                onboarding_body = "All configured application notification workflows are merged on their default branches; no onboarding command is needed."
+                onboarding_body = "All configured application notification workflows are merged on their default branches; no publication step is needed."
             self.ui.section(
                 1, 3,
                 "接入应用通知工作流" if self.zh else "Onboard application notification workflows",
@@ -1546,16 +1658,7 @@ class Installer:
                     else f"{repository}: notification is not merged on the default branch.",
                     chinese=self.zh,
                 )
-                command = self.setup_command("onboard-source", repository)
-                self.ui.command(
-                    command,
-                    label="查看差异（只读）：" if self.zh else "Review the diff (read-only):",
-                )
-                self.ui.command(
-                    command + " --create-pr",
-                    label="创建接入 PR（需审核，不自动合并）：" if self.zh
-                    else "Create the onboarding PR (reviewed; not auto-merged):",
-                )
+                self.source_publish_instructions(source)
         step_total = 3 if include_onboarding else 2
         step_number = 2 if include_onboarding else 1
         self.ui.section(
@@ -1860,11 +1963,12 @@ class Installer:
                  "Generate notification workflow files in the application directories for review.\n"
                  "Once merged into each application's default branch,\n"
                  "they notify deployment management when PRs change.\n"
-                 "Use onboard-source to review the diff or open an onboarding PR,\n"
-                 "then review and merge it on GitHub.",
+                 "Review and publish the local workflow with the Git steps shown after installation.\n"
+                 "If the repository needs a reviewed PR, onboard-source remains an optional helper.",
                  "在应用目录生成通知工作流文件供审核。\n"
                  "文件合并到应用默认分支后，会在 PR 发生变化时通知部署管理仓库。\n"
-                 "使用 onboard-source 查看差异或创建接入 PR，再到 GitHub 审核并合并。", self.sources),
+                 "请使用安装完成后显示的 Git 命令审核并发布本地工作流。\n"
+                 "如果仓库需要审核 PR，仍可选择使用 onboard-source。", self.sources),
                 ("Enable automation and check infrastructure readiness.", "启用自动化并检查基础环境。",
                  "Enable the required GitHub Actions workflows\n"
                  "and check the cluster, runner, credentials and preview entry.\n"

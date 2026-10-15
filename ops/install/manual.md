@@ -6,7 +6,7 @@
 
 This document is the manual path. The guided `install` command prepares the local source notification file without committing, pushing, creating, or merging source changes. If `.github/workflows/previewmesh-notify.yml` is missing, it creates it. An exact expected current template is left unchanged; an exact recognized current or historical PreviewMesh template with values that need updating, or a previously installer-managed version, is upgraded with the old content saved beside it as `previewmesh-notify.yml.previewmesh.bak`. A custom workflow is preserved, while the complete current workflow is written beside it as `previewmesh-notify.yml.previewmesh-proposed` and the comparison as `previewmesh-notify.yml.previewmesh.patch`; this does not fail the install stage.
 
-You do not need to copy a patch line by line. Review the complete proposed file and use the patch only as an optional summary. Then either adjust or replace the workflow and commit it through the source repository's normal review process, or run `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO` to review the remote default branch and add `--create-pr` to create a reviewed onboarding PR. The onboarding command submits only the notification workflow and never merges it automatically. The manual steps below remain available when you want to copy and edit the workflow yourself.
+You do not need to copy a patch line by line. Review the complete proposed file and use the patch only as an optional summary. Section 7 uses a short local status/diff/add/cached-diff/check/commit/push sequence as the main path; `onboard-source` is only an optional helper for preparing a PR. The manual steps below remain available when you want to copy and edit the workflow yourself.
 
 The `.previewmesh.bak`, `.previewmesh-proposed`, and `.previewmesh.patch` files are local review artifacts; unless you intentionally want to retain them, do not commit them to the application repository.
 
@@ -469,7 +469,7 @@ If you ran the guided installer, inspect the result in the **source repository**
 - An expected current template is left unchanged. An exact recognized current or historical PreviewMesh template with values that need updating, or a previously installer-managed version, is upgraded, with `previewmesh-notify.yml.previewmesh.bak` beside it.
 - A custom workflow remains untouched. Review the complete `previewmesh-notify.yml.previewmesh-proposed` file; `previewmesh-notify.yml.previewmesh.patch` is available as a concise comparison. The install stage continues, so there is no need to hand-copy each patch line.
 
-If the proposed workflow is acceptable, preserve any custom behavior you intentionally need, then replace or adjust the tracked workflow, inspect `git diff`, and commit and push it through the source repository's normal pull-request review. Alternatively, from the public template checkout, use the guided onboarding commands:
+If the proposed workflow is acceptable, preserve any custom behavior you intentionally need, then replace or adjust the tracked workflow and use the local review sequence below. If you prefer the optional PR helper, run these commands from the public template checkout:
 
 ```bash
 cd "$TEMPLATE_DIR"
@@ -479,7 +479,7 @@ bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOUR
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOURCE_REPOSITORY" --create-pr
 ```
 
-Review or edit that PR as needed and merge it on the source repository's default branch. The onboarding command does not merge it automatically.
+Review or edit that PR as needed and merge it on the source repository's default branch. The onboarding command does not merge it automatically; it is not required when you use the local review sequence.
 
 If you are following only this manual path and the workflow file is missing, reuse the checkout paths set above. The destination below is the **source repository**, where your application lives:
 
@@ -497,7 +497,20 @@ PREVIEWMESH_CONTROL_OWNER: YOUR_GITHUB_OWNER
 PREVIEWMESH_CONTROL_REPOSITORY: previewmesh-control
 ```
 
-The owner is the part before `/` in `CONTROL_REPOSITORY`; the repository value is the part after it. Commit the file and merge or push it to the source repository's default branch using your usual review process. Enable Actions there and confirm step 6 saved `PREVIEWMESH_DISPATCH_TOKEN` before opening a test PR. Repeat this setup for each registered source.
+The owner is the part before `/` in `CONTROL_REPOSITORY`; the repository value is the part after it. After reviewing the complete workflow, use this short sequence:
+
+```bash
+cd "$SOURCE_DIR"
+git status --short
+git diff -- .github/workflows/previewmesh-notify.yml
+git add -- .github/workflows/previewmesh-notify.yml
+git diff --cached
+git diff --cached --check
+git commit -m "Update PreviewMesh source notification"
+git push origin HEAD
+```
+
+For a newly created file, inspect it before `git add`. The add command names only the workflow, so do not stage `.previewmesh.bak`, `.previewmesh-proposed`, or `.previewmesh.patch`. `git push origin HEAD` can publish directly when the current branch is the source repository's default branch; otherwise follow the repository's policy and open or update a pull request. Enable Actions there and confirm step 6 saved `PREVIEWMESH_DISPATCH_TOKEN` before opening a test PR. Repeat this setup for each registered source.
 
 The workflow sends a notification when a PR opens, reopens, receives a commit (`synchronize`), or closes. It skips fork PRs and only relays metadata. Keep its `pull_request_target` job free of steps that check out or execute PR code. The control workflow checks the current PR head around deployment and will not report an older revision as ready if a newer commit has replaced it.
 

@@ -176,29 +176,44 @@ bash scripts/setup.sh install --config /path/to/setup.ini
 - 如果文件已经是预期的当前模板，就保持不变。如果文件与需要更新配置值的精确当前或历史 PreviewMesh 模板（或此前由安装器管理的版本）匹配，就自动升级，并在旁边保存旧内容为 `previewmesh-notify.yml.previewmesh.bak`。
 - 如果发现的是自定义工作流，`install` 会保留原文件，并在旁边生成完整的当前工作流 `previewmesh-notify.yml.previewmesh-proposed` 和 `previewmesh-notify.yml.previewmesh.patch`。自定义工作流需要审核，但不会使安装阶段失败。
 
-用户不必逐行复制 patch。请先审核完整的 proposed 文件，patch 只作为可选的变更摘要。之后可以按应用仓库的正常审核流程调整或替换工作流并提交，也可以使用下面的 `onboard-source` 准备一个可审核的接入 PR。`install` 不会提交、推送或合并应用改动。
+用户不必逐行复制 patch。对于自定义工作流，请先审核完整的 proposed 文件和 patch，保留你有意继续使用的逻辑并写回受 Git 管理的工作流，然后再发布审核后的工作流。`install` 不会提交、推送或合并应用改动。
 
 `.previewmesh.bak`、`.previewmesh-proposed` 和 `.previewmesh.patch` 是本地审核产物；除非你有意保留，否则不要将它们提交到应用仓库。
+
+审核工作流后，在应用 checkout 中执行下面这组简短命令。对于新创建的文件，请先查看完整文件，再将它加入暂存区：
+
+~~~bash
+cd /path/to/application-checkout
+git status --short
+git diff -- .github/workflows/previewmesh-notify.yml
+git add -- .github/workflows/previewmesh-notify.yml
+git diff --cached
+git diff --cached --check
+git commit -m "Update PreviewMesh source notification"
+git push origin HEAD
+~~~
+
+`git add` 只指定工作流文件，因此不会暂存本地审核产物。如果当前分支就是应用仓库的默认分支，`git push origin HEAD` 可以直接发布；否则请遵循该仓库的策略，自行创建或更新拉取请求。
 
 `install` 还会在 `<control checkout>/bin/previewmesh` 构建面向用户的 CLI。若 `CONTROL_DIR` 指向 private control checkout，请使用 `"$CONTROL_DIR/bin/previewmesh"`；该二进制文件只属于这个 checkout 及其配置，不会全局安装，也不会把不带路径的 `previewmesh` 命令加入 `PATH`。
 
 安装器负责准备基础设施，不会改写应用代码，也不能证明应用已经能够提供预览。[手动安装参考](ops/install/manual.md) 解释了不适合使用引导式流程时的各个基础设施步骤。
 
-### 3. 通过审核 PR 接入应用
+### 3. 可选：使用 `onboard-source` 准备接入 PR
 
-审核应用默认分支上的工作流，不写入应用仓库。如果 `install` 因自定义工作流留下了 proposed 文件，这也是下一步：
+上面的本地审核、提交和推送流程是主流程。如果希望由 GitHub 自动准备一个只包含通知工作流的 PR，可以选择使用 `onboard-source`。默认模式只输出完整的待提交变更：
 
 ~~~bash
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO
 ~~~
 
-审核完整 diff 后，添加 `--create-pr` 创建专用的接入拉取请求：
+审核输出后，添加 `--create-pr` 创建专用的接入拉取请求：
 
 ~~~bash
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO --create-pr
 ~~~
 
-该命令只提议 `.github/workflows/previewmesh-notify.yml`。添加 `--create-pr` 后，它会创建只包含该工作流的 PR，不会自动合并，也不会修改其他应用代码。请按需审核或修改这个 PR，然后在创建测试预览前将它合并到应用默认分支。
+该命令只提交 `.github/workflows/previewmesh-notify.yml`，不会自动合并 PR，也不会修改其他应用代码。请按需审核或修改这个 PR，保留有意使用的自定义逻辑，然后在创建测试预览前将它合并到应用默认分支。
 
 ### 4. 创建第一个预览
 

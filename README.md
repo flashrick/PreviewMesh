@@ -176,29 +176,44 @@ During the source-notification stage, `install` handles the local application wo
 - If the file is already the expected current template, it leaves it unchanged. If it is an exact recognized current or historical PreviewMesh template with values that need updating (or a previously installer-managed version), it upgrades the file and saves the old content beside it as `previewmesh-notify.yml.previewmesh.bak`.
 - If the file is custom, `install` preserves it and writes the complete current workflow to `previewmesh-notify.yml.previewmesh-proposed` plus `previewmesh-notify.yml.previewmesh.patch`. A custom workflow is a review case; it does not make the install stage fail.
 
-You do not need to copy a patch line by line. Review the complete proposed file first and use the patch as an optional summary. Then either adjust or replace the workflow and commit it through the application's normal review process, or use `onboard-source` below to prepare a reviewed onboarding PR. `install` never commits, pushes, or merges application changes.
+You do not need to copy a patch line by line. For a custom workflow, review the complete proposed file and patch first, preserve any logic you intentionally want to keep in the tracked workflow, and then publish that reviewed workflow. `install` never commits, pushes, or merges application changes.
 
 The `.previewmesh.bak`, `.previewmesh-proposed`, and `.previewmesh.patch` files are local review artifacts; unless you intentionally want to retain them, do not commit them to the application repository.
+
+After reviewing the workflow, run this short sequence from the application checkout. For a newly created file, inspect the complete file before staging it:
+
+~~~bash
+cd /path/to/application-checkout
+git status --short
+git diff -- .github/workflows/previewmesh-notify.yml
+git add -- .github/workflows/previewmesh-notify.yml
+git diff --cached
+git diff --cached --check
+git commit -m "Update PreviewMesh source notification"
+git push origin HEAD
+~~~
+
+The `git add` command names only the workflow, so the local review artifacts are not staged. `git push origin HEAD` can publish directly when the current branch is the application's default branch. Otherwise, follow the repository's policy and open or update a pull request.
 
 The setup `install` command also builds the user-facing CLI at `<control checkout>/bin/previewmesh`. If `CONTROL_DIR` points to the private control checkout, use `"$CONTROL_DIR/bin/previewmesh"`; the binary is scoped to that checkout and its configuration. It is not installed globally, and a bare `previewmesh` command is not added to `PATH`.
 
 The installer prepares infrastructure. It does not rewrite application code or prove that an application can serve its preview. The [manual installation reference](ops/install/manual.md) explains each infrastructure step when the guided path is not suitable.
 
-### 3. Onboard an application with a reviewed PR
+### 3. Optional: prepare an onboarding PR with `onboard-source`
 
-Review the workflow that is on the application's default branch without writing to the application repository. This is also the next step when `install` left a proposed file for a custom workflow:
+The local review and commit flow above is the normal path. If you prefer a GitHub-generated PR containing only the notification workflow, `onboard-source` is an optional helper. Its default mode only prints the complete proposed change:
 
 ~~~bash
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO
 ~~~
 
-After reviewing the complete diff, add `--create-pr` to create a dedicated, reviewable onboarding pull request:
+After reviewing that output, add `--create-pr` to create a dedicated onboarding pull request:
 
 ~~~bash
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO --create-pr
 ~~~
 
-The command proposes only `.github/workflows/previewmesh-notify.yml`. With `--create-pr`, it creates a PR containing only that workflow; it does not merge the PR or modify other application code. Review or edit the PR as needed, then merge it on the application's default branch before creating a test preview.
+The command submits only `.github/workflows/previewmesh-notify.yml`; it does not merge the PR or modify other application code. Review or edit the PR as needed, preserve any intentional custom logic, and merge it on the application's default branch before creating a test preview.
 
 ### 4. Create the first preview
 
