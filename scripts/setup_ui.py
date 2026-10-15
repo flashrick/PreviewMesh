@@ -155,6 +155,19 @@ class TerminalUI:
         if body:
             self._write(body)
 
+    def divider(self, *, style="muted"):
+        """Separate dense prompts while keeping the fallback output readable."""
+        if self.rich_enabled:
+            console = self._console()
+            line_style = self._style(style)
+            if line_style:
+                console.rule(characters="─", style=line_style)
+            else:
+                console.rule(characters="─")
+            return
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        self._write("─" * max(20, min(width, 120)))
+
     def status(self, kind, value, *, chinese=False):
         """Print a status line with a text label that remains clear without colour."""
         english, chinese_label, symbol, style = _STATUS_META.get(

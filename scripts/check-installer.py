@@ -1442,12 +1442,14 @@ class InstallerTests(unittest.TestCase):
                 self.fail("unexpected secret validation API path: " + path)
             return subprocess.CompletedProcess(args, 0, "{}", "")
         app.run = run
-        with contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(app.ui, "divider") as divider, contextlib.redirect_stdout(io.StringIO()):
             app.secrets_step()
         uploads = [(args[3], args[5], value) for args, value in calls if args[:3] == ["gh", "secret", "set"]]
         self.assertEqual(uploads, [("SOURCE_APP", "owner/control", "app.token-synthetic"),
                                   ("PREVIEWMESH_DISPATCH_TOKEN", "owner/app", "dispatch.token-synthetic"),
                                   ("GHCR_READ_TOKEN", "owner/control", "ghcr.token-synthetic")])
+        self.assertEqual([kwargs for _, kwargs in divider.call_args_list],
+                         [{"style": "warning"}, {"style": "success"}])
         def failing(args, **kwargs):
             args = [str(item) for item in args]
             if args[:2] == ["gh", "api"]:

@@ -79,6 +79,15 @@ class SetupUITests(unittest.TestCase):
         self.assertIn("1. alpha", output.getvalue())
         self.assertNotIn("\x1b", output.getvalue())
 
+    def test_plain_divider_keeps_separate_prompts_visible(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            setup_ui.TerminalUI(force_plain=True).divider(style="warning")
+
+        text = output.getvalue()
+        self.assertGreaterEqual(text.count("─"), 20)
+        self.assertNotIn("\x1b", text)
+
     def test_questionary_selection_uses_arrow_shortcuts_when_available(self):
         fake = FakeQuestionary("beta")
         with patch.object(setup_ui, "questionary", fake), \

@@ -877,9 +877,18 @@ class Installer:
 
     def secrets_step(self):
         fine = "https://github.com/settings/personal-access-tokens/new"
+        credential_number = 0
+
+        def request_credential(path, en, zh, style):
+            nonlocal credential_number
+            if credential_number:
+                self.ui.divider(style=style)
+            credential_number += 1
+            return self.credential(path, en, zh)
+
         for source, registration in zip(self.c.sources, self.registrations):
             name = suggested_token_name("source", source.repository)
-            token = self.credential(source.token_file,
+            token = request_credential(source.token_file,
                 f"Application access token: {source.repository}\n"
                 "Deployment automation uses it to read this application and update PR feedback.\n"
                 f"Create a fine-grained token:\n  {fine}\n"
@@ -899,11 +908,11 @@ class Installer:
                 "  Contents：Read-only（只读）\n"
                 "  Metadata：Read-only（只读）\n"
                 "  Pull requests：Read and write（读写）\n"
-                "  Commit statuses：Read and write（读写，用于回写 PreviewMesh 提交状态）。")
+                "  Commit statuses：Read and write（读写，用于回写 PreviewMesh 提交状态）。", "info")
             self.check_source_token(source, token)
             self.run(["gh", "secret", "set", registration["source_secret"], "--repo", self.c.control, "--app", "actions"], input=token)
         name = suggested_token_name("dispatch", self.c.control)
-        token = self.credential(self.c.dispatch_file,
+        token = request_credential(self.c.dispatch_file,
             "Deployment notification token\n"
             f"Application workflows use it to start deployment workflows in {self.c.control}.\n"
             f"Create a fine-grained token:\n  {fine}\n"
@@ -919,12 +928,12 @@ class Installer:
             f"仓库访问范围（Repository access）：仅选 {self.c.control}。\n"
             "所需仓库权限（Repository permissions）：\n"
             "  Actions：Read and write（读写）\n"
-            "  Metadata：Read-only（只读）")
+            "  Metadata：Read-only（只读）", "warning")
         self.run(["gh", "api", f"repos/{self.c.control}/actions/workflows"], env={"GH_TOKEN": token})
         for source in self.c.sources:
             self.run(["gh", "secret", "set", "PREVIEWMESH_DISPATCH_TOKEN", "--repo", source.repository, "--app", "actions"], input=token)
         name = suggested_token_name("ghcr-read", self.c.control)
-        token = self.credential(self.c.ghcr_file,
+        token = request_credential(self.c.ghcr_file,
             "Image download token (GHCR)\n"
             "The cluster uses it to pull preview images.\n"
             "Create a classic PAT:\n"
@@ -938,7 +947,7 @@ class Installer:
             "  https://github.com/settings/tokens/new?scopes=read:packages\n"
             f"推荐 Note（名称）：{name}\n"
             "所需权限（scope）：read:packages\n"
-            "Token 所属账号需能读取预览镜像包。")
+            "Token 所属账号需能读取预览镜像包。", "success")
         self.run(["gh", "secret", "set", "GHCR_READ_TOKEN", "--repo", self.c.control, "--app", "actions"], input=token)
 
     def managed(self, path, content, mode=0o644, privileged=False, adopt=None):
