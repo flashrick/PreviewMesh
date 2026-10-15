@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import socket
 import subprocess
 
@@ -577,5 +578,11 @@ def run_wizard(path, root, *, language=None, load_existing=None):
             draft_path.unlink()
     except OSError:
         raise SetupError(ui.text('Cannot save configuration; check destination permissions and rerun init.', '无法保存，请检查目标目录权限后重新运行 init。'))
-    ui.say('Configuration saved. Run setup.sh install with the same --config.', '配置已保存，请使用相同 --config 运行 setup.sh install。')
+    install_command = shlex.join([
+        'bash', str(root / 'scripts/setup.sh'), 'install', '--config', str(path),
+    ])
+    ui.say(
+        f'Configuration saved to {path}.\nRun this command to install PreviewMesh:\n{install_command}',
+        f'配置已保存至：{path}\n请运行以下命令完成 PreviewMesh 安装：\n{install_command}',
+    )
     return True

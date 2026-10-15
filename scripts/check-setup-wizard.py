@@ -91,6 +91,19 @@ token_file = {self.secrets / 'app.token'}
         self.assertIn("http://pm-r<repository_id>-pr<PR>.192.168.1.20.sslip.io:18080", output)
         self.assertIn("Review:", output)
 
+    def test_save_message_shows_config_path_and_complete_install_command(self):
+        result, output = self.run_manual_wizard([
+            str(self.control_dir), "owner/control", "", "1", "192.168.1.20", "",
+            "", str(self.secrets / "dispatch.token"), str(self.secrets / "ghcr.token"),
+            str(self.source_dir), "owner/app", "8080", str(self.secrets / "app.token"), "no", "yes",
+        ], language="zh-CN")
+
+        self.assertTrue(result)
+        command = f"bash {ROOT / 'scripts/setup.sh'} install --config {self.config_path}"
+        self.assertIn(f"配置已保存至：{self.config_path}", output)
+        self.assertIn("请运行以下命令完成 PreviewMesh 安装：", output)
+        self.assertIn(command, output)
+
     def test_multiple_candidates_are_explicitly_selected(self):
         output = io.StringIO()
         def repositories(directory):
