@@ -985,6 +985,20 @@ class Installer:
         self.save()
         return True
 
+    @staticmethod
+    def is_rendered_notification_template(content, template):
+        """Recognize only an otherwise exact notification template with new values."""
+        placeholders = {
+            "YOUR_GITHUB_OWNER": r"[A-Za-z0-9][A-Za-z0-9-]*",
+            "YOUR_CONTROL_REPOSITORY": r"[A-Za-z0-9_.-]+",
+        }
+        parts = re.split("(" + "|".join(map(re.escape, placeholders)) + ")", template)
+        pattern = "".join(
+            placeholders.get(part, re.escape(part))
+            for part in parts
+        )
+        return re.fullmatch(pattern, content) is not None
+
     def kube(self, *args, check=True, timeout=300):
         return self.run(["sudo", self.tool("k3s"), "kubectl",
                          "--kubeconfig=/etc/rancher/k3s/k3s.yaml", *args], check=check, timeout=timeout)
@@ -1336,7 +1350,14 @@ class Installer:
         template = (ROOT / "templates/source-notify.yml").read_text()
         expected = template.replace("YOUR_GITHUB_OWNER", owner).replace("YOUR_CONTROL_REPOSITORY", repo)
         for source in self.c.sources:
-            self.managed(source.directory / ".github/workflows/previewmesh-notify.yml", expected)
+            target = source.directory / ".github/workflows/previewmesh-notify.yml"
+            adopt = None
+            if target.is_file() and not target.is_symlink():
+                existing = target.read_text()
+                # A reset keeps remote repositories, so a previous exact template can reappear after checkout.
+                if self.is_rendered_notification_template(existing, template):
+                    adopt = existing
+            self.managed(target, expected, adopt=adopt)
             self.say(f"{source.repository}: notification file prepared. Use onboard-source to review and open its PR.",
                      f"{source.repository}：通知文件已配置好。使用 onboard-source 审核并创建接入 PR。")
             if not (source.directory / "Dockerfile").exists():

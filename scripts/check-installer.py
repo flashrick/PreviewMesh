@@ -979,6 +979,24 @@ class InstallerTests(unittest.TestCase):
             app.sources()
         self.assertEqual(target.read_text(), "user's workflow\n")
 
+    def test_generated_source_replaces_previous_previewmesh_template_for_new_control(self):
+        app = self.instance()
+        app.run = lambda *args, **kwargs: self.fail("source stage must not run commands")
+        target = self.c.sources[0].directory / ".github/workflows/previewmesh-notify.yml"
+        previous = ((ROOT / "templates/source-notify.yml").read_text()
+                    .replace("YOUR_GITHUB_OWNER", "owner")
+                    .replace("YOUR_CONTROL_REPOSITORY", "previous-control"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(previous)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.sources()
+
+        expected = ((ROOT / "templates/source-notify.yml").read_text()
+                    .replace("YOUR_GITHUB_OWNER", "owner")
+                    .replace("YOUR_CONTROL_REPOSITORY", "control"))
+        self.assertEqual(target.read_text(), expected)
+
     def test_managed_file_resume_and_user_edits(self):
         app = self.instance()
         target = self.work / "managed.conf"
