@@ -246,8 +246,8 @@ def application_port(directory, previous=None, *, language='en'):
            '浏览器访问预览时使用另一个入口端口 18080。')
     candidates = ([previous] if previous else []) + discover_ports(directory)
     for port in dict.fromkeys(candidates):
-        status = ui.text('available', '可用') if port_available(port) else ui.text('occupied or unverified', '已占用或无法验证')
-        ui.say(f'Candidate HTTP port {port}: {status}', f'候选 HTTP 端口 {port}：{status}')
+        ui.say(f'Candidate container HTTP port {port}: from Dockerfile or saved configuration',
+               f'候选容器 HTTP 端口 {port}：来自 Dockerfile 或已有配置')
     if not candidates:
         ui.say('No application port found. Check Dockerfile EXPOSE or app listen settings; enter the HTTP port.',
                '未发现应用端口，请查看 Dockerfile 或监听配置并填写 HTTP 端口。')
@@ -255,14 +255,7 @@ def application_port(directory, previous=None, *, language='en'):
         port = int(ui.choose('Application HTTP port inside the container', '容器内应用 HTTP 端口', candidates,
                           lambda value: int(value) if 1 <= int(value) <= 65535 else int('invalid'),
                           default=str(candidates[0]) if candidates else None))
-        if port_available(port):
-            ui.say(f'Port {port}: local bind check passed.', f'端口 {port}：本机端口检查通过。')
-            return str(port)
-        ui.say('Port occupied or cannot be checked. This is the container application port, not the host entry.',
-               '端口已占用或无法检查；此处为容器应用端口。')
-        if ui.confirm('Keep this application port', '确认保留此应用端口'):
-            return str(port)
-        candidates = []
+        return str(port)
 
 
 def run_wizard(path, root, *, language=None, load_existing=None):

@@ -130,16 +130,15 @@ token_file = {self.secrets / 'app.token'}
         self.assertIn("1. owner/control-a", output.getvalue())
         self.assertIn("2. owner/control-b", output.getvalue())
 
-    def test_occupied_port_requires_confirmation_or_manual_retry(self):
-        output = io.StringIO()
-        with patch.object(wizard, "discover_ports", return_value=[8080]), \
-             patch.object(wizard, "port_available", side_effect=[False, False, True]), \
-             patch("builtins.input", side_effect=["", "", "8081"]), \
-             contextlib.redirect_stdout(output):
+    def test_dockerfile_container_port_does_not_check_host_bind(self):
+        self.source_dir.mkdir()
+        (self.source_dir / "Dockerfile").write_text("EXPOSE 8080\n")
+        with patch.object(wizard, "port_available", return_value=True) as port_available, \
+             patch("builtins.input", return_value=""):
             value = wizard.application_port(self.source_dir)
 
-        self.assertEqual(value, "8081")
-        self.assertIn("occupied", output.getvalue())
+        self.assertEqual(value, "8080")
+        port_available.assert_not_called()
 
     def test_language_choice_retries_and_accepts_aliases(self):
         output = io.StringIO()
