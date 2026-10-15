@@ -23,6 +23,7 @@ import setup_downloads as downloads
 import setup_ingress_route as ingress_route
 import setup_maintenance as maintenance
 import setup_resume as resume
+import setup_ui
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1296,6 +1297,86 @@ class InstallerTests(unittest.TestCase):
         reusable, reason = app.checkpoints.assess(1, app.checkpoints.inputs(1))
         self.assertFalse(reusable)
         self.assertIn("interrupted", reason)
+
+    def test_stage_three_credential_pauses_rich_activity_during_hidden_input(self):
+        """The stage-3 secret prompt must not compete with Rich Live output."""
+        app = self.instance()
+        token_path = self.work / "secrets" / "stage-three-input"
+        events = []
+        progress_instances = []
+
+        class FakeProgress:
+            """Observe the Live lifecycle without starting a terminal renderer."""
+
+            def __init__(self, *args, **kwargs):
+                self.active = False
+                progress_instances.append(self)
+
+            def start(self):
+                if not self.active:
+                    self.active = True
+                    events.append("live-start")
+                return self
+
+            def stop(self):
+                if self.active:
+                    self.active = False
+                    events.append("live-stop")
+
+            def __enter__(self):
+                self.start()
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.stop()
+                return False
+
+            def add_task(self, description, *, total=None):
+                events.append("spinner-task")
+                return 0
+
+        class TTYInput:
+            @staticmethod
+            def isatty():
+                return True
+
+        input_state = {}
+
+        def fake_getpass(prompt):
+            # This is the regression boundary: Live must yield the terminal to getpass.
+            events.append("secret-input")
+            input_state["prompt_seen"] = bool(prompt)
+            input_state["live_active"] = progress_instances[-1].active
+            return "synthetic-input"
+
+        app.checkpoints.inputs = lambda number: {}
+        app.checkpoints.assess = lambda number, inputs: (False, "synthetic stage")
+        app.checkpoints.record = lambda *args, **kwargs: None
+        app.save = lambda: None
+        action_result = []
+
+        with patch.object(setup_ui, "Progress", FakeProgress), \
+             patch.object(setup_ui, "interactive_capable", return_value=True), \
+             patch.object(installer.sys, "stdin", TTYInput()), \
+             patch.object(installer.getpass, "getpass", side_effect=fake_getpass), \
+             patch.object(app.ui, "stage"), \
+             patch.object(app.ui, "progress_line"), \
+             patch.object(app.ui, "status"), \
+             patch.object(app.ui, "message"):
+            app.step(3, "Configure tokens", "配置 Token",
+                     lambda: action_result.append(app.credential(
+                         token_path, "Synthetic token prompt", "合成 Token 提示")))
+
+        self.assertEqual(len(progress_instances), 1)
+        self.assertTrue(input_state["prompt_seen"])
+        self.assertFalse(input_state["live_active"],
+                         "Rich Live remained active while getpass was reading the secret")
+        self.assertEqual(events, [
+            "live-start", "spinner-task", "live-stop", "secret-input", "live-start", "live-stop",
+        ])
+        self.assertTrue(action_result)
+        self.assertIsNone(app.ui._live_console)
+        self.assertFalse(progress_instances[0].active)
 
     def test_install_main_prints_setup_error_body_only_once(self):
         error_body = "same setup error body"

@@ -100,6 +100,7 @@ class TerminalUI:
     def __init__(self, *, force_plain=False):
         self.force_plain = force_plain
         self._live_console = None
+        self._active_progress = None
 
     @property
     def interactive(self):
@@ -382,6 +383,20 @@ class TerminalUI:
         ])
 
     @contextmanager
+    def pause_activity(self):
+        """Yield the terminal to an interactive prompt while a spinner is running."""
+        progress = self._active_progress
+        if progress is None:
+            yield
+            return
+        # Rich Live must stop refreshing before getpass writes its hidden prompt.
+        progress.stop()
+        try:
+            yield
+        finally:
+            progress.start()
+
+    @contextmanager
     def activity(self, label):
         """Show a restrained spinner only while a long-running stage is active."""
         if self.rich_enabled and Progress is not None:
@@ -393,11 +408,13 @@ class TerminalUI:
                 transient=True,
             )
             self._live_console = console
+            self._active_progress = progress
             try:
                 with progress:
                     progress.add_task(str(label), total=None)
                     yield
             finally:
+                self._active_progress = None
                 self._live_console = None
             return
         if self.interactive:

@@ -849,7 +849,8 @@ class Installer:
             if not sys.stdin.isatty():
                 raise SetupError(f"Create token file with mode 600, or rerun in a terminal / 请创建权限为 600 的 Token 文件，或在交互终端重试: {path}")
             prompt = "粘贴 Token（隐藏，直接回车取消）: " if self.zh else "Paste token (hidden; Enter cancels): "
-            value = getpass.getpass(prompt).strip()
+            with self.ui.pause_activity():
+                value = getpass.getpass(prompt).strip()
             if not value:
                 raise SetupError("No token supplied; progress retained / 未提供 Token，已保留进度。")
             self.secrets.append(value)
