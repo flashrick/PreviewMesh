@@ -222,6 +222,22 @@ gh auth status
 
 HTTP 200 并不等于验证成功。应用验证还必须要求 `status: ok`，并且 `commit_sha` 与本次请求的准确源代码版本一致。
 
+### 用户预览命令
+
+日常操作可以直接使用同一个工具，不需要记住 Kubernetes 查询细节：
+
+~~~bash
+previewmesh help
+previewmesh ps
+previewmesh inspect 123
+previewmesh health 123
+previewmesh rm 123
+~~~
+
+工具会自动读取本机的 PreviewMesh 配置和当前 control repository 注册表。`ps` 显示 Kubernetes 的实时运行状态和 URL；`inspect` 合并运行时详情与 GitHub 生命周期证据；`health` 会实时请求 `/health`。脚本可以使用 `--json`，`--all` 可查看不属于当前 control repository 的资源。
+
+`rm` 只删除当前 control repository 所拥有的预览 Namespace。它默认要求确认，开放的拉取请求需要额外使用 `--force`，并且不会修改拉取请求本身。现有的 `build`、`deploy`、`verify`、`cleanup` 和 `status` 命令继续供 CI 与高级操作使用。
+
 ## 运维与排错
 
 ### 检查和恢复

@@ -44,6 +44,7 @@ var imagePattern = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9._-]*/previewmes
 type options struct {
 	command, repoID, pr, source, sha, image, hostname, chart, sourceDir, evidence, resultFile, pullSecret string
 	namespaceUID                                                                                          string
+	kubeconfig                                                                                            string
 	domainSuffix                                                                                          string
 	cleanupAttempts                                                                                       int
 	port                                                                                                  int
@@ -240,6 +241,11 @@ func (x *runner) run(input []byte, command string, args ...string) ([]byte, erro
 	// Keep one deadline for kubectl, Helm, Git, and Docker calls.
 	ctx, cancel := context.WithTimeout(context.Background(), x.o.timeout)
 	defer cancel()
+	if x.o.kubeconfig != "" && (command == "kubectl" || command == "helm") {
+		// User-facing commands may use the installed control checkout without changing
+		// the process-wide KUBECONFIG used by existing CI commands.
+		args = append([]string{"--kubeconfig", x.o.kubeconfig}, args...)
+	}
 	c := exec.CommandContext(ctx, command, args...)
 	c.WaitDelay = time.Second
 	if input != nil {
@@ -904,6 +910,13 @@ func execute(o options) (result, error) {
 
 // main parses input, runs the command, and prints the structured result.
 func main() {
+	if len(os.Args) == 1 || (len(os.Args) > 1 && isUserCommand(os.Args[1])) {
+		if err := runUserCLI(os.Args[1:], os.Stdout, os.Stderr, os.Stdin); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(userCLIExitCode(err))
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "preflight" {
 		if err := runPreflight(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)

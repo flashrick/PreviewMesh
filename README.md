@@ -222,6 +222,22 @@ For automation-friendly output:
 
 HTTP 200 alone is not enough. A successful application verification also requires `status: ok` and a `commit_sha` matching the exact source revision requested for that run.
 
+### User preview commands
+
+For everyday local operations, use the same binary without remembering Kubernetes details:
+
+~~~bash
+previewmesh help
+previewmesh ps
+previewmesh inspect 123
+previewmesh health 123
+previewmesh rm 123
+~~~
+
+The tool reads the installed PreviewMesh configuration and current control-repository registry automatically. `ps` shows live Kubernetes runtime state and URLs; `inspect` combines runtime details with GitHub lifecycle evidence; `health` performs a live `/health` request. Use `--json` for scripts and `--all` to include resources that do not belong to the configured control repository.
+
+`rm` removes only an owned preview Namespace. It asks for confirmation, requires `--force` for an open pull request, and never changes the pull request itself. The existing `build`, `deploy`, `verify`, `cleanup`, and `status` commands remain available for CI and advanced operations.
+
 ## Operate and troubleshoot
 
 ### Check and resume
