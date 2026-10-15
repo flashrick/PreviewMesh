@@ -45,6 +45,22 @@ _STYLE_TOKENS = {
     "current": "bold #61afef",
 }
 
+# Keep the fallback useful when Rich is unavailable, but never emit escape
+# sequences into redirected logs or CI output.
+_ANSI_STYLES = {
+    "heading": "\033[1;94m",
+    "muted": "\033[2;37m",
+    "info": "\033[36m",
+    "success": "\033[32m",
+    "warning": "\033[33m",
+    "error": "\033[31m",
+    "skipped": "\033[2;37m",
+    "reused": "\033[35m",
+    "running": "\033[1;36m",
+    "pending": "\033[2;37m",
+    "current": "\033[1;94m",
+}
+
 _STATUS_META = {
     "success": ("OK", "通过", "✓", "success"),
     "warning": ("WARN", "警告", "!", "warning"),
@@ -120,6 +136,22 @@ class TerminalUI:
             return ""
         return f"preview.{name}" if name in _STYLE_TOKENS else ""
 
+    def _ansi_enabled(self):
+        return (
+            not self.force_plain
+            and not _no_color()
+            and not os.environ.get("CI")
+            and os.environ.get("PREVIEWMESH_UI", "").strip().lower()
+            not in {"plain", "off", "false", "0"}
+            and _is_tty(sys.stdout)
+        )
+
+    def _paint(self, value, style):
+        value = str(value)
+        if not self._ansi_enabled() or style not in _ANSI_STYLES:
+            return value
+        return f"{_ANSI_STYLES[style]}{value}\033[0m"
+
     def _console(self):
         if self._live_console is not None:
             return self._live_console
@@ -144,6 +176,29 @@ class TerminalUI:
         else:
             self._write(value)
 
+    def heading(self, title):
+        """Print a lightweight heading for a new output block."""
+        if self.rich_enabled:
+            self._console().print(Text(str(title), style=self._style("heading")))
+        else:
+            self._write(self._paint(title, "heading"))
+
+    def command(self, command, *, label=None):
+        """Print a copyable command with a short label and terminal-safe colour."""
+        if label:
+            if self.rich_enabled:
+                self._console().print(Text(str(label), style=self._style("muted")))
+            else:
+                self._write(self._paint(label, "muted"))
+        if self.rich_enabled:
+            text = Text.assemble(
+                ("  $ ", self._style("info")),
+                (str(command), self._style("success")),
+            )
+            self._console().print(text)
+        else:
+            self._write(f"{self._paint('  $ ', 'info')}{self._paint(command, 'success')}")
+
     def section(self, number, total, title, body=""):
         """Render one wizard section with the same hierarchy in both modes."""
         if self.rich_enabled:
@@ -151,7 +206,7 @@ class TerminalUI:
             content = Text(str(body))
             self._console().print(Panel(content, title=heading, border_style=self._style("heading"), padding=(0, 1)))
             return
-        self._write(f"\n[{number}/{total}] {title}")
+        self._write(self._paint(f"\n[{number}/{total}] {title}", "heading"))
         if body:
             self._write(body)
 
@@ -177,11 +232,11 @@ class TerminalUI:
             text = Text.assemble(
                 (f"{symbol} ", self._style(style)),
                 (f"{label:<8} ", self._style(style)),
-                (str(value), ""),
+                (str(value), self._style(style)),
             )
             self._console().print(text)
         else:
-            self._write(f"{label:<6} {value}")
+            self._write(f"{self._paint(f'{label:<6}', style)} {self._paint(value, style)}")
 
     def table(self, title, rows):
         """Render key/value data compactly and wrap values in narrow terminals."""
@@ -202,9 +257,9 @@ class TerminalUI:
                 )
             self._console().print(table)
             return
-        self._write(str(title))
+        self._write(self._paint(title, "heading"))
         for label, value in rows:
-            self._write(f"  {label}: {value}")
+            self._write(f"  {self._paint(label, 'muted')}: {value}")
 
     def installation_plan(self, stages, *, completed=(), current=None, results=None, chinese=False):
         """Show all stages and their current status."""
@@ -235,7 +290,7 @@ class TerminalUI:
                 )
                 rows.append((Text(f"{number:>2}", style=self._style("muted")), value))
             else:
-                rows.append((f"{number:>2}", f"{state:<9} {title}"))
+                rows.append((f"{number:>2}", self._paint(f"{state:<9} {title}", style)))
         self.table("安装阶段" if chinese else "Installation stages / 安装阶段", rows)
 
     def stage(self, number, total, title, detail="", *, label=None):

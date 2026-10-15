@@ -88,6 +88,37 @@ class SetupUITests(unittest.TestCase):
         self.assertGreaterEqual(text.count("─"), 20)
         self.assertNotIn("\x1b", text)
 
+    def test_plain_command_explains_action_without_escape_sequences(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            setup_ui.TerminalUI(force_plain=True).command(
+                "bash setup.sh onboard-source --source owner/app",
+                label="Review the diff (read-only):",
+            )
+
+        text = output.getvalue()
+        self.assertIn("Review the diff (read-only):", text)
+        self.assertIn("$ bash setup.sh onboard-source --source owner/app", text)
+        self.assertNotIn("\x1b", text)
+
+    def test_fallback_paints_status_and_commands_only_on_a_tty(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYBuffer()
+        with patch.object(setup_ui, "Console", None), \
+             patch.object(setup_ui.sys, "stdout", output), \
+             patch.dict(os.environ, {"TERM": "xterm", "NO_COLOR": ""}):
+            ui = setup_ui.TerminalUI()
+            ui.status("success", "ready")
+            ui.command("bash setup.sh doctor", label="Run checks:")
+
+        text = output.getvalue()
+        self.assertIn("ready", text)
+        self.assertIn("bash setup.sh doctor", text)
+        self.assertIn("\x1b[", text)
+
     def test_questionary_selection_uses_arrow_shortcuts_when_available(self):
         fake = FakeQuestionary("beta")
         with patch.object(setup_ui, "questionary", fake), \

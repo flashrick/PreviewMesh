@@ -1371,27 +1371,121 @@ class Installer:
             args += ["--source", source]
         return shlex.join(args)
 
-    def source_verification(self):
-        self.say("After merging, confirm the notification on the default branch with:",
-                 "合并后，用以下命令确认默认分支上的通知工作流：")
-        print(self.setup_command("doctor"))
-        self.say("Then open a same-repository test application PR targeting the application default branch. Check application notification Actions → deployment management Preview workflow → preview URL and matching commit SHA. Close the test PR and confirm cleanup. A second LAN machine should also open the preview URL before closing.",
-                 "然后用应用源码仓库内的分支创建一个指向默认分支的测试 PR（不要使用 fork）。依次检查应用通知 Actions → 部署管理仓库的 Preview 工作流 → 预览 URL 与提交 SHA 一致。关闭测试 PR 后确认清理；关闭前还应从另一台局域网机器访问预览 URL。")
+    def source_verification(self, *, include_onboarding=None):
+        """Explain the remaining application steps without hiding remote-vs-local state."""
+        if include_onboarding is None:
+            include_onboarding = self.command == "install"
+        self.ui.heading("后续操作" if self.zh else "Next steps")
+        if include_onboarding:
+            pending = [source for source in self.c.sources
+                       if self.source_status.get(source.repository) != "merged"]
+            if pending and self.zh:
+                onboarding_body = (
+                    "作用：检查应用默认分支上的通知工作流是否与当前部署管理仓库匹配。\n"
+                    "第一条命令只查看远端差异，不修改 GitHub；第二条命令在确认后创建接入 PR，也不会自动合并。"
+                )
+            elif pending:
+                onboarding_body = (
+                    "Purpose: compare the workflow on each application's default branch with the current deployment management repository.\n"
+                    "The first command only reviews the remote diff; the second creates an onboarding PR after confirmation and never merges it automatically."
+                )
+            elif self.zh:
+                onboarding_body = "所有已配置应用的通知工作流均已合并到默认分支，无需重复执行接入命令。"
+            else:
+                onboarding_body = "All configured application notification workflows are merged on their default branches; no onboarding command is needed."
+            self.ui.section(
+                1, 3,
+                "接入应用通知工作流" if self.zh else "Onboard application notification workflows",
+                onboarding_body,
+            )
+            for source in self.c.sources:
+                repository = source.repository
+                if self.source_status.get(repository) == "merged":
+                    self.ui.status(
+                        "success",
+                        f"{repository}：默认分支已合并通知工作流。" if self.zh
+                        else f"{repository}: notification is merged on the default branch.",
+                        chinese=self.zh,
+                    )
+                    continue
+                self.ui.status(
+                    "warning",
+                    f"{repository}：默认分支尚未合并通知工作流。" if self.zh
+                    else f"{repository}: notification is not merged on the default branch.",
+                    chinese=self.zh,
+                )
+                command = self.setup_command("onboard-source", repository)
+                self.ui.command(
+                    command,
+                    label="查看差异（只读）：" if self.zh else "Review the diff (read-only):",
+                )
+                self.ui.command(
+                    command + " --create-pr",
+                    label="创建接入 PR（需审核，不自动合并）：" if self.zh
+                    else "Create the onboarding PR (reviewed; not auto-merged):",
+                )
+        step_total = 3 if include_onboarding else 2
+        step_number = 2 if include_onboarding else 1
+        self.ui.section(
+            step_number, step_total,
+            "合并后检查" if self.zh else "Check after merging",
+            "作用：确认通知工作流、部署管理仓库、Runner、集群、DNS 和预览入口均已就绪。"
+            if self.zh else
+            "Purpose: confirm the notification workflow, deployment management repository, runner, cluster, DNS and preview entry are ready.",
+        )
+        self.ui.command(
+            self.setup_command("doctor"),
+            label="运行就绪检查（只检查，不创建测试预览）：" if self.zh
+            else "Run the readiness checks (no test preview is created):",
+        )
+        step_number += 1
+        self.ui.section(
+            step_number, step_total,
+            "验证真实预览" if self.zh else "Verify a real preview",
+            "作用：用一次真实应用 PR 验证通知、部署、提交 SHA、访问和清理的完整链路。"
+            if self.zh else
+            "Purpose: use one real application PR to verify notification, deployment, commit SHA, access and cleanup end to end.",
+        )
+        self.ui.message(
+            "  使用应用源码仓库自己的分支创建指向默认分支的测试 PR（不要使用 fork）。"
+            if self.zh else
+            "  Create a test PR from a branch in the application repository to its default branch (do not use a fork)."
+        )
+        self.ui.message(
+            "  检查顺序：应用通知 Actions → 部署管理仓库的 Preview 工作流 → 预览 URL 与提交 SHA 一致。"
+            if self.zh else
+            "  Check in order: application notification Actions → deployment management Preview workflow → preview URL and matching commit SHA."
+        )
+        self.ui.message(
+            "  关闭测试 PR 后确认预览已清理；关闭前请让另一台局域网机器访问预览 URL。"
+            if self.zh else
+            "  Close the test PR and confirm cleanup; before closing, have another LAN machine open the preview URL."
+        )
 
     def completion(self):
+        merged = sum(1 for source in self.c.sources
+                     if self.source_status.get(source.repository) == "merged")
+        onboarding = (
+            f"{merged}/{len(self.c.sources)} merged"
+            if not self.zh else f"{merged}/{len(self.c.sources)} 已合并"
+        )
         self.ui.summary(
             "Installation summary" if not self.zh else "安装摘要",
             [
                 ("Stages" if not self.zh else "阶段", "8/8 passed" if not self.zh else "8/8 阶段通过"),
                 ("Deployment management" if not self.zh else "部署管理仓库", self.c.control),
                 ("Preview entry" if not self.zh else "预览入口", f"{self.c.lan_ip}:18080"),
-                ("Applications" if not self.zh else "应用数量", str(len(self.c.sources))),
+                ("Application notifications" if not self.zh else "应用通知工作流", onboarding),
             ],
             success=True,
         )
-        self.say("Installation complete: all 8 infrastructure/setup stages passed.",
-                 "安装完成：8 个基础环境与配置阶段均已通过。")
-        self.installation_progress()
+        self.ui.status(
+            "success",
+            "Installation complete: all 8 infrastructure/setup stages passed."
+            if not self.zh else "安装完成：8 个基础环境与配置阶段均已通过。",
+            chinese=self.zh,
+        )
+        self.ui.heading("预览地址" if self.zh else "Preview URL")
         self.say(f"Preview URL format: http://pm-r<repository_id>-pr<PR>.{self.c.suffix}:18080 (entry port, not application port).",
                  f"预览地址格式：http://pm-r<repository_id>-pr<PR>.{self.c.suffix}:18080（入口端口，并非应用端口）。")
         if self.c.domain_suffix == "auto":
@@ -1401,16 +1495,7 @@ class Installer:
             self.say("Manual suffix: each client needs wildcard DNS or a hosts entry for the exact preview hostname before opening its URL.",
                      "手工后缀：每台客户端需先配置通配 DNS 或该预览完整主机名的 hosts 记录，再打开 URL。")
         self.say(f"Installation → open preview: {ACCESS_GUIDE}", f"安装完成 → 打开预览：{ACCESS_GUIDE}")
-        for source in self.c.sources:
-            if self.source_status.get(source.repository) == "merged":
-                self.say(f"{source.repository}: notification merged; test PR verification remains.",
-                         f"{source.repository}：通知已合并；仍需测试 PR 验证。")
-            else:
-                self.say(f"{source.repository}: application onboarding is not complete. Review the diff, then create its PR:",
-                         f"{source.repository}：应用尚未接入。请先查看差异，再创建接入 PR：")
-                command = self.setup_command("onboard-source", source.repository)
-                print(command + "\n" + command + " --create-pr")
-        self.source_verification()
+        self.source_verification(include_onboarding=True)
 
     def installation_progress(self):
         # Include reuse only after current-run validation has succeeded.
@@ -1533,7 +1618,12 @@ class Installer:
                 self.source_status[source.repository] = "pending"
                 self.say(f"PENDING: {source.repository} notification is not merged on its default branch. Review and create an onboarding PR:",
                          f"待处理：{source.repository} 默认分支上尚未合并所需通知文件。请审核并创建接入 PR：")
-                print(self.setup_command("onboard-source", source.repository) + " --create-pr")
+                if self.command != "install":
+                    self.ui.command(
+                        self.setup_command("onboard-source", source.repository) + " --create-pr",
+                        label="Create the onboarding PR after reviewing the diff:"
+                        if not self.zh else "查看差异后创建接入 PR：",
+                    )
             else:
                 self.source_status[source.repository] = "merged"
                 self.say(f"OK: {source.repository} notification matches on the default branch.",
