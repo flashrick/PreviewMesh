@@ -240,7 +240,11 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
-Generate a restricted kubeconfig and check that it can create/delete namespaces and create Secrets, while ClusterRole creation is denied. The script stores only the cluster address, CA, and runner token; it does not copy administrator credentials or print the token. Run it as the runner's normal user:
+Generate a restricted kubeconfig and check that it can create/delete namespaces,
+create the namespaced resources used by the preview chart, and read Events,
+while ClusterRole creation is denied. The script stores only the cluster
+address, CA, and runner token; it does not copy administrator credentials or
+print the token. Run it as the runner's normal user:
 
 ```bash
 # Generate or renew the restricted Runner kubeconfig and verify its permissions.

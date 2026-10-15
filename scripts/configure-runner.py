@@ -65,7 +65,13 @@ try:
     for verb, resource, extra in [
         ('create', 'namespaces', []),
         ('delete', 'namespaces', []),
+        ('create', 'configmaps', ['--all-namespaces']),
+        ('create', 'resourcequotas', ['--all-namespaces']),
+        ('create', 'serviceaccounts', ['--all-namespaces']),
+        ('create', 'roles.rbac.authorization.k8s.io', ['--all-namespaces']),
+        ('create', 'rolebindings.rbac.authorization.k8s.io', ['--all-namespaces']),
         ('create', 'secrets', ['--all-namespaces']),
+        ('list', 'events', ['--all-namespaces']),
         ('create', 'clusterroles', []),
     ]:
         check = subprocess.run(

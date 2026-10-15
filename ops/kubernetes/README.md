@@ -10,9 +10,12 @@ sudo k3s kubectl get nodes
 sudo k3s kubectl apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
-The runner can create, update, inspect, and delete the namespaces and workload
-resources needed by previews. It cannot create ClusterRoles or
-ClusterRoleBindings, read Pod logs, or execute commands in Pods.
+The runner can create, update, inspect, and delete the namespaces and
+namespaced resources needed by previews, including ConfigMaps, ResourceQuotas,
+ServiceAccounts, Roles, RoleBindings, Deployments, Services, Secrets, and
+Ingresses. It can read preview Events for diagnostics. It cannot create
+ClusterRoles or ClusterRoleBindings, read Pod logs, or execute commands in
+Pods.
 
 ## Security boundary
 

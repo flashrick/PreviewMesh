@@ -1563,7 +1563,21 @@ class Installer:
             self.secrets.append(token)
             payload = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "==="))
             require(payload["exp"] > time.time() + 300, "Runner access is expired or near expiry / Runner 凭据过期或即将过期。")
-            self.run(["kubectl", "--kubeconfig", self.c.runner_config, "auth", "can-i", "create", "namespaces"])
+            for verb, resource, extra in (
+                ("create", "namespaces", []),
+                ("delete", "namespaces", []),
+                ("create", "configmaps", ["--all-namespaces"]),
+                ("create", "resourcequotas", ["--all-namespaces"]),
+                ("create", "serviceaccounts", ["--all-namespaces"]),
+                ("create", "roles.rbac.authorization.k8s.io", ["--all-namespaces"]),
+                ("create", "rolebindings.rbac.authorization.k8s.io", ["--all-namespaces"]),
+                ("create", "secrets", ["--all-namespaces"]),
+                ("list", "events", ["--all-namespaces"]),
+            ):
+                allowed = self.run(["kubectl", "--kubeconfig", self.c.runner_config,
+                                    "auth", "can-i", verb, resource, *extra], check=False)
+                require(allowed.returncode == 0 and allowed.stdout.strip() == "yes",
+                        f"Runner cannot {verb} {resource} / Runner 无法执行 {verb} {resource}。")
             refused = self.run(["kubectl", "--kubeconfig", self.c.runner_config, "auth", "can-i", "create", "clusterroles"], check=False)
             require(refused.returncode == 1 and refused.stdout.strip() == "no", "Runner permissions exceed expected scope / Runner 权限超出预期范围。")
         check("Kubernetes access / 集群权限", kube_check)

@@ -199,7 +199,7 @@ sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes
 sudo k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f ops/kubernetes/runner-rbac.yaml
 ```
 
-生成受限 kubeconfig，并检查创建/删除 Namespace、创建 Secret 的权限，以及创建 ClusterRole 必须被拒绝。脚本只保存集群地址、CA 和 Runner Token，不复制管理员凭据，也不打印 Token。以 Runner 的普通用户运行：
+生成受限 kubeconfig，并检查创建/删除 Namespace、创建预览 Chart 所需的命名空间资源、读取 Event 的权限，以及创建 ClusterRole 必须被拒绝。脚本只保存集群地址、CA 和 Runner Token，不复制管理员凭据，也不打印 Token。以 Runner 的普通用户运行：
 
 ```bash
 # 生成或续期受限 Runner kubeconfig，并检查它的权限。
