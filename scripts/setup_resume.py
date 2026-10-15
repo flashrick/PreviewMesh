@@ -67,7 +67,9 @@ class Checkpoints:
         i = self.i
         paths = []
         if number == 2:
-            paths = [i.c.control_dir / "bin/control", i.c.control_dir / "config/repositories.json"]
+            # Reuse Stage 2 only when both control-local executables are still present.
+            paths = [i.c.control_dir / "bin/control", i.c.control_dir / "bin/previewmesh",
+                     i.c.control_dir / "config/repositories.json"]
             tracked = i.run(["git", "-C", i.c.control_dir, "ls-files", "-z"]).stdout
             paths += [i.c.control_dir / name for name in tracked.split("\0") if name]
         elif number == 7:

@@ -1022,6 +1022,35 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(reusable)
         self.assertIn("verified", reason)
 
+    def test_stage_two_checkpoint_requires_control_local_cli_artifact(self):
+        app = self.instance()
+        control = app.c.control_dir
+        artifacts = {
+            control / "bin/control": b"control cli\n",
+            control / "bin/previewmesh": b"previewmesh cli\n",
+            control / "config/repositories.json": b"[]\n",
+        }
+        for path, content in artifacts.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            if path.parent.name == "bin":
+                path.chmod(0o755)
+
+        app.run = lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+        app.checkpoints.control_valid = lambda: True
+        inputs = self.checkpoint_inputs()
+        recorded = app.checkpoints.artifacts(2)
+
+        self.assertEqual(set(recorded), {str(path) for path in artifacts})
+        app.checkpoints.record(2, "complete", copy.deepcopy(inputs), recorded)
+        reusable, reason = app.checkpoints.assess(2, inputs)
+        self.assertTrue(reusable, reason)
+
+        (control / "bin/previewmesh").unlink()
+        reusable, reason = app.checkpoints.assess(2, inputs)
+        self.assertFalse(reusable)
+        self.assertIn("artifact", reason)
+
     def test_checkpoint_rejects_missing_corrupt_permission_changed_and_symlink_artifacts(self):
         scenarios = ("missing", "corrupt", "permissions", "symlink")
         for scenario in scenarios:
@@ -1231,6 +1260,53 @@ class InstallerTests(unittest.TestCase):
 
         app.run = dirty_run
         self.assertFalse(app.checkpoints.control_valid())
+
+    def test_control_builds_control_and_user_clis_in_order(self):
+        app = self.instance()
+        control = app.c.control_dir
+        (control / "cmd/previewmesh").mkdir(parents=True)
+        (control / "cmd/previewmesh/main.go").write_text('package main\nconst feature = "domain-suffix"\n')
+        (control / "cmd/previewmesh/user_cli.go").write_text("package main\n")
+        (control / "config").mkdir()
+        (control / "config/repositories.json").write_text("[]\n")
+        calls = []
+
+        def api(path, **kwargs):
+            if path == "repos/owner/app":
+                return {"full_name": "owner/app", "permissions": {"admin": True}, "id": 7}
+            if path == "user":
+                return {"id": 42, "login": "fixture"}
+            self.fail("unexpected control fixture API path: " + path)
+
+        def run(args, **kwargs):
+            normalized = [str(item) for item in args]
+            calls.append((normalized, kwargs))
+            if normalized == ["gh", "api", "repos/owner/control"]:
+                return subprocess.CompletedProcess(
+                    args, 0,
+                    json.dumps({"private": True, "permissions": {"admin": True},
+                                "id": 42, "default_branch": "main"}),
+                    "",
+                )
+            if normalized[-2:] == ["branch", "--show-current"]:
+                return subprocess.CompletedProcess(args, 0, "main\n", "")
+            if normalized[-2:] == ["config", "user.email"]:
+                return subprocess.CompletedProcess(args, 1, "", "missing")
+            if normalized[-3:] == ["diff", "--cached", "--quiet"]:
+                return subprocess.CompletedProcess(args, 1, "", "changes")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        app.api = api
+        app.run = run
+        app.checkout = lambda path, repository: None
+        app.control()
+
+        builds = [(args, options["cwd"]) for args, options in calls
+                  if args[:2] == ["go", "build"]]
+        self.assertEqual(builds, [
+            (["go", "build", "-o", str(control / "bin/control"), "./cmd/control"], control),
+            (["go", "build", "-o", str(control / "bin/previewmesh"), "./cmd/previewmesh"], control),
+        ])
 
     def test_remote_checkpoint_failure_uses_safe_reason(self):
         app = self.instance()
@@ -2441,6 +2517,9 @@ class InstallerTests(unittest.TestCase):
             app.completion()
         text = output.getvalue()
         self.assertIn("Installation complete: all 8 infrastructure/setup stages passed.", text)
+        cli = app.c.control_dir / "bin/previewmesh"
+        self.assertIn(f"Local CLI: {cli}", text)
+        self.assertIn(f"Run: {cli} help", text)
         self.assertNotIn("Completed [1/8]: Stage 1", text)
         self.assertIn("Next steps", text)
         self.assertIn("owner/app: notification is not merged on the default branch.", text)

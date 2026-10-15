@@ -794,7 +794,9 @@ class Installer:
             raise SetupError("Switch the deployment management local directory to main and rerun / 请将部署管理本地目录切换到 main 分支后重试。")
         # Refuse old control code rather than silently deploying it with new settings.
         cli = self.c.control_dir / "cmd/previewmesh/main.go"
-        if not cli.exists() or '"domain-suffix"' not in cli.read_text():
+        user_cli = self.c.control_dir / "cmd/previewmesh/user_cli.go"
+        if (not cli.exists() or '"domain-suffix"' not in cli.read_text()
+                or not user_cli.is_file()):
             raise SetupError("Deployment management code predates this installer. Use scripts/update-upstream.sh in its local directory, review and publish that update, then rerun.\n部署管理代码版本过旧。请在部署管理本地目录运行 scripts/update-upstream.sh，审核并发布更新后重新安装。")
         changes = self.run(["git", "-C", self.c.control_dir, "status", "--porcelain"]).stdout.splitlines()
         expected_hash = self.state.get("registry_hash")
@@ -825,7 +827,11 @@ class Installer:
         self.state["registry_hash"] = fingerprint(content)
         self.save()
         atomic_write(registry_path, content, 0o644)
+        # Keep the user CLI beside this control checkout so each control repository has an unambiguous configuration boundary.
         self.run(["go", "build", "-o", self.c.control_dir / "bin/control", "./cmd/control"], cwd=self.c.control_dir, timeout=600)
+        previewmesh_cli = self.c.control_dir / "bin/previewmesh"
+        self.run(["go", "build", "-o", previewmesh_cli, "./cmd/previewmesh"], cwd=self.c.control_dir, timeout=600)
+        self.say(f"Built control-local CLI: {previewmesh_cli}", f"已构建 control 本地 CLI：{previewmesh_cli}")
         for item in self.registrations:
             self.run([self.c.control_dir / "bin/control", "resolve", "--repository-id", item["repository_id"],
                       "--source-repository", item["source_repository"], "--pr", "1"], cwd=self.c.control_dir)
@@ -1485,6 +1491,10 @@ class Installer:
             if not self.zh else "安装完成：8 个基础环境与配置阶段均已通过。",
             chinese=self.zh,
         )
+        previewmesh_cli = self.c.control_dir / "bin/previewmesh"
+        self.say(f"Local CLI: {previewmesh_cli}", f"本地 CLI：{previewmesh_cli}")
+        self.say(f"Run: {shlex.join([str(previewmesh_cli), 'help'])}",
+                 f"运行：{shlex.join([str(previewmesh_cli), 'help'])}")
         self.ui.heading("预览地址" if self.zh else "Preview URL")
         self.say(f"Preview URL format: http://pm-r<repository_id>-pr<PR>.{self.c.suffix}:18080 (entry port, not application port).",
                  f"预览地址格式：http://pm-r<repository_id>-pr<PR>.{self.c.suffix}:18080（入口端口，并非应用端口）。")
@@ -1685,11 +1695,11 @@ class Installer:
                  f"Use {self.c.control} to store application registrations and deployment automation.\n"
                  f"If it is new, create it from {self.c.public};\n"
                  "if it exists, check its PreviewMesh deployment tools.\n"
-                 "Register the configured applications and publish the management configuration.",
+                 "Register the configured applications, build the control-local user CLI, and publish the management configuration.",
                  f"使用 {self.c.control} 保存应用登记和部署自动化。\n"
                  f"新仓库会以 {self.c.public} 的代码为基础创建；\n"
                  "已有仓库会检查 PreviewMesh 部署工具。\n"
-                 "随后登记配置中的应用，并发布部署管理配置。", self.control),
+                 "随后登记配置中的应用，构建 control 本地用户 CLI，并发布部署管理配置。", self.control),
                 ("Configure repository and image access tokens.", "配置仓库与镜像访问 Token。",
                  "Application access tokens let automation read applications and update PR feedback.\n"
                  "The notification token lets applications start deployment workflows.\n"

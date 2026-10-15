@@ -170,6 +170,8 @@ bash scripts/setup.sh install --config /path/to/setup.ini
 
 `install` 会准备工具、私有部署管理仓库、GitHub Secrets、K3s 权限、受限 Runner、预览网络入口、应用通知集成和就绪检查。安装支持断点续跑；某个阶段失败时，修复提示的问题后重新运行同一条命令。
 
+`install` 还会在 `<control checkout>/bin/previewmesh` 构建面向用户的 CLI。若 `CONTROL_DIR` 指向 private control checkout，请使用 `"$CONTROL_DIR/bin/previewmesh"`；该二进制文件只属于这个 checkout 及其配置，不会全局安装，也不会把不带路径的 `previewmesh` 命令加入 `PATH`。
+
 安装器负责准备基础设施，不会改写应用代码，也不能证明应用已经能够提供预览。[手动安装参考](ops/install/manual.md) 解释了不适合使用引导式流程时的各个基础设施步骤。
 
 ### 3. 通过审核 PR 接入应用
@@ -204,18 +206,18 @@ bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/
 推送分支 -> 创建同仓库 PR -> 等待部署 -> 查看私有 URL -> 关闭或合并 -> 确认清理
 ~~~
 
-在私有部署管理 checkout 中，可以构建只读的状态查询命令：
+在私有部署管理 checkout 中，使用 `install` 构建的本地 CLI 查询状态：
 
 ~~~bash
-go build -o /tmp/previewmesh ./cmd/previewmesh
+CONTROL_DIR=/path/to/previewmesh-control
 gh auth status
-/tmp/previewmesh status --repo OWNER/REPO --pr 123
+"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123
 ~~~
 
 自动化场景使用结构化输出：
 
 ~~~bash
-/tmp/previewmesh status --repo OWNER/REPO --pr 123 --json
+"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123 --json
 ~~~
 
 `status` 通过已认证的 `gh` CLI 读取当前拉取请求状态、`PreviewMesh` Commit Status 和结构化工作流反馈。它不会探测预览 URL，不会查询 Kubernetes，也不会执行实时健康检查。`ready` 表示当前提交有完整且较新的证据；拉取请求关闭后，`removed` 表示已有清理证据。
@@ -224,19 +226,20 @@ HTTP 200 并不等于验证成功。应用验证还必须要求 `status: ok`，�
 
 ### 用户预览命令
 
-日常操作可以直接使用同一个工具，不需要记住 Kubernetes 查询细节：
+日常操作可以使用 private control checkout 中的 CLI，不需要记住 Kubernetes 查询细节。将 `CONTROL_DIR` 设置为该 checkout，并使用它的明确路径；安装器不会在 `PATH` 中提供不带路径的 `previewmesh` 命令：
 
 ~~~bash
-previewmesh help
-previewmesh ps
-previewmesh inspect 123
-previewmesh health 123
-previewmesh rm 123
+CONTROL_DIR=/path/to/previewmesh-control
+"$CONTROL_DIR/bin/previewmesh" help
+"$CONTROL_DIR/bin/previewmesh" ps
+"$CONTROL_DIR/bin/previewmesh" inspect 123
+"$CONTROL_DIR/bin/previewmesh" health 123
+"$CONTROL_DIR/bin/previewmesh" rm 123
 ~~~
 
 工具会自动读取本机的 PreviewMesh 配置和当前 control repository 注册表。`ps` 显示 Kubernetes 的实时运行状态和 URL；`inspect` 合并运行时详情与 GitHub 生命周期证据；`health` 会实时请求 `/health`。脚本可以使用 `--json`，`--all` 可查看不属于当前 control repository 的资源。
 
-`rm` 只删除当前 control repository 所拥有的预览 Namespace。它默认要求确认，开放的拉取请求需要额外使用 `--force`，并且不会修改拉取请求本身。现有的 `build`、`deploy`、`verify`、`cleanup` 和 `status` 命令继续供 CI 与高级操作使用。
+`rm` 只删除当前 control repository 所拥有的预览 Namespace。它默认要求确认，开放的拉取请求需要额外使用 `--force`，并且不会修改拉取请求本身。现有的 `preflight`、`build`、`deploy`、`verify`、`cleanup`、`cleanup-inspect`、`cleanup-retry` 和 `status` 命令继续供 CI 与高级操作使用；可以使用这个 control-local 二进制文件，或 CI 中单独构建的二进制文件来调用它们。
 
 ## 运维与排错
 
@@ -326,11 +329,12 @@ helm lint charts/preview
 
 推荐使用私有部署管理工作流，因为它会重新检查拉取请求状态，并处理过时版本和清理。受信任的控制环境也可以使用较低层级的 CLI 命令：
 
-使用下面的命令构建两个受信任的 CLI：
+使用下面的命令，将两个受信任的 CLI 构建到私有 control checkout，并使用明确的路径：
 
 ~~~bash
-go build -o /tmp/control ./cmd/control
-go build -o /tmp/previewmesh ./cmd/previewmesh
+CONTROL_DIR=/path/to/previewmesh-control
+go build -o "$CONTROL_DIR/bin/control" ./cmd/control
+go build -o "$CONTROL_DIR/bin/previewmesh" ./cmd/previewmesh
 ~~~
 
 配套的 `control` CLI 在向 GitHub 回写之前，负责验证受信任的注册信息和拉取请求状态：
@@ -353,7 +357,7 @@ go build -o /tmp/previewmesh ./cmd/previewmesh
 | `cleanup-inspect` | 在不删除资源的情况下收集所有权和清理状态。 |
 | `cleanup-retry` | 使用原始 Namespace 身份重试清理。 |
 
-在私有控制 checkout 中执行 `previewmesh <command> --help` 查看准确参数。不要在公开文档或 shell 历史中传递私有凭据。
+在 private control checkout 中使用 `"$CONTROL_DIR/bin/control"` 和 `"$CONTROL_DIR/bin/previewmesh"` 查看准确参数。`previewmesh` 必须只存在于 control checkout 中，不会全局安装。不要在公开文档或 shell 历史中传递私有凭据。
 
 </details>
 

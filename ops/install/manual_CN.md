@@ -144,7 +144,7 @@ nano config/repositories.json
 mkdir -p bin
 # 编译登记、PR 检查和 GitHub 状态回写工具。
 go build -o bin/control ./cmd/control
-# 编译镜像、部署、验证和清理工具。
+# 编译位于 control checkout 中、用于镜像、部署、验证和清理的 CLI。
 go build -o bin/previewmesh ./cmd/previewmesh
 # 不访问 GitHub，只检查 source 登记是否匹配。
 ./bin/control resolve \
@@ -158,6 +158,18 @@ git commit -m "Configure preview source repository"
 # 将 private control 配置推送到 main 分支。
 git push origin main
 ```
+
+引导式 `install` 命令会在 `$CONTROL_DIR/bin/previewmesh` 构建面向用户的 CLI。它只属于当前 control checkout 及其配置，不会全局安装，也不会加入 `PATH`。日常命令请使用明确路径：
+
+```bash
+"$CONTROL_DIR/bin/previewmesh" help
+"$CONTROL_DIR/bin/previewmesh" ps
+"$CONTROL_DIR/bin/previewmesh" inspect 123
+"$CONTROL_DIR/bin/previewmesh" health 123
+"$CONTROL_DIR/bin/previewmesh" rm 123
+```
+
+现有的 `preflight`、`status`、`build`、`deploy`、`verify`、`cleanup`、`cleanup-inspect` 和 `cleanup-retry` 命令仍可用于 CI 和高级操作；可以通过这个 control-local 二进制文件，或 CI 中单独构建的二进制文件调用它们。
 
 示例中的 --pr 1 只检查编号格式，不要求 PR #1 已存在。
 

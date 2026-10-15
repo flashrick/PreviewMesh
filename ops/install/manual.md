@@ -144,7 +144,7 @@ Compile and validate the registration:
 mkdir -p bin
 # Compile the registration, PR inspection, and GitHub reporting tool.
 go build -o bin/control ./cmd/control
-# Compile the image, deployment, verification, and cleanup tool.
+# Compile the per-control-checkout CLI for image, deployment, verification, and cleanup operations.
 go build -o bin/previewmesh ./cmd/previewmesh
 # Check the source registration without calling GitHub.
 ./bin/control resolve \
@@ -158,6 +158,18 @@ git commit -m "Configure preview source repository"
 # Push the private control configuration to its main branch.
 git push origin main
 ```
+
+The guided setup `install` command builds the same user-facing CLI at `$CONTROL_DIR/bin/previewmesh`. It belongs to this control checkout and its configuration; it is not installed globally and is not added to `PATH`. Use the explicit path for everyday commands:
+
+```bash
+"$CONTROL_DIR/bin/previewmesh" help
+"$CONTROL_DIR/bin/previewmesh" ps
+"$CONTROL_DIR/bin/previewmesh" inspect 123
+"$CONTROL_DIR/bin/previewmesh" health 123
+"$CONTROL_DIR/bin/previewmesh" rm 123
+```
+
+The existing `preflight`, `status`, `build`, `deploy`, `verify`, `cleanup`, `cleanup-inspect`, and `cleanup-retry` commands remain available for CI and advanced operations through this binary or a separately built CI binary.
 
 The example `--pr 1` only checks the number format; it does not require that pull request to exist.
 
@@ -181,24 +193,23 @@ Revision verification is exact: the build rejects a checkout whose `HEAD` differ
 
 #### Run the application preflight
 
-Before configuring K3s, build the CLI outside the source checkout and inspect the application with a clean Git checkout. The command is `previewmesh preflight --source-dir PATH --port PORT [--sha SHA]`; `--sha` is optional and defaults to the checkout's `HEAD`. When supplied, it must be a full lowercase Git SHA.
+Before configuring K3s, use the CLI outside the source checkout to inspect the application with a clean Git checkout. The command is `"$CONTROL_DIR/bin/previewmesh" preflight --source-dir PATH --port PORT [--sha SHA]`; `--sha` is optional and defaults to the checkout's `HEAD`. When supplied, it must be a full lowercase Git SHA.
 
 ```bash
-# Build the CLI outside the application checkout.
+# Use the CLI built beside the private control checkout, outside the application checkout.
 cd "$CONTROL_DIR"
-go build -o /tmp/previewmesh ./cmd/previewmesh
 # Keep JSON reports outside SOURCE_DIR because ignored files count as dirty.
 PREFLIGHT_DIR=$(mktemp -d /tmp/previewmesh-preflight.XXXXXX)
 EXPECTED_SHA=$(git -C "$SOURCE_DIR" rev-parse HEAD)
 # Static mode is the default and does not call Docker.
-/tmp/previewmesh preflight \
+"$CONTROL_DIR/bin/previewmesh" preflight \
   --source-dir "$SOURCE_DIR" \
   --port 8080 \
   --sha "$EXPECTED_SHA" \
   > "$PREFLIGHT_DIR/static.json"
 ```
 
-Replace `8080` with the registered application port when it differs; use the same value for a direct `previewmesh build` invocation.
+Replace `8080` with the registered application port when it differs; use the same value for a direct `"$CONTROL_DIR/bin/previewmesh" build` invocation.
 
 Static mode checks the port range, Git root and revision, and a clean checkout using `--untracked-files=all --ignored`; it therefore includes ignored build output and temporary files. It inspects the regular root `Dockerfile`, its final-stage `FROM`, `EXPOSE` and `USER` declarations, and bounded source markers for `0.0.0.0`, `/health`, `PREVIEW_COMMIT_SHA` and `commit_sha`. The scan is a source heuristic. It cannot prove the listener, actual HTTP response, environment propagation, file permissions or cluster behavior.
 
@@ -208,7 +219,7 @@ The runtime check is opt-in. Add `--container-check` only when Docker is availab
 
 ```bash
 # Build and run a temporary local image/container; it is not pushed or deployed.
-/tmp/previewmesh preflight \
+"$CONTROL_DIR/bin/previewmesh" preflight \
   --source-dir "$SOURCE_DIR" \
   --port 8080 \
   --sha "$EXPECTED_SHA" \
@@ -218,7 +229,7 @@ The runtime check is opt-in. Add `--container-check` only when Docker is availab
 
 This mode builds and runs `linux/amd64`, passes `PREVIEW_COMMIT_SHA`, binds an ephemeral loopback-only host port and checks `/health`. The local container uses UID/GID `65532:65532`, `cap-drop ALL`, `no-new-privileges`, a 512 MiB memory limit, one CPU and 128 processes. `--timeout` defaults to five minutes per external operation and `--http-timeout` to one minute for startup/health; both values are recorded in `container_configuration`, which is included in the configuration fingerprint. If static inspection fails first, Docker is not called and `container` is reported as `not_run_static_failed`. PreviewMesh removes the temporary image and container after the check. A successful result proves only local startup and health behavior; it does not cover cluster networking, mounts, ingress or a real deployment, and it does not publish an image or preview.
 
-The normal `previewmesh build` path repeats the static inspection on the exact clean checkout before its Docker build and push. Pass the same `--port PORT` used by preflight (the default is `8080`) so the report matches the registered application port. It reports static warnings in the build result and stops before publishing when a static blocker is found. It does not run `--container-check` automatically. Neither static nor container preflight is evidence that a preview has been deployed; continue with the ordinary test PR and live `/health` verification in step 8.
+The normal control-local `build` command repeats the static inspection on the exact clean checkout before its Docker build and push. Pass the same `--port PORT` used by preflight (the default is `8080`) so the report matches the registered application port. It reports static warnings in the build result and stops before publishing when a static blocker is found. It does not run `--container-check` automatically. Neither static nor container preflight is evidence that a preview has been deployed; continue with the ordinary test PR and live `/health` verification in step 8.
 
 ### 5. Configure K3s and the runner
 

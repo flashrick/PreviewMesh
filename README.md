@@ -170,6 +170,8 @@ bash scripts/setup.sh install --config /path/to/setup.ini
 
 `install` prepares the tools, private deployment-management repository, GitHub secrets, K3s permissions, restricted runner, preview network entry, source-notification integration, and readiness checks. It is resumable; when a stage fails, fix the reported issue and rerun the same command.
 
+The setup `install` command also builds the user-facing CLI at `<control checkout>/bin/previewmesh`. If `CONTROL_DIR` points to the private control checkout, use `"$CONTROL_DIR/bin/previewmesh"`; the binary is scoped to that checkout and its configuration. It is not installed globally, and a bare `previewmesh` command is not added to `PATH`.
+
 The installer prepares infrastructure. It does not rewrite application code or prove that an application can serve its preview. The [manual installation reference](ops/install/manual.md) explains each infrastructure step when the guided path is not suitable.
 
 ### 3. Onboard an application with a reviewed PR
@@ -204,18 +206,18 @@ The normal development loop is:
 push a branch -> open a same-repository PR -> wait for deployment -> review the private URL -> close or merge -> confirm cleanup
 ~~~
 
-To inspect a preview from the private deployment-management checkout, build the read-only status command:
+To inspect a preview from the private deployment-management checkout, use the control-local CLI built by `install`:
 
 ~~~bash
-go build -o /tmp/previewmesh ./cmd/previewmesh
+CONTROL_DIR=/path/to/previewmesh-control
 gh auth status
-/tmp/previewmesh status --repo OWNER/REPO --pr 123
+"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123
 ~~~
 
 For automation-friendly output:
 
 ~~~bash
-/tmp/previewmesh status --repo OWNER/REPO --pr 123 --json
+"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123 --json
 ~~~
 
 `status` reads the current pull-request state, `PreviewMesh` commit status, and structured workflow feedback through the authenticated `gh` CLI. It does not probe the preview URL, query Kubernetes, or perform a live health check. A `ready` result is based on complete, recent evidence for the current commit; after closure, `removed` confirms cleanup evidence.
@@ -224,19 +226,20 @@ HTTP 200 alone is not enough. A successful application verification also require
 
 ### User preview commands
 
-For everyday local operations, use the same binary without remembering Kubernetes details:
+For everyday local operations, use the CLI from the private control checkout without remembering Kubernetes details. Set `CONTROL_DIR` to that checkout and use its explicit path; the installer does not provide a bare `previewmesh` command on `PATH`:
 
 ~~~bash
-previewmesh help
-previewmesh ps
-previewmesh inspect 123
-previewmesh health 123
-previewmesh rm 123
+CONTROL_DIR=/path/to/previewmesh-control
+"$CONTROL_DIR/bin/previewmesh" help
+"$CONTROL_DIR/bin/previewmesh" ps
+"$CONTROL_DIR/bin/previewmesh" inspect 123
+"$CONTROL_DIR/bin/previewmesh" health 123
+"$CONTROL_DIR/bin/previewmesh" rm 123
 ~~~
 
 The tool reads the installed PreviewMesh configuration and current control-repository registry automatically. `ps` shows live Kubernetes runtime state and URLs; `inspect` combines runtime details with GitHub lifecycle evidence; `health` performs a live `/health` request. Use `--json` for scripts and `--all` to include resources that do not belong to the configured control repository.
 
-`rm` removes only an owned preview Namespace. It asks for confirmation, requires `--force` for an open pull request, and never changes the pull request itself. The existing `build`, `deploy`, `verify`, `cleanup`, and `status` commands remain available for CI and advanced operations.
+`rm` removes only an owned preview Namespace. It asks for confirmation, requires `--force` for an open pull request, and never changes the pull request itself. The existing `preflight`, `build`, `deploy`, `verify`, `cleanup`, `cleanup-inspect`, `cleanup-retry`, and `status` commands remain available for CI and advanced operations; invoke them with this control-local binary or with a separately built CI binary.
 
 ## Operate and troubleshoot
 
@@ -328,11 +331,12 @@ helm lint charts/preview
 
 The private deployment-management workflow is the recommended path because it rechecks pull-request state and handles superseded revisions and cleanup. The lower-level CLI commands are available for trusted control environments:
 
-Build both trusted command-line tools with:
+Build both trusted command-line tools into the private control checkout with explicit paths:
 
 ~~~bash
-go build -o /tmp/control ./cmd/control
-go build -o /tmp/previewmesh ./cmd/previewmesh
+CONTROL_DIR=/path/to/previewmesh-control
+go build -o "$CONTROL_DIR/bin/control" ./cmd/control
+go build -o "$CONTROL_DIR/bin/previewmesh" ./cmd/previewmesh
 ~~~
 
 The companion `control` CLI validates trusted registrations and pull-request state before reporting to GitHub:
@@ -355,7 +359,7 @@ The `previewmesh` CLI owns the deployment lifecycle:
 | `cleanup-inspect` | Collect ownership and cleanup state without deleting resources. |
 | `cleanup-retry` | Retry cleanup using the original namespace identity. |
 
-Use `previewmesh <command> --help` in the private control checkout for the exact flags. Never pass private credentials through public documentation or shell history.
+Use `"$CONTROL_DIR/bin/control"` and `"$CONTROL_DIR/bin/previewmesh"` from the private control checkout for the exact flags. Keep `previewmesh` control-local; it is not installed globally. Never pass private credentials through public documentation or shell history.
 
 </details>
 

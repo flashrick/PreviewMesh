@@ -18,7 +18,16 @@ Run the read-only status query and open the URL it reports:
 在该 source 仓库创建普通 PR，等待 control 工作流完成，然后查询只读状态并打开它
 报告的 URL：
 
-    previewmesh status --repo "$SOURCE_REPOSITORY" --pr "$PR_NUMBER"
+Set `CONTROL_DIR` to the private control checkout. The installer builds the CLI
+there for that checkout; it is not globally installed and is not available as a
+bare `previewmesh` command on `PATH`:
+
+将 `CONTROL_DIR` 设置为 private control checkout。安装器会在该 checkout 中构建
+属于它的 CLI；它不会全局安装，也不会作为不带路径的 `previewmesh` 命令出现在
+`PATH` 中：
+
+    CONTROL_DIR=/path/to/previewmesh-control
+    "$CONTROL_DIR/bin/previewmesh" status --repo "$SOURCE_REPOSITORY" --pr "$PR_NUMBER"
 
 Preview URL: appears only for a current, complete, recent ready result. The
 URL root (/) is the application page; /health is the health contract. The
