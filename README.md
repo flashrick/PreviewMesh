@@ -170,13 +170,23 @@ bash scripts/setup.sh install --config /path/to/setup.ini
 
 `install` prepares the tools, private deployment-management repository, GitHub secrets, K3s permissions, restricted runner, preview network entry, source-notification integration, and readiness checks. It is resumable; when a stage fails, fix the reported issue and rerun the same command.
 
+During the source-notification stage, `install` handles the local application workflow without publishing application changes:
+
+- If `.github/workflows/previewmesh-notify.yml` is missing, it creates it.
+- If the file is already the expected current template, it leaves it unchanged. If it is an exact recognized current or historical PreviewMesh template with values that need updating (or a previously installer-managed version), it upgrades the file and saves the old content beside it as `previewmesh-notify.yml.previewmesh.bak`.
+- If the file is custom, `install` preserves it and writes the complete current workflow to `previewmesh-notify.yml.previewmesh-proposed` plus `previewmesh-notify.yml.previewmesh.patch`. A custom workflow is a review case; it does not make the install stage fail.
+
+You do not need to copy a patch line by line. Review the complete proposed file first and use the patch as an optional summary. Then either adjust or replace the workflow and commit it through the application's normal review process, or use `onboard-source` below to prepare a reviewed onboarding PR. `install` never commits, pushes, or merges application changes.
+
+The `.previewmesh.bak`, `.previewmesh-proposed`, and `.previewmesh.patch` files are local review artifacts; unless you intentionally want to retain them, do not commit them to the application repository.
+
 The setup `install` command also builds the user-facing CLI at `<control checkout>/bin/previewmesh`. If `CONTROL_DIR` points to the private control checkout, use `"$CONTROL_DIR/bin/previewmesh"`; the binary is scoped to that checkout and its configuration. It is not installed globally, and a bare `previewmesh` command is not added to `PATH`.
 
 The installer prepares infrastructure. It does not rewrite application code or prove that an application can serve its preview. The [manual installation reference](ops/install/manual.md) explains each infrastructure step when the guided path is not suitable.
 
 ### 3. Onboard an application with a reviewed PR
 
-Preview the workflow change without writing to the application repository:
+Review the workflow that is on the application's default branch without writing to the application repository. This is also the next step when `install` left a proposed file for a custom workflow:
 
 ~~~bash
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO
@@ -188,7 +198,7 @@ After reviewing the complete diff, add `--create-pr` to create a dedicated, revi
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO --create-pr
 ~~~
 
-The command prepares only `.github/workflows/previewmesh-notify.yml`. It does not merge the PR or modify application code. Merge the reviewed PR on the application's default branch before creating a test preview.
+The command proposes only `.github/workflows/previewmesh-notify.yml`. With `--create-pr`, it creates a PR containing only that workflow; it does not merge the PR or modify other application code. Review or edit the PR as needed, then merge it on the application's default branch before creating a test preview.
 
 ### 4. Create the first preview
 

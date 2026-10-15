@@ -1057,6 +1057,60 @@ class Installer:
         )
         return re.fullmatch(pattern, content) is not None
 
+    @staticmethod
+    def _write_notification_artifact(path, content):
+        """Write a review artifact without overwriting an operator's earlier copy."""
+        path = Path(path)
+        candidate = path
+        suffix = 0
+        while True:
+            if candidate.is_symlink():
+                raise SetupError(f"Refusing symlink / 拒绝符号链接: {candidate}")
+            if not candidate.exists():
+                atomic_write(candidate, content, 0o644)
+                return candidate
+            if not candidate.is_file():
+                raise SetupError(f"Expected a regular review artifact / 需要普通审核文件: {candidate}")
+            if candidate.read_text(encoding="utf-8") == content:
+                return candidate
+            suffix += 1
+            candidate = path.with_name(path.name + f".{suffix}")
+
+    def _prepare_notification_workflow(self, target, expected, templates):
+        """Safely update a generated workflow or leave a reviewable merge package."""
+        target = Path(target)
+        if target.is_symlink():
+            raise SetupError(f"Refusing symlink / 拒绝符号链接: {target}")
+        old = target.read_text(encoding="utf-8") if target.exists() else None
+        if old is None or old == expected:
+            changed = self.managed(target, expected)
+            return {"kind": "created" if old is None else ("updated" if changed else "unchanged")}
+
+        previous = self.state.setdefault("files", {}).get(str(target))
+        installer_owned = fingerprint(old) == previous
+        known_template = any(
+            self.is_rendered_notification_template(old, template)
+            for template in templates
+        )
+        if installer_owned or known_template:
+            backup = self._write_notification_artifact(
+                target.with_name(target.name + ".previewmesh.bak"), old)
+            # Known templates are safe to adopt even when this installation has
+            # no ownership record, such as a checkout prepared by an older release.
+            self.managed(target, expected, adopt=old if known_template else None)
+            return {"kind": "upgraded", "backup": backup}
+
+        proposed = self._write_notification_artifact(
+            target.with_name(target.name + ".previewmesh-proposed"), expected)
+        difference = "".join(difflib.unified_diff(
+            old.splitlines(keepends=True), expected.splitlines(keepends=True),
+            # Keep patch paths repository-relative so `git apply` works from the source checkout.
+            fromfile=".github/workflows/previewmesh-notify.yml",
+            tofile=".github/workflows/previewmesh-notify.yml"))
+        patch = self._write_notification_artifact(
+            target.with_name(target.name + ".previewmesh.patch"), difference)
+        return {"kind": "review", "proposed": proposed, "patch": patch}
+
     def kube(self, *args, check=True, timeout=300):
         return self.run(["sudo", self.tool("k3s"), "kubectl",
                          "--kubeconfig=/etc/rancher/k3s/k3s.yaml", *args], check=check, timeout=timeout)
@@ -1407,17 +1461,37 @@ class Installer:
         owner, repo = self.c.control.split("/")
         template = (ROOT / "templates/source-notify.yml").read_text()
         expected = template.replace("YOUR_GITHUB_OWNER", owner).replace("YOUR_CONTROL_REPOSITORY", repo)
+        template_versions = [template]
+        for legacy_path in (ROOT / "templates").glob("source-notify-legacy*.yml"):
+            template_versions.append(legacy_path.read_text())
         for source in self.c.sources:
             target = source.directory / ".github/workflows/previewmesh-notify.yml"
-            adopt = None
-            if target.is_file() and not target.is_symlink():
-                existing = target.read_text()
-                # A reset keeps remote repositories, so a previous exact template can reappear after checkout.
-                if self.is_rendered_notification_template(existing, template):
-                    adopt = existing
-            self.managed(target, expected, adopt=adopt)
-            self.say(f"{source.repository}: notification file prepared. Use onboard-source to review and open its PR.",
-                     f"{source.repository}：通知文件已配置好。使用 onboard-source 审核并创建接入 PR。")
+            result = self._prepare_notification_workflow(target, expected, template_versions)
+            if result["kind"] == "review":
+                self.ui.status(
+                    "warning",
+                    f"{source.repository}: existing workflow preserved; review {result['proposed']} and {result['patch']}",
+                    chinese=self.zh,
+                )
+                self.say(
+                    "Use onboard-source to create a reviewed PR after merging the proposed workflow.",
+                    "现有工作流已保留；请审核 proposed 文件和 patch，再使用 onboard-source 创建审核 PR。",
+                )
+            elif result["kind"] == "upgraded":
+                self.say(
+                    f"{source.repository}: previous PreviewMesh workflow upgraded; backup saved at {result['backup']}.",
+                    f"{source.repository}：旧版 PreviewMesh 工作流已安全升级；备份已保存到 {result['backup']}。",
+                )
+            elif result["kind"] == "created":
+                self.say(
+                    f"{source.repository}: notification file created. Use onboard-source to review and open its PR.",
+                    f"{source.repository}：通知文件已创建。使用 onboard-source 审核并创建接入 PR。",
+                )
+            else:
+                self.say(
+                    f"{source.repository}: notification file is already current. Use onboard-source to review and open its PR.",
+                    f"{source.repository}：通知文件已经是最新版本。使用 onboard-source 审核并创建接入 PR。",
+                )
             if not (source.directory / "Dockerfile").exists():
                 self.say("Application still needs a root Dockerfile.", "应用仍需在根目录提供 Dockerfile。")
         self.say("Applications must listen on 0.0.0.0, run as UID/GID 65532 and return status=ok plus PREVIEW_COMMIT_SHA at GET /health.",

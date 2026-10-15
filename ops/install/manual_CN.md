@@ -4,7 +4,11 @@
 
 [预览访问说明](access.md)
 
-本文是手工流程。自动 `install` 命令可能在本地准备 source 通知文件，但不会提交、推送、创建或合并 source 改动。需要使用引导式接入流程时，执行 `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO`；默认模式只显示完整 diff，`--create-pr` 才会显式进入可审核 PR 流程。下面的手工步骤仍适用于希望自行复制和编辑工作流的情况。
+本文是手工流程。自动 `install` 命令会在本地准备 source 通知文件，但不会提交、推送、创建或合并 source 改动。如果 `.github/workflows/previewmesh-notify.yml` 不存在，就创建该文件；如果已经是预期的当前模板，则保持不变；如果与需要更新配置值的精确当前或历史 PreviewMesh 模板，或此前由安装器管理的版本匹配，则自动升级，并在旁边保存旧内容为 `previewmesh-notify.yml.previewmesh.bak`。如果发现自定义工作流，则保留原文件，同时在旁边生成完整的当前工作流 `previewmesh-notify.yml.previewmesh-proposed` 和比较文件 `previewmesh-notify.yml.previewmesh.patch`；这不会使安装阶段失败。
+
+用户不必逐行复制 patch。请审核完整的 proposed 文件，patch 只作为可选的变更摘要。之后可以按 source 仓库的正常审核流程调整或替换工作流并提交，也可以执行 `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO` 审核远端默认分支，再添加 `--create-pr` 创建可审核的接入 PR。接入命令只提交通知工作流，不会自动合并。下面的手工步骤仍适用于希望自行复制和编辑工作流的情况。
+
+`.previewmesh.bak`、`.previewmesh-proposed` 和 `.previewmesh.patch` 是本地审核产物；除非你有意保留，否则不要将它们提交到应用仓库。
 
 ## 前提条件
 
@@ -415,7 +419,25 @@ curl --noproxy '*' --silent --show-error --max-time 5 -o /dev/null -w '%{http_co
 
 #### 添加 source 通知工作流
 
-下面复用前面设置的两个项目路径，将模板复制到存放应用代码的 **source 仓库**：
+如果运行过自动安装器，请先在存放应用代码的 **source 仓库**中审核结果：
+
+- 如果 `.github/workflows/previewmesh-notify.yml` 不存在，就会用当前模板创建。
+- 如果已经是预期的当前模板，则保持不变。如果与需要更新配置值的精确当前或历史 PreviewMesh 模板，或此前由安装器管理的版本匹配，则会升级，并在旁边保存 `previewmesh-notify.yml.previewmesh.bak`。
+- 如果是自定义工作流，原文件保持不动。请审核完整的 `previewmesh-notify.yml.previewmesh-proposed`；`previewmesh-notify.yml.previewmesh.patch` 只用于查看简要比较。安装阶段会继续，不需要手工逐行复制 patch。
+
+如果 proposed 文件符合预期，请保留确实需要的自定义行为，然后替换或调整受 Git 管理的工作流，检查 `git diff`，再按 source 仓库的正常拉取请求流程提交并推送。也可以从公开模板 checkout 运行下面的引导式接入命令：
+
+```bash
+cd "$TEMPLATE_DIR"
+# 输出完整的待提交工作流；此命令只读。
+bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOURCE_REPOSITORY"
+# 审核后，创建只包含该工作流的 PR。
+bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOURCE_REPOSITORY" --create-pr
+```
+
+请按需审核或修改这个 PR，然后将它合并到 source 仓库默认分支。接入命令不会自动合并。
+
+如果只使用本手工流程，并且工作流文件不存在，复用前面设置的两个项目路径，将模板复制到存放应用代码的 **source 仓库**：
 
 ```bash
 cd "$SOURCE_DIR"
@@ -424,7 +446,7 @@ mkdir -p .github/workflows
 cp -i "$CONTROL_DIR/templates/source-notify.yml" .github/workflows/previewmesh-notify.yml
 ```
 
-确认 `git remote -v` 显示的是目标 source 仓库。如果已有同名工作流，先检查内容，再决定是否覆盖。用编辑器打开 `.github/workflows/previewmesh-notify.yml`，修改 `jobs.notify.env` 下的两个值：
+确认 `git remote -v` 显示的是目标 source 仓库。不要直接覆盖已有的自定义工作流。对于刚复制的文件，用编辑器打开 `.github/workflows/previewmesh-notify.yml`，修改 `jobs.notify.env` 下的两个值：
 
 ```yaml
 PREVIEWMESH_CONTROL_OWNER: YOUR_GITHUB_OWNER

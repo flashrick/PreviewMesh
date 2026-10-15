@@ -4,7 +4,11 @@
 
 [Preview access guide](access.md)
 
-This document is the manual path. The guided `install` command may prepare a local source notification file, but it does not commit, push, create or merge source changes. For the guided onboarding flow, run `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO`; its default mode shows the complete diff only, and `--create-pr` is the explicit reviewed-PR mode. The manual steps below remain available when you want to copy and edit the workflow yourself.
+This document is the manual path. The guided `install` command prepares the local source notification file without committing, pushing, creating, or merging source changes. If `.github/workflows/previewmesh-notify.yml` is missing, it creates it. An exact expected current template is left unchanged; an exact recognized current or historical PreviewMesh template with values that need updating, or a previously installer-managed version, is upgraded with the old content saved beside it as `previewmesh-notify.yml.previewmesh.bak`. A custom workflow is preserved, while the complete current workflow is written beside it as `previewmesh-notify.yml.previewmesh-proposed` and the comparison as `previewmesh-notify.yml.previewmesh.patch`; this does not fail the install stage.
+
+You do not need to copy a patch line by line. Review the complete proposed file and use the patch only as an optional summary. Then either adjust or replace the workflow and commit it through the source repository's normal review process, or run `bash scripts/setup.sh onboard-source --config PATH --source OWNER/REPO` to review the remote default branch and add `--create-pr` to create a reviewed onboarding PR. The onboarding command submits only the notification workflow and never merges it automatically. The manual steps below remain available when you want to copy and edit the workflow yourself.
+
+The `.previewmesh.bak`, `.previewmesh-proposed`, and `.previewmesh.patch` files are local review artifacts; unless you intentionally want to retain them, do not commit them to the application repository.
 
 ## Requirements
 
@@ -459,7 +463,25 @@ Expect `404`: the request reached Traefik, but the check hostname has no preview
 
 #### Add the source notification workflow
 
-Reuse the checkout paths set above. The destination below is the **source repository**, where your application lives:
+If you ran the guided installer, inspect the result in the **source repository** before publishing it:
+
+- A missing `.github/workflows/previewmesh-notify.yml` is created with the current template.
+- An expected current template is left unchanged. An exact recognized current or historical PreviewMesh template with values that need updating, or a previously installer-managed version, is upgraded, with `previewmesh-notify.yml.previewmesh.bak` beside it.
+- A custom workflow remains untouched. Review the complete `previewmesh-notify.yml.previewmesh-proposed` file; `previewmesh-notify.yml.previewmesh.patch` is available as a concise comparison. The install stage continues, so there is no need to hand-copy each patch line.
+
+If the proposed workflow is acceptable, preserve any custom behavior you intentionally need, then replace or adjust the tracked workflow, inspect `git diff`, and commit and push it through the source repository's normal pull-request review. Alternatively, from the public template checkout, use the guided onboarding commands:
+
+```bash
+cd "$TEMPLATE_DIR"
+# Print the complete proposed workflow; this is read-only.
+bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOURCE_REPOSITORY"
+# After reviewing it, create a PR containing only this workflow.
+bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source "$SOURCE_REPOSITORY" --create-pr
+```
+
+Review or edit that PR as needed and merge it on the source repository's default branch. The onboarding command does not merge it automatically.
+
+If you are following only this manual path and the workflow file is missing, reuse the checkout paths set above. The destination below is the **source repository**, where your application lives:
 
 ```bash
 cd "$SOURCE_DIR"
@@ -468,7 +490,7 @@ mkdir -p .github/workflows
 cp -i "$CONTROL_DIR/templates/source-notify.yml" .github/workflows/previewmesh-notify.yml
 ```
 
-Check that `git remote -v` shows the intended source repository. If the workflow already exists, review it before agreeing to overwrite it. Open `.github/workflows/previewmesh-notify.yml` in your editor and replace the two values under `jobs.notify.env`:
+Check that `git remote -v` shows the intended source repository. Do not overwrite an existing custom workflow blindly. For a newly copied file, open `.github/workflows/previewmesh-notify.yml` in your editor and replace the two values under `jobs.notify.env`:
 
 ```yaml
 PREVIEWMESH_CONTROL_OWNER: YOUR_GITHUB_OWNER

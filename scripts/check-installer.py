@@ -1035,7 +1035,7 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(config.SetupError):
             config.merge_registry([dict(original[0], source_secret="GHCR_READ_TOKEN")], [])
 
-    def test_generated_source_has_no_git_side_effects_and_conflict_is_preserved(self):
+    def test_generated_source_has_no_git_side_effects_and_custom_workflow_gets_review_artifacts(self):
         app = self.instance()
         # Any external command, including git, is a failure in this stage.
         app.run = lambda *args, **kwargs: self.fail("source stage must not run commands")
@@ -1049,9 +1049,43 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("OWNER: YOUR_", text)
         self.assertNotIn("REPOSITORY: YOUR_", text)
         target.write_text("user's workflow\n")
-        with self.assertRaises(config.SetupError):
+        with contextlib.redirect_stdout(io.StringIO()):
             app.sources()
         self.assertEqual(target.read_text(), "user's workflow\n")
+        proposed = Path(str(target) + ".previewmesh-proposed")
+        patch = Path(str(target) + ".previewmesh.patch")
+        self.assertEqual(proposed.read_text(), ((ROOT / "templates/source-notify.yml").read_text()
+                         .replace("YOUR_GITHUB_OWNER", "owner")
+                         .replace("YOUR_CONTROL_REPOSITORY", "control")))
+        self.assertIn("--- .github/workflows/previewmesh-notify.yml", patch.read_text())
+        self.assertIn("+++ .github/workflows/previewmesh-notify.yml", patch.read_text())
+        self.assertIn(str(proposed), app.checkpoints.artifacts(7))
+        self.assertIn(str(patch), app.checkpoints.artifacts(7))
+        # A second run reuses identical artifacts and still leaves user content untouched.
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.sources()
+        self.assertEqual(target.read_text(), "user's workflow\n")
+
+    def test_generated_source_upgrades_legacy_template_with_backup(self):
+        app = self.instance()
+        app.run = lambda *args, **kwargs: self.fail("source stage must not run commands")
+        target = self.c.sources[0].directory / ".github/workflows/previewmesh-notify.yml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(((ROOT / "templates/source-notify-legacy.yml").read_text()
+                           .replace("YOUR_GITHUB_OWNER", "owner")
+                           .replace("YOUR_CONTROL_REPOSITORY", "control")))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.sources()
+
+        expected = ((ROOT / "templates/source-notify.yml").read_text()
+                    .replace("YOUR_GITHUB_OWNER", "owner")
+                    .replace("YOUR_CONTROL_REPOSITORY", "control"))
+        self.assertEqual(target.read_text(), expected)
+        self.assertEqual(Path(str(target) + ".previewmesh.bak").read_text(),
+                         ((ROOT / "templates/source-notify-legacy.yml").read_text()
+                          .replace("YOUR_GITHUB_OWNER", "owner")
+                          .replace("YOUR_CONTROL_REPOSITORY", "control")))
 
     def test_generated_source_replaces_previous_previewmesh_template_for_new_control(self):
         app = self.instance()

@@ -73,7 +73,16 @@ class Checkpoints:
             tracked = i.run(["git", "-C", i.c.control_dir, "ls-files", "-z"]).stdout
             paths += [i.c.control_dir / name for name in tracked.split("\0") if name]
         elif number == 7:
-            paths = [s.directory / ".github/workflows/previewmesh-notify.yml" for s in i.c.sources]
+            paths = []
+            for source in i.c.sources:
+                target = source.directory / ".github/workflows/previewmesh-notify.yml"
+                paths.append(target)
+                # Review artifacts are stage outputs too; regenerate them if an
+                # interrupted cleanup or manual deletion removes one.
+                for suffix in (".previewmesh.bak", ".previewmesh-proposed", ".previewmesh.patch"):
+                    artifact = target.with_name(target.name + suffix)
+                    if artifact.is_file() and not artifact.is_symlink() and artifact.stat().st_size:
+                        paths.append(artifact)
         # Empty tracked files are valid inputs; required stage outputs must be nonempty.
         result = {}
         for path in dict.fromkeys(paths):

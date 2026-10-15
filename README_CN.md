@@ -170,13 +170,23 @@ bash scripts/setup.sh install --config /path/to/setup.ini
 
 `install` 会准备工具、私有部署管理仓库、GitHub Secrets、K3s 权限、受限 Runner、预览网络入口、应用通知集成和就绪检查。安装支持断点续跑；某个阶段失败时，修复提示的问题后重新运行同一条命令。
 
+在准备应用通知工作流的阶段，`install` 会处理应用本地的工作流文件，但不会发布应用改动：
+
+- 如果 `.github/workflows/previewmesh-notify.yml` 不存在，就创建该文件。
+- 如果文件已经是预期的当前模板，就保持不变。如果文件与需要更新配置值的精确当前或历史 PreviewMesh 模板（或此前由安装器管理的版本）匹配，就自动升级，并在旁边保存旧内容为 `previewmesh-notify.yml.previewmesh.bak`。
+- 如果发现的是自定义工作流，`install` 会保留原文件，并在旁边生成完整的当前工作流 `previewmesh-notify.yml.previewmesh-proposed` 和 `previewmesh-notify.yml.previewmesh.patch`。自定义工作流需要审核，但不会使安装阶段失败。
+
+用户不必逐行复制 patch。请先审核完整的 proposed 文件，patch 只作为可选的变更摘要。之后可以按应用仓库的正常审核流程调整或替换工作流并提交，也可以使用下面的 `onboard-source` 准备一个可审核的接入 PR。`install` 不会提交、推送或合并应用改动。
+
+`.previewmesh.bak`、`.previewmesh-proposed` 和 `.previewmesh.patch` 是本地审核产物；除非你有意保留，否则不要将它们提交到应用仓库。
+
 `install` 还会在 `<control checkout>/bin/previewmesh` 构建面向用户的 CLI。若 `CONTROL_DIR` 指向 private control checkout，请使用 `"$CONTROL_DIR/bin/previewmesh"`；该二进制文件只属于这个 checkout 及其配置，不会全局安装，也不会把不带路径的 `previewmesh` 命令加入 `PATH`。
 
 安装器负责准备基础设施，不会改写应用代码，也不能证明应用已经能够提供预览。[手动安装参考](ops/install/manual.md) 解释了不适合使用引导式流程时的各个基础设施步骤。
 
 ### 3. 通过审核 PR 接入应用
 
-先预览工作流变更，不写入应用仓库：
+审核应用默认分支上的工作流，不写入应用仓库。如果 `install` 因自定义工作流留下了 proposed 文件，这也是下一步：
 
 ~~~bash
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO
@@ -188,7 +198,7 @@ bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/
 bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO --create-pr
 ~~~
 
-该命令只准备 `.github/workflows/previewmesh-notify.yml`，不会合并 PR，也不会修改应用代码。请在创建测试预览前审核并合并应用默认分支上的这个 PR。
+该命令只提议 `.github/workflows/previewmesh-notify.yml`。添加 `--create-pr` 后，它会创建只包含该工作流的 PR，不会自动合并，也不会修改其他应用代码。请按需审核或修改这个 PR，然后在创建测试预览前将它合并到应用默认分支。
 
 ### 4. 创建第一个预览
 
