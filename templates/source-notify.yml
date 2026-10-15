@@ -7,13 +7,40 @@ permissions: {}
 jobs:
   notify:
     if: github.event.pull_request.head.repo.id == github.event.repository.id
+    permissions:
+      statuses: write
     runs-on: ubuntu-latest
     env:
       PREVIEWMESH_CONTROL_OWNER: YOUR_GITHUB_OWNER
       PREVIEWMESH_CONTROL_REPOSITORY: YOUR_CONTROL_REPOSITORY
     steps:
+      # Publish an immediate status so dispatch and runner latency is visible to PR authors.
+      - name: Report PreviewMesh request pending
+        id: pending
+        continue-on-error: true
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const action = context.payload.action;
+            const description = action === 'closed'
+              ? 'Cleanup request sent; waiting for PreviewMesh to start'
+              : 'Preview request sent; waiting for PreviewMesh to start';
+            const targetUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'pending',
+              context: 'PreviewMesh',
+              description,
+              target_url: targetUrl
+            });
+
       # Metadata relay only. Never check out or execute source/PR code here.
-      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+      - name: Dispatch PreviewMesh lifecycle
+        id: dispatch
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ secrets.PREVIEWMESH_DISPATCH_TOKEN }}
           script: |
@@ -31,4 +58,23 @@ jobs:
                 source_repository: context.payload.repository.full_name,
                 pr_number: String(context.payload.pull_request.number)
               }
+            });
+
+      # Give the author a terminal signal when dispatch itself could not start.
+      - name: Report PreviewMesh dispatch failure
+        if: steps.dispatch.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const targetUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'failure',
+              context: 'PreviewMesh',
+              description: 'PreviewMesh workflow could not be started',
+              target_url: targetUrl
             });

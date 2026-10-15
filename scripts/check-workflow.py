@@ -27,6 +27,19 @@ for control_id in ['34', '56']:
 notification = (root / 'templates/source-notify.yml').read_text()
 assert 'pull_request_target:' in notification
 assert 'types: [opened, synchronize, reopened, closed]' in notification
+# Publish an immediate source-side pending status so dispatch/runner latency is visible.
+notification_lines = notification.splitlines()
+pending_line = next((index for index, line in enumerate(notification_lines)
+                     if 'createCommitStatus' in line), None)
+dispatch_line = next((index for index, line in enumerate(notification_lines)
+                      if 'createWorkflowDispatch' in line), None)
+assert pending_line is not None and dispatch_line is not None and pending_line < dispatch_line
+assert 'permissions: {}\njobs:' in notification
+assert '    permissions:\n      statuses: write' in notification
+assert 'github-token: ${{ github.token }}' in notification
+assert "state: 'pending'" in notification
+assert "context: 'PreviewMesh'" in notification
+assert "if: steps.dispatch.outcome == 'failure'" in notification
 # Duplicate notifications share a PR concurrency group, including across commits.
 assert 'group: previewmesh-${{ inputs.repository_id }}-${{ inputs.pr_number }}' in workflow
 assert 'cancel-in-progress: false' in workflow

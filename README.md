@@ -191,7 +191,7 @@ The command prepares only `.github/workflows/previewmesh-notify.yml`. It does no
 ### 4. Create the first preview
 
 1. Create a normal pull request from a branch in the registered application repository to its default branch. Do not use a fork.
-2. Wait for the application notification workflow and the private deployment-management workflow.
+2. After the application notification workflow succeeds, the `PreviewMesh` check immediately shows that the request is waiting for the deployment-management workflow to start; wait for that workflow to finish.
 3. Confirm the build, deployment, readiness, health, and commit-revision checks succeed.
 4. Open the generated URL from a machine that can reach the configured private network. Follow the [preview access guide](ops/install/access.md) for DNS, hosts-file, WSL, port `18080`, and `/health` checks.
 5. Close or merge the pull request and wait for the cleanup workflow to remove its preview namespace.

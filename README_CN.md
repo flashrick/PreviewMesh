@@ -191,7 +191,7 @@ bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/
 ### 4. 创建第一个预览
 
 1. 在已注册的应用仓库中从分支创建普通拉取请求，目标为应用默认分支。不要使用 fork。
-2. 等待应用通知工作流和私有部署管理工作流完成。
+2. 应用通知工作流成功后，`PreviewMesh` 检查会立即显示请求正在等待部署管理工作流启动；请继续等待该工作流完成。
 3. 确认构建、部署、就绪、健康检查和提交版本校验均成功。
 4. 在能够访问配置的私有网络的机器上打开生成的 URL。请阅读[预览访问说明](ops/install/access.md)了解 DNS、hosts 文件、WSL、`18080` 端口和 `/health` 检查。
 5. 关闭或合并拉取请求，等待清理工作流删除对应的预览 Namespace。
