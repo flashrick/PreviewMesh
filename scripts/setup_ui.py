@@ -224,7 +224,7 @@ class TerminalUI:
         self._write("─" * max(20, min(width, 120)))
 
     def status(self, kind, value, *, chinese=False):
-        """Print a status line with a text label that remains clear without colour."""
+        """Print a status line with a symbol and text label that survive without colour."""
         english, chinese_label, symbol, style = _STATUS_META.get(
             kind, (kind.upper(), kind, "·", "info"))
         label = chinese_label if chinese else english
@@ -236,7 +236,10 @@ class TerminalUI:
             )
             self._console().print(text)
         else:
-            self._write(f"{self._paint(f'{label:<6}', style)} {self._paint(value, style)}")
+            self._write(
+                f"{self._paint(f'{symbol} {label:<6}', style)} "
+                f"{self._paint(value, style)}"
+            )
 
     def table(self, title, rows):
         """Render key/value data compactly and wrap values in narrow terminals."""

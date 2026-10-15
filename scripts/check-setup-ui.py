@@ -169,7 +169,7 @@ class SetupUITests(unittest.TestCase):
         self.assertIn("Prepare", text)
         self.assertIn("CURRENT", text)
         self.assertIn("Configure", text)
-        self.assertIn("OK     ready", text)
+        self.assertIn("✓ OK", text)
         self.assertNotIn("\x1b", text)
 
     def test_status_semantics_have_distinct_symbols_and_roles(self):

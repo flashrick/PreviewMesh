@@ -1537,7 +1537,7 @@ class Installer:
         def check(label, function):
             try:
                 function()
-                self.say("OK: " + label, "通过：" + label)
+                self.ui.status("success", label, chinese=self.zh)
             except (SetupError, OSError, ValueError, KeyError) as error:
                 failures.append(label)
                 print(self.redact(f"FAIL / 失败: {label}: {error}"))
@@ -1626,8 +1626,13 @@ class Installer:
                     )
             else:
                 self.source_status[source.repository] = "merged"
-                self.say(f"OK: {source.repository} notification matches on the default branch.",
-                         f"通过：{source.repository} 默认分支上的通知工作流符合预期。")
+                self.ui.status(
+                    "success",
+                    f"{source.repository} notification matches on the default branch."
+                    if not self.zh else
+                    f"{source.repository} 默认分支上的通知工作流符合预期。",
+                    chinese=self.zh,
+                )
         self.say("No real preview was created or verified. After publishing the notification, use a normal application PR; check the reported SHA and cleanup after closing.",
                  "尚未创建或验证真实预览。通知文件发布后，通过正常应用 PR 检查预览版本和关闭后的清理结果。")
         self.say("A colleague should also check the entry from a second LAN machine; this machine cannot prove remote reachability.",
