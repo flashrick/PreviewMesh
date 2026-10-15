@@ -183,6 +183,49 @@ def announce_sudo_authentication(language):
     ))
 
 
+def prepare_sudo_authentication(language):
+    """Finish sudo authentication before the cleanup spinner owns the terminal line."""
+    if os.geteuid() == 0 or not prompt_capable() or not sys.stdout.isatty():
+        return
+    if not shutil.which("sudo"):
+        return
+    auth_attempted = False
+    try:
+        cached = subprocess.run(
+            ["sudo", "-n", "-v"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cached.returncode == 0:
+            return
+        TerminalUI().message(localized(
+            language,
+            "Cleanup needs administrator permission; enter the sudo password at the next prompt.",
+            "清理需要管理员权限，请在下一行输入 sudo 密码：",
+        ))
+        auth_attempted = True
+        authenticated = subprocess.run(["sudo", "-v"], check=False)
+    except OSError as error:
+        raise SetupError(localized(
+            language,
+            "Could not request sudo authentication before cleanup.",
+            "无法在清理前请求 sudo 身份验证。",
+        )) from error
+    finally:
+        # sudo does not echo the password or terminate its prompt line; restore
+        # the cursor before the cleanup spinner starts repainting the terminal.
+        if auth_attempted:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+    if authenticated.returncode != 0:
+        raise SetupError(localized(
+            language,
+            "Sudo authentication failed; cleanup was not started.",
+            "sudo 身份验证失败，尚未开始清理。",
+        ))
+
+
 def clear_local_configuration(config_path):
     """Remove the selected installation's old active config and draft."""
     path = Path(config_path).expanduser().absolute()
@@ -337,11 +380,19 @@ def run_with_loading(label, action):
         return action()
     frames = "|/-\\"
     stop = threading.Event()
+    terminal_is_dumb = os.environ.get("TERM") == "dumb"
+    terminal_width = max(1, shutil.get_terminal_size(fallback=(80, 24)).columns)
+
+    def clear_line():
+        """Erase the whole spinner row without relying on character count."""
+        if terminal_is_dumb:
+            return "\r" + (" " * terminal_width) + "\r"
+        return "\r\033[2K"
 
     def animate():
         index = 0
         while not stop.is_set():
-            sys.stdout.write(f"\r{label} {frames[index % len(frames)]}")
+            sys.stdout.write(f"{clear_line()}{label} {frames[index % len(frames)]}")
             sys.stdout.flush()
             index += 1
             stop.wait(0.12)
@@ -353,7 +404,7 @@ def run_with_loading(label, action):
     finally:
         stop.set()
         worker.join()
-        sys.stdout.write("\r" + (" " * (len(label) + 2)) + "\r")
+        sys.stdout.write(clear_line())
         sys.stdout.flush()
 
 
@@ -438,6 +489,7 @@ def cleanup_reinitialized_installation(level, config_path, language):
     if level == "3":
         cleanup_args.append("--allow-dirty-repositories")
 
+    prepare_sudo_authentication(language)
     result = run_with_loading(
         localized(language, f"Loading cleanup level {level}", f"正在加载级别 {level} 清理"),
         lambda: cleanup_main(cleanup_args),

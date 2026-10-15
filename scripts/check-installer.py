@@ -606,6 +606,80 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Proceed with level 3", user_input.call_args_list[1].args[0])
         self.assertIn("DELETE-LOCAL-REPOSITORIES", user_input.call_args_list[2].args[0])
 
+    def test_reinit_levels_two_and_three_authenticate_before_tty_cleanup_spinner(self):
+        """Sudo must finish and terminate its prompt line before cleanup spins."""
+        state_path = self.work / ".local/share/previewmesh/install-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}")
+
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        for level, answers in (("2", ["2", "yes"]),
+                               ("3", ["3", "yes", "DELETE-LOCAL-REPOSITORIES"])):
+            with self.subTest(level=level):
+                events = []
+                output = TTYBuffer()
+
+                def fake_sudo(args, **kwargs):
+                    args = [str(item) for item in args]
+                    if args == ["sudo", "-n", "-v"]:
+                        events.append("sudo-cache-probe")
+                        return subprocess.CompletedProcess(args, 1, "", "sudo: a password is required")
+                    if args == ["sudo", "-v"]:
+                        events.append("sudo-auth-start")
+                        # The real sudo prompt is terminal output; keep it unterminated
+                        # so the caller must restore the cursor line after success.
+                        output.write("sudo password: ")
+                        output.flush()
+                        events.append("sudo-auth-return")
+                        return subprocess.CompletedProcess(args, 0, "", "")
+                    self.fail("unexpected subprocess during init cleanup: " + repr(args))
+
+                def loading(label, action):
+                    self.assertIn("sudo password: ", output.getvalue())
+                    self.assertTrue(
+                        output.getvalue().endswith("\n"),
+                        "sudo authentication must leave the terminal cursor on a new line",
+                    )
+                    events.append(("spinner", label))
+                    return action()
+
+                def cleanup(args):
+                    events.append(("cleanup", args[args.index("--level") + 1]))
+                    return 0
+
+                def wizard(*args, **kwargs):
+                    events.append("wizard")
+                    return True
+
+                with patch.object(installer, "SYSTEM_INSTALLATION_MARKERS", ()), \
+                     patch.object(installer, "prompt_capable", return_value=True), \
+                     patch.object(setup_ui, "interactive_capable", return_value=False), \
+                     patch("builtins.input", side_effect=answers), \
+                     patch.object(installer.shutil, "which", return_value="/usr/bin/sudo"), \
+                     patch.object(installer.subprocess, "run", side_effect=fake_sudo), \
+                     patch.object(installer, "run_with_loading", side_effect=loading), \
+                     patch("cleanup.main", side_effect=cleanup), \
+                     patch("setup_wizard.run_wizard", side_effect=wizard), \
+                     patch.object(installer.sys, "stdout", output), \
+                     patch.object(installer.sys, "argv", [
+                         str(ROOT / "scripts/setup.py"), "init", "--language", "en",
+                         "--config", str(self.config_path)
+                     ]):
+                    with patch.object(Path, "home", return_value=self.work):
+                        result = installer.main()
+
+                self.assertEqual(result, 0)
+                self.assertIn("sudo-cache-probe", events)
+                self.assertIn("sudo-auth-return", events)
+                spinner_index = next(index for index, event in enumerate(events)
+                                     if isinstance(event, tuple) and event[0] == "spinner")
+                self.assertLess(events.index("sudo-auth-return"), spinner_index)
+                self.assertEqual(events[spinner_index + 1], ("cleanup", level))
+                self.assertEqual(events[spinner_index + 2], "wizard")
+
     def test_level_3_reinitialization_forwards_dirty_repository_override(self):
         with patch("cleanup.main", return_value=0) as cleanup_main, \
              patch.object(installer.sys.stdout, "isatty", return_value=False):
