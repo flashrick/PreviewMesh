@@ -140,7 +140,7 @@ elif args[:2] == ['get', 'namespace']:
     sys.exit(0)
 elif args[:2] == ['patch', 'namespace']: sys.exit(0)
 elif args[:2] == ['get', 'secret']: sys.exit(0)
-elif args[0] == 'wait' and args[1].startswith('--for=condition=PodScheduled'): sys.exit(0)
+elif args[0] == 'wait' and any(arg.startswith('--for=condition=PodScheduled') for arg in args): sys.exit(0)
 elif args[0] == 'wait' and args[1].startswith('--for=jsonpath='): sys.exit(0)
 elif args[:2] == ['rollout', 'status']: sys.exit(1)
 elif args[0] == 'get' and args[1] in ['deployment', 'pods', 'service', 'ingress']:

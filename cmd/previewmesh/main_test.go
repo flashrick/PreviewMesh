@@ -191,6 +191,8 @@ func fakeTools(t *testing.T, nsJSON string, helmFail bool) *runner {
 printf '%s\n' "$*" >> "$CALLS"
 case "$1 $2" in
  'get namespace') if [ "$API_FAIL" = 1 ]; then exit 1; fi; printf '%s' "$NAMESPACE_JSON";;
+ 'wait --for=create') exit 0;;
+ 'wait --for=condition=PodScheduled') if [ "$SCHEDULING_NO_MATCH" = 1 ]; then exit 1; fi; exit 0;;
  'rollout status') if [ "$ROLLOUT_FAIL" = 1 ]; then exit 1; fi; exit 0;;
  'wait --for=condition=Ready') if [ "$POD_READY_FAIL" = 1 ]; then exit 1; fi; exit 0;;
  'wait --for=jsonpath={.spec.clusterIP}') if [ "$SERVICE_READY_FAIL" = 1 ]; then exit 1; fi; exit 0;;
@@ -256,6 +258,33 @@ func TestReadinessChecksAllResources(t *testing.T) {
 	}
 	if x.r.HTTPStatus != http.StatusOK || x.r.HTTPVerification != "success" || x.r.ServedSHA != x.o.sha || x.r.RevisionVerification != "success" {
 		t.Fatalf("HTTP evidence = status %d, HTTP verification %q, served SHA %q, revision verification %q", x.r.HTTPStatus, x.r.HTTPVerification, x.r.ServedSHA, x.r.RevisionVerification)
+	}
+}
+
+// TestReadinessWaitsForPodCreation avoids failing when a rollout briefly has no matching Pod.
+func TestReadinessWaitsForPodCreation(t *testing.T) {
+	x := fakeTools(t, "", false)
+	t.Setenv("SCHEDULING_NO_MATCH", "1")
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprintf(w, `{"status":"ok","commit_sha":%q}`, x.o.sha)
+	}))
+	defer srv.Close()
+	x.r.URL = srv.URL
+
+	if err := x.check(x.o.sha); err != nil {
+		t.Fatalf("transient missing Pod caused readiness failure: %v", err)
+	}
+	calls, err := os.ReadFile(os.Getenv("CALLS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "wait --for=create --for=condition=PodScheduled pod -l app.kubernetes.io/instance=pm-r12-pr3") {
+		t.Fatalf("scheduling wait did not wait for Pod creation first: %s", calls)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("HTTP verification requests=%d, want 1", requests.Load())
 	}
 }
 

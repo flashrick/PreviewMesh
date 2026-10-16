@@ -562,8 +562,10 @@ func (x *runner) waitReadiness() error {
 	}{
 		{
 			stage: "scheduling",
-			args:  []string{"kubectl", "wait", "--for=condition=PodScheduled", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
-			err:   "pod scheduling check failed",
+			// A Deployment update can briefly have no matching Pod while the old Pod is removed.
+			// Wait for creation before checking scheduling so that handoff is not reported as a failure.
+			args: []string{"kubectl", "wait", "--for=create", "--for=condition=PodScheduled", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
+			err:  "pod scheduling check failed",
 		},
 		{
 			stage: "image_pull",
