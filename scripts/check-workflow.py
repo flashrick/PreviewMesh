@@ -35,14 +35,22 @@ dispatch_line = next((index for index, line in enumerate(notification_lines)
                       if 'createWorkflowDispatch' in line), None)
 assert pending_line is not None and dispatch_line is not None and pending_line < dispatch_line
 assert 'permissions: {}\njobs:' in notification
-assert '    permissions:\n      statuses: write' in notification
+assert '    permissions:\n      statuses: write\n      issues: write' in notification
 assert 'github-token: ${{ github.token }}' in notification
 assert "state: 'pending'" in notification
 assert "context: 'PreviewMesh'" in notification
+assert "if (action === 'closed')" in notification
+assert '<!-- previewmesh-cleanup-pending -->' in notification
+assert 'github.rest.issues.createComment' in notification
+assert 'github.rest.issues.updateComment' in notification
+assert "comment.user?.type === 'Bot'" in notification
+assert 'Preview cleanup is in progress' in notification
 assert "if: steps.dispatch.outcome == 'failure'" in notification
 # Duplicate notifications share a PR concurrency group, including across commits.
 assert 'group: previewmesh-${{ inputs.repository_id }}-${{ inputs.pr_number }}' in workflow
 assert 'cancel-in-progress: false' in workflow
+assert "PR_STATE: ${{ steps.state.outputs.state }}" in workflow
+assert "description='Preview cleanup queued; waiting for cleanup worker'" in workflow
 
 control = '''#!/usr/bin/env python3
 import json, os, pathlib, sys

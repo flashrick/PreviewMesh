@@ -78,8 +78,13 @@ jobs:
         env:
           SOURCE_TOKEN: ${{ secrets[steps.registration.outputs.source_secret] }}
           ATTEMPT_SHA: ${{ steps.state.outputs.sha }}
+          PR_STATE: ${{ steps.state.outputs.state }}
         run: |
-          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state pending --description 'Preview attempt queued' --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          description='Preview attempt queued'
+          if [ "$PR_STATE" = 'closed' ]; then
+            description='Preview cleanup queued; waiting for cleanup worker'
+          fi
+          "$RUNNER_TEMP/control" status --repository-id "$REPOSITORY_ID" --source-repository "$SOURCE_REPOSITORY" --pr "$PR_NUMBER" --sha "$ATTEMPT_SHA" --state pending --description "$description" --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - name: Check out exact source revision
         if: steps.state.outputs.state == 'open'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

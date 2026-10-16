@@ -54,7 +54,7 @@ bash scripts/setup.sh install --config /path/to/setup.ini
 | 隔离预览 | 为每个已注册仓库和拉取请求创建可预测、带所有权标记的 Kubernetes Namespace 和 Release。 |
 | 可信准入 | 校验已注册的仓库 ID 和名称、当前拉取请求状态、同一仓库的 head/base，以及作者的写权限。Fork 拉取请求会被拒绝。 |
 | 运行时验证 | 等待工作负载和 Ingress 就绪，然后要求 `/health` 返回 HTTP 200、`status: "ok"` 和预期的 `commit_sha`。 |
-| 拉取请求反馈 | 写入 Commit Status；在权限允许时写入结果评论；验证成功后提供 **Open preview** URL。 |
+| 拉取请求反馈 | 立即写入 pending 检查；PR 关闭时，在派发清理工作流前写入一条幂等的“清理进行中”评论；完成后再写入终态结果和验证成功时的 **Open preview** URL。 |
 | 清理 | 拉取请求关闭或合并后删除所属预览，并提供检查和有限重试路径用于恢复。 |
 
 ## 工作原理
@@ -221,7 +221,7 @@ bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/
 2. 应用通知工作流成功后，`PreviewMesh` 检查会立即显示请求正在等待部署管理工作流启动；请继续等待该工作流完成。
 3. 确认构建、部署、就绪、健康检查和提交版本校验均成功。
 4. 在能够访问配置的私有网络的机器上打开生成的 URL。请阅读[预览访问说明](ops/install/access.md)了解 DNS、hosts 文件、WSL、`18080` 端口和 `/health` 检查。
-5. 关闭或合并拉取请求，等待清理工作流删除对应的预览 Namespace。
+5. 关闭或合并拉取请求。PR 会立即显示清理正在进行；清理工作流确认 Namespace 删除前，预览 URL 可能短暂保持可访问，确认后才停止路由。
 
 ## 使用预览
 
@@ -324,7 +324,7 @@ Token 文件和 PreviewMesh Kubernetes Namespace/RBAC 不属于三档默认内�
 | 镜像推送或拉取失败 | 检查构建工作流的 GitHub package 写权限、`GHCR_READ_TOKEN` 和预览 Namespace 使用的 `ghcr-pull` Secret。 |
 | 就绪或 HTTP 验证失败 | 检查 Deployment、Pod、Service、Traefik、配置的 hostname 和 `/health` 响应。请使用[预览访问说明](ops/install/access.md)。 |
 | `status` 没有可用 URL | 证据可能仍在等待、已经失败、已过期，或属于旧提交。检查最新工作流并重新运行预览。`status` 不会探测 URL。 |
-| PR 关闭后预览仍存在 | 等待 closed-PR 通知和控制工作流。如果派发失败，修复后手动重试清理路径。 |
+| PR 关闭后预览仍存在 | PR 中的“清理进行中”评论会说明这段短暂过渡；等待 closed-PR 通知和控制工作流。如果派发失败，修复后手动重试清理路径。 |
 | WSL 访问中断 | 重新运行 `init` 确认当前 Windows 主机局域网地址，然后重新运行 `install`。查看[手动 WSL 和访问说明](ops/install/access.md)。 |
 
 Runner 权限请看 [Kubernetes 访问说明](ops/kubernetes/README.md)。完整手动安装请看[手动安装参考](ops/install/manual.md)。生命周期和恢复细节请看[预览生命周期验证](ops/verification/preview-lifecycle.md)。

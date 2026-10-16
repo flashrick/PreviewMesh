@@ -54,7 +54,7 @@ Keep the public checkout, private deployment-management checkout, and applicatio
 | Isolated previews | Creates a predictable, owned Kubernetes namespace and release for each registered repository and pull request. |
 | Trusted eligibility | Checks the registered repository ID and name, current pull request state, same-repository head and base, and author write access. Fork pull requests are rejected. |
 | Runtime verification | Waits for the workload and ingress, then requires HTTP 200 with `status: "ok"` and the expected `commit_sha` from `/health`. |
-| Pull-request feedback | Publishes a commit status, a result comment when permitted, and an **Open preview** URL for a verified deployment. |
+| Pull-request feedback | Publishes an immediate pending check; when a PR closes, it adds an idempotent cleanup-in-progress comment before dispatch, then publishes the terminal result and **Open preview** URL for a verified deployment. |
 | Cleanup | Removes the owned preview after a pull request closes or merges, with inspection and bounded retry paths for recovery. |
 
 ## How it works
@@ -221,7 +221,7 @@ The command submits only `.github/workflows/previewmesh-notify.yml`; it does not
 2. After the application notification workflow succeeds, the `PreviewMesh` check immediately shows that the request is waiting for the deployment-management workflow to start; wait for that workflow to finish.
 3. Confirm the build, deployment, readiness, health, and commit-revision checks succeed.
 4. Open the generated URL from a machine that can reach the configured private network. Follow the [preview access guide](ops/install/access.md) for DNS, hosts-file, WSL, port `18080`, and `/health` checks.
-5. Close or merge the pull request and wait for the cleanup workflow to remove its preview namespace.
+5. Close or merge the pull request. The PR immediately shows that cleanup is in progress; the preview URL may remain available briefly, then stops routing after the cleanup workflow confirms namespace removal.
 
 ## Use a preview
 
@@ -326,7 +326,7 @@ The application workflow uses `PREVIEWMESH_DISPATCH_TOKEN` to notify the private
 | Image push or pull fails | Check GitHub package write access for the build workflow, `GHCR_READ_TOKEN`, and the `ghcr-pull` Secret used by the preview namespace. |
 | Readiness or HTTP verification fails | Check Deployment, Pod, Service, Traefik, the configured hostname, and the `/health` response. Use the [preview access guide](ops/install/access.md). |
 | `status` has no usable URL | Evidence may be pending, failed, expired, or associated with an older commit. Inspect the latest workflow and rerun the preview. `status` does not probe the URL. |
-| A preview remains after PR closure | Wait for the closed-PR notification and control workflow. If dispatch failed, fix it and manually retry the cleanup path. |
+| A preview remains after PR closure | The PR's cleanup-in-progress comment explains the short transition while the closed-PR notification and control workflow run. If dispatch failed, fix it and manually retry the cleanup path. |
 | WSL access stops working | Rerun `init` to confirm the current Windows host LAN address, then rerun `install`. Review the [manual WSL and access guidance](ops/install/access.md). |
 
 For runner permissions, see [Kubernetes access](ops/kubernetes/README.md). For a full manual setup, see [manual installation](ops/install/manual.md). For lifecycle and recovery details, see [preview lifecycle verification](ops/verification/preview-lifecycle.md).
