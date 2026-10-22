@@ -16,6 +16,8 @@
   <img src="assets/previewmesh-flow.svg" alt="PreviewMesh workflow: an eligible pull request becomes an exact commit, immutable image, isolated K3s preview, verified health response, and cleaned-up environment." width="100%">
 </div>
 
+PreviewMesh gives every pull request its own local preview environment. When a pull request changes, it builds the exact version and creates an isolated preview link on the local development cluster. Product, QA, and business teams can try the feature before it is merged, without waiting for someone to set up a test environment. When the review is finished, PreviewMesh cleans up the environment automatically. This makes feedback faster and reduces maintenance work and wasted resources.
+
 PreviewMesh creates a temporary application URL on a private development network for eligible pull requests. It builds the exact source commit, publishes an immutable image, deploys it to K3s, verifies `/health` and the served commit SHA, reports the result to the pull request, and removes the preview when the pull request closes.
 
 > [!WARNING]
