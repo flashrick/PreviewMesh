@@ -20,3 +20,4 @@ __pycache__/
 /config/.runner-*
 /config/setup.local.ini
 /config/setup.local.*.ini
+/.playwright-mcp/

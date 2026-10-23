@@ -225,6 +225,14 @@ The command submits only `.github/workflows/previewmesh-notify.yml`; it does not
 4. Open the generated URL from a machine that can reach the configured private network. Follow the [preview access guide](ops/install/access.md) for DNS, hosts-file, WSL, port `18080`, and `/health` checks.
 5. Close or merge the pull request. The PR immediately shows that cleanup is in progress; the preview URL may remain available briefly, then stops routing after the cleanup workflow confirms namespace removal.
 
+### Deployment wait time
+
+Deployment is asynchronous. A successful source notification, a dispatched workflow, or a `pending`/`queued` PreviewMesh check only means that the request was accepted or is waiting; it does not mean that the preview is ready. Wait for the control workflow to finish and for the status to become `ready` before opening the URL.
+
+The wait varies with workflow queueing, image build and push, image pull, K3s scheduling, Pod/Service/Ingress readiness, and `/health` verification. The CLI uses a five-minute default timeout per external operation and a one-minute HTTP verification deadline. These are safety limits for individual steps, not an end-to-end deployment estimate or SLA.
+
+If the check remains `pending` or `queued`, inspect the control workflow and keep waiting. If it becomes `failure`, inspect the failed stage and its workflow log before retrying; do not treat a timeout as proof that the application itself is unhealthy.
+
 ## Use a preview
 
 The normal development loop is:

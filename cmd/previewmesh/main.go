@@ -117,6 +117,54 @@ type runner struct {
 	r result
 }
 
+const commandDiagnosticLimit = 4096
+
+// boundedOutput prevents a noisy external tool from filling the result artifact.
+type boundedOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	remaining := commandDiagnosticLimit - b.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = b.Buffer.Write(p[:remaining])
+			b.truncated = true
+		} else {
+			_, _ = b.Buffer.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	// Report the complete write to the command so it can continue safely after the cap.
+	return len(p), nil
+}
+
+// commandDiagnostic redacts known credentials before exposing tool stderr in evidence.
+func commandDiagnostic(output string, truncated bool) string {
+	for _, key := range []string{
+		"SOURCE_TOKEN", "PREVIEWMESH_GHCR_TOKEN", "PUBLISH_TOKEN", "GITHUB_TOKEN",
+		"GH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "RUNNER_TOKEN",
+	} {
+		if secret := os.Getenv(key); len(secret) >= 4 {
+			output = strings.ReplaceAll(output, secret, "<REDACTED>")
+		}
+	}
+	output = strings.Join(strings.Fields(output), " ")
+	if output == "" {
+		return ""
+	}
+	if len(output) > commandDiagnosticLimit {
+		output = output[:commandDiagnosticLimit]
+		truncated = true
+	}
+	if truncated {
+		output += " [truncated]"
+	}
+	return output
+}
+
 // identity builds the stable namespace and Helm release name for a preview.
 func identity(repoID, pr string) (string, error) {
 	// Validate before composing the name so aliases cannot create another identity.
@@ -252,15 +300,22 @@ func (x *runner) run(input []byte, command string, args ...string) ([]byte, erro
 		c.Stdin = bytes.NewReader(input)
 	}
 	var output bytes.Buffer
+	var stderr boundedOutput
 	c.Stdout = &output
 	if command == "docker" {
 		// The build result is read from the metadata file, not Docker's stdout.
 		c.Stdout = io.Discard
 	}
-	c.Stderr = io.Discard
+	c.Stderr = &stderr
 	if err := c.Run(); err != nil {
-		// External logs may contain credentials or application output; retain them only at their source.
+		diagnostic := commandDiagnostic(stderr.String(), stderr.truncated)
+		if diagnostic != "" {
+			err = fmt.Errorf("%w: %s", err, diagnostic)
+		}
 		if ctx.Err() != nil {
+			if diagnostic != "" {
+				return nil, fmt.Errorf("%s timed out: %w: %s", command, ctx.Err(), diagnostic)
+			}
 			return nil, fmt.Errorf("%s timed out: %w", command, ctx.Err())
 		}
 		return nil, fmt.Errorf("%s failed: %w", command, err)

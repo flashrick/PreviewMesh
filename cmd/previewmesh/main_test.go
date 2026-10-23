@@ -544,6 +544,25 @@ func TestInheritedPipeDoesNotDefeatTimeout(t *testing.T) {
 	}
 }
 
+// TestCommandFailureKeepsRedactedDiagnostics makes Kubernetes failures actionable.
+func TestCommandFailureKeepsRedactedDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf '%s\\n' 'forbidden: secret-token' >&2\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PREVIEWMESH_GHCR_TOKEN", "secret-token")
+	x := runner{o: options{timeout: time.Second}}
+	_, err := x.run(nil, "kubectl", "apply", "-f", "-")
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("stderr diagnostic missing: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") || !strings.Contains(err.Error(), "<REDACTED>") {
+		t.Fatalf("stderr secret was not redacted: %v", err)
+	}
+}
+
 // TestUIDConflictCannotReportCleanupSuccess rejects deletion when the UID precondition fails.
 func TestUIDConflictCannotReportCleanupSuccess(t *testing.T) {
 	x := fakeTools(t, ownedNS(strings.Repeat("a", 40)), false)
