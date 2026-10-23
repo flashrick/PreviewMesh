@@ -22,10 +22,11 @@ import (
 )
 
 const (
-	userDefaultConfigEnv = "PREVIEWMESH_CONFIG"
-	userKubeconfigEnv    = "PREVIEWMESH_KUBECONFIG"
-	userIngressPort      = 18080
-	userLifecycleMaxAge  = 24 * time.Hour
+	userDefaultConfigEnv  = "PREVIEWMESH_CONFIG"
+	userKubeconfigEnv     = "PREVIEWMESH_KUBECONFIG"
+	userIngressPort       = 18080
+	userLifecycleMaxAge   = 24 * time.Hour
+	userKubernetesTimeout = time.Minute
 )
 
 var (
@@ -255,9 +256,11 @@ Run 'previewmesh help COMMAND' for command-specific help.
 	case "ps":
 		_, err := io.WriteString(out, `Usage: previewmesh ps [--json] [--all] [--config PATH] [--kubeconfig PATH]
 
-List live PreviewMesh namespaces. Without --all, only resources belonging to
-the configured control repository are shown. GitHub lifecycle evidence is
-displayed separately from the live Kubernetes runtime state.
+By default, list previews for registered sources and exclude resources known
+to belong to another control repository. Unknown ownership remains visible
+for diagnosis. Use --all to include all managed preview namespaces.
+GitHub lifecycle evidence is displayed separately from the live Kubernetes
+runtime state.
 `)
 		return err
 	case "inspect":
@@ -518,7 +521,12 @@ func runUserRM(args []string, out, errOut io.Writer, input io.Reader) error {
 		return userError(2, "PR %s is still open; use --force to remove the preview", target.PR)
 	}
 	if !*yes {
-		confirmed, err := confirmRemoval(input, out, target.Namespace)
+		promptOut := out
+		if *asJSON {
+			// Keep machine-readable output separate from interactive confirmation.
+			promptOut = errOut
+		}
+		confirmed, err := confirmRemoval(input, promptOut, target.Namespace)
 		if err != nil {
 			return userError(2, "%v", err)
 		}
@@ -528,7 +536,9 @@ func runUserRM(args []string, out, errOut io.Writer, input io.Reader) error {
 	}
 	removed, err := r.removePreview(target, *ns)
 	if *asJSON {
-		_ = json.NewEncoder(out).Encode(removed)
+		if encodeErr := json.NewEncoder(out).Encode(removed); encodeErr != nil {
+			return errors.Join(err, encodeErr)
+		}
 	} else if err == nil {
 		fmt.Fprintf(out, "Removed preview %s.\n", target.Namespace)
 	}
@@ -542,7 +552,9 @@ func confirmRemoval(input io.Reader, out io.Writer, namespace string) (bool, err
 	if input == nil {
 		return false, errors.New("confirmation input is unavailable; use --yes")
 	}
-	fmt.Fprintf(out, "Remove preview %s? [y/N] ", namespace)
+	if _, err := fmt.Fprintf(out, "Remove preview %s? [y/N] ", namespace); err != nil {
+		return false, err
+	}
 	reader := bufio.NewReader(input)
 	answer, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -553,6 +565,12 @@ func confirmRemoval(input io.Reader, out io.Writer, namespace string) (bool, err
 }
 
 func printPreviewTable(out io.Writer, previews []userPreview) {
+	// Keep an empty result readable without an otherwise unused table header.
+	if len(previews) == 0 {
+		fmt.Fprintln(out, "(no previews)")
+		fmt.Fprintln(out, "Open a pull request in a registered application repository to create a preview.")
+		return
+	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSOURCE\tPR\tRUNTIME\tLIFECYCLE\tCONTROL\tREADY\tURL\tSHA")
 	for _, preview := range previews {
@@ -568,9 +586,6 @@ func printPreviewTable(out io.Writer, previews []userPreview) {
 			userDisplay(preview.Name), userDisplay(preview.SourceRepository), userDisplay(preview.PR),
 			userDisplay(preview.RuntimeState), userDisplay(preview.LifecycleState), userDisplay(preview.Control), preview.ReadyReplicas,
 			preview.DesiredReplicas, userDisplay(urlText), userDisplay(sha))
-	}
-	if len(previews) == 0 {
-		fmt.Fprintln(w, "(no previews)")
 	}
 	_ = w.Flush()
 }
@@ -619,7 +634,8 @@ func printHealth(out io.Writer, health userHealth) {
 	fmt.Fprintln(out, "URL:", userDisplay(health.URL))
 	fmt.Fprintln(out, "HTTP status:", health.HTTPStatus)
 	fmt.Fprintln(out, "Application status:", userDisplay(health.Status))
-	fmt.Fprintln(out, "Commit SHA:", health.CommitSHA)
+	// Health responses are application-controlled and must remain plain terminal text.
+	fmt.Fprintln(out, "Commit SHA:", userDisplay(health.CommitSHA))
 	fmt.Fprintln(out, "Healthy:", health.Healthy)
 	if health.Error != "" {
 		fmt.Fprintln(out, "Error:", userDisplay(health.Error))
@@ -837,6 +853,9 @@ func (r *userRuntime) kubectl(ctx context.Context, args ...string) ([]byte, erro
 	if r.config.Kubeconfig == "" {
 		return nil, errors.New("Runner kubeconfig is not configured")
 	}
+	// An unreachable cluster must not leave an interactive command waiting forever.
+	ctx, cancel := context.WithTimeout(ctx, userKubernetesTimeout)
+	defer cancel()
 	return r.run(ctx, "kubectl", append([]string{"--kubeconfig", r.config.Kubeconfig}, args...)...)
 }
 
@@ -933,14 +952,27 @@ func (r *userRuntime) previewFromNamespace(ctx context.Context, namespace userNa
 	}
 	var deployment, service, ingress *userResource
 	var pods []userResource
+	// A preview has one release; ambiguous resources cannot establish its ownership.
 	for i := range resources.Items {
 		item := &resources.Items[i]
 		switch strings.ToLower(item.Kind) {
 		case "deployment":
+			if deployment != nil {
+				preview.RuntimeState = "unknown"
+				return preview, errors.New("ambiguous runtime resources: more than one Deployment in the preview Namespace")
+			}
 			deployment = item
 		case "service":
+			if service != nil {
+				preview.RuntimeState = "unknown"
+				return preview, errors.New("ambiguous runtime resources: more than one Service in the preview Namespace")
+			}
 			service = item
 		case "ingress":
+			if ingress != nil {
+				preview.RuntimeState = "unknown"
+				return preview, errors.New("ambiguous runtime resources: more than one Ingress in the preview Namespace")
+			}
 			ingress = item
 		case "pod":
 			pods = append(pods, *item)
@@ -971,6 +1003,7 @@ func (r *userRuntime) previewFromNamespace(ctx context.Context, namespace userNa
 	} else {
 		preview.RuntimeService = "unavailable"
 	}
+	// Only advertise a route actually observed in the Ingress, never a guessed host.
 	if ingress != nil && len(ingress.Spec.Rules) > 0 {
 		hosts := make([]string, 0, len(ingress.Spec.Rules))
 		for _, rule := range ingress.Spec.Rules {
@@ -984,9 +1017,6 @@ func (r *userRuntime) previewFromNamespace(ctx context.Context, namespace userNa
 		}
 	} else {
 		preview.RuntimeIngress = "unavailable"
-	}
-	if preview.URL == "" && namespace.Metadata.Name != "" && r.config.DomainSuffix != "" {
-		preview.URL = "http://" + namespace.Metadata.Name + "." + r.config.DomainSuffix + ":" + strconv.Itoa(userIngressPort)
 	}
 	preview.Control = r.controlMatch(image, repoID)
 	preview.RuntimeState = classifyUserRuntime(desired, ready, pods, deployment != nil)
@@ -1197,13 +1227,20 @@ func (r *userRuntime) probeHealth(parent context.Context, previewURL string, tim
 		health.Error = "cannot create health request"
 		return health
 	}
-	response, err := r.httpClient.Do(request)
+	// Redirects can lead to another application and must not establish preview health.
+	client := *r.httpClient
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(request)
 	if err != nil {
 		health.Error = "HTTP request failed"
 		return health
 	}
 	defer response.Body.Close()
 	health.HTTPStatus = response.StatusCode
+	if response.StatusCode != http.StatusOK {
+		health.Error = fmt.Sprintf("health endpoint returned HTTP %d; expected HTTP 200 with status ok", response.StatusCode)
+		return health
+	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if err != nil {
 		health.Error = "cannot read health response"

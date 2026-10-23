@@ -3,6 +3,9 @@
 import contextlib
 import io
 import os
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -43,6 +46,159 @@ class FakeQuestionary:
 
 
 class SetupUITests(unittest.TestCase):
+    def test_wizard_rejects_invalid_subnet_before_collecting_credentials(self):
+        """An invalid subnet must be rejected while network answers are still active."""
+        class StopAfterSubnet(Exception):
+            pass
+
+        calls = []
+        outer = self
+
+        class WizardPrompts:
+            def __init__(self, language):
+                self.language = language
+
+            @staticmethod
+            def text(en, zh):
+                return en
+
+            def say(self, en, zh):
+                pass
+
+            def section(self, *args):
+                pass
+
+            def summary(self, *args):
+                pass
+
+            def choose(self, en, zh, candidates, validate=None, default=None):
+                if en.startswith("Installation environment"):
+                    return "ubuntu"
+                return candidates[0] if candidates else "owner/app"
+
+            def ask(self, en, zh, default="", validate=None, **kwargs):
+                calls.append(en)
+                if en == "Allowed client subnet":
+                    outer.assertIsNotNone(validate, "allowed subnet validator was not wired to the prompt")
+                    retry_message = kwargs.get("retry_message", "")
+                    outer.assertIn("private IPv4 network", retry_message)
+                    for invalid in ("not-a-network", "203.0.113.0/24", "192.168.1.20/24", "192.168.2.0/24"):
+                        with outer.assertRaises((ValueError, setup_wizard.SetupError, OSError)):
+                            validate(invalid)
+
+                    class ScriptedUI:
+                        def __init__(self):
+                            self.answers = iter(("192.168.2.0/24", "192.168.1.0/24"))
+                            self.lines = 0
+                            self.messages = []
+
+                        def line(self, prompt, default=""):
+                            self.lines += 1
+                            return next(self.answers)
+
+                        def message(self, message):
+                            self.messages.append(message)
+
+                    scripted = ScriptedUI()
+                    value = setup_wizard.ask(
+                        en, default, validate, language="en", ui=scripted,
+                        retry_message=retry_message)
+                    outer.assertEqual(str(value), "192.168.1.0/24")
+                    outer.assertEqual(scripted.lines, 2)
+                    outer.assertEqual(len(scripted.messages), 1)
+                    outer.assertNotIn("192.168.2.0/24", scripted.messages[0])
+                    outer.assertIn("auto", scripted.messages[0])
+                    outer.assertEqual(validate("auto"), "auto")
+                    raise StopAfterSubnet()
+                return str(default) or "/tmp/previewmesh-value"
+
+            def confirm(self, *args, **kwargs):
+                return False
+
+        with tempfile.TemporaryDirectory(prefix="previewmesh-subnet-test-") as directory:
+            root = Path(directory)
+            config = root / "setup.ini"
+            config.write_text("placeholder\n")
+            with patch.object(setup_wizard, "Prompts", WizardPrompts), \
+                 patch.object(setup_wizard, "discover_repositories", return_value=["owner/control"]), \
+                 patch.object(setup_wizard, "discover_lan", return_value=["192.168.1.20"]):
+                with self.assertRaises(StopAfterSubnet):
+                    setup_wizard.run_wizard(config, root, language="en", load_existing=False)
+
+        self.assertIn("Allowed client subnet", calls)
+        self.assertFalse(any("token" in value.lower() for value in calls[calls.index("Allowed client subnet") + 1:]))
+
+    def test_wizard_uses_loaded_defaults_for_multiple_repository_and_lan_candidates(self):
+        """Enter should keep existing repository/IP choices when discovery finds several values."""
+        class StopAfterLAN(Exception):
+            pass
+
+        previous = SimpleNamespace(
+            control_dir="/tmp/previewmesh-control",
+            control="owner/control",
+            public="owner/previewmesh",
+            lan_ip="192.168.1.20",
+            subnet="auto",
+            domain_suffix="auto",
+            dispatch_file="/tmp/dispatch.token",
+            ghcr_file="/tmp/ghcr.token",
+            sources=[],
+        )
+        choices = {}
+        outer = self
+
+        class WizardPrompts:
+            def __init__(self, language):
+                self.language = language
+
+            @staticmethod
+            def text(en, zh):
+                return en
+
+            def say(self, en, zh):
+                pass
+
+            def section(self, *args):
+                pass
+
+            def summary(self, *args):
+                pass
+
+            def ask(self, en, zh, default="", validate=None):
+                return str(default) or "/tmp/previewmesh-value"
+
+            def choose(self, en, zh, candidates, validate=None, default=None):
+                choices[en] = default
+                if en == "Deployment management repository (private)":
+                    outer.assertEqual(default, previous.control)
+                    return previous.control
+                if en == "PreviewMesh code repository (public)":
+                    outer.assertEqual(default, previous.public)
+                    return previous.public
+                if en.startswith("Installation environment"):
+                    return "ubuntu"
+                if en == "Preview server LAN IPv4":
+                    outer.assertEqual(default, previous.lan_ip)
+                    raise StopAfterLAN()
+                return candidates[0] if candidates else "owner/app"
+
+            def confirm(self, *args, **kwargs):
+                return False
+
+        with tempfile.TemporaryDirectory(prefix="previewmesh-default-test-") as directory:
+            root = Path(directory)
+            config = root / "setup.ini"
+            config.write_text("placeholder\n")
+            with patch.object(setup_wizard, "Prompts", WizardPrompts), \
+                 patch.object(setup_wizard, "load_config", return_value=previous), \
+                 patch.object(setup_wizard, "discover_repositories", return_value=["other/control", "owner/control"]), \
+                 patch.object(setup_wizard, "discover_lan", return_value=["192.168.1.20", "192.168.1.21"]):
+                with self.assertRaises(StopAfterLAN):
+                    setup_wizard.run_wizard(config, root, language="en", load_existing=True)
+
+        self.assertEqual(choices["Deployment management repository (private)"], previous.control)
+        self.assertEqual(choices["Preview server LAN IPv4"], previous.lan_ip)
+
     def test_redirected_and_ci_streams_disable_terminal_controls(self):
         ui = setup_ui.TerminalUI()
         self.assertFalse(ui.interactive)

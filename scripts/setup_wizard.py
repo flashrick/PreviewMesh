@@ -131,7 +131,7 @@ def port_available(port):
         return False
 
 
-def ask(label, default='', validate=None, *, language='en', ui=None):
+def ask(label, default='', validate=None, *, language='en', ui=None, retry_message=None):
     ui = ui or TerminalUI()
     while True:
         answer = ui.line(label, safe(str(default)))
@@ -144,8 +144,8 @@ def ask(label, default='', validate=None, *, language='en', ui=None):
                 raise ValueError()
             return validate(answer) if validate else answer
         except (SetupError, ValueError, OSError):
-            ui.message('输入无效，请重试或输入 q 退出。' if language == 'zh-CN'
-                       else 'Invalid value; retry or q to exit.')
+            ui.message(retry_message or ('输入无效，请重试或输入 q 退出。' if language == 'zh-CN'
+                                        else 'Invalid value; retry or q to exit.'))
 
 
 def confirm(label, *, language='en', default=False, ui=None):
@@ -195,8 +195,9 @@ class Prompts:
     def section(self, number, en_title, zh_title, en_body='', zh_body=''):
         self.ui.section(number, 5, self.text(en_title, zh_title), self.text(en_body, zh_body))
 
-    def ask(self, en, zh, default='', validate=None):
-        return ask(self.text(en, zh), default, validate, language=self.language, ui=self.ui)
+    def ask(self, en, zh, default='', validate=None, *, retry_message=None):
+        return ask(self.text(en, zh), default, validate, language=self.language, ui=self.ui,
+                   retry_message=retry_message)
 
     def choose(self, en, zh, candidates, validate=None, default=None):
         return choose(self.text(en, zh), candidates, validate, language=self.language,
@@ -362,7 +363,8 @@ def run_wizard(path, root, *, language=None, load_existing=None):
            '已有仓库需包含 PreviewMesh 部署工具，且你的账号需有管理权限。\n'
            '实际应用仓库稍后在“应用”步骤填写。')
     ui.say('If discovery is empty, use OWNER/NAME from the GitHub repository page.', '没有发现候选仓库时，请从 GitHub 仓库页面填写“用户名或组织名/仓库名”。')
-    control = ui.choose('Deployment management repository (private)', '部署管理仓库（私有）', repos, validate_repo)
+    control = ui.choose('Deployment management repository (private)', '部署管理仓库（私有）', repos, validate_repo,
+                        default=previous.control if previous else None)
     current_repos = discover_repositories(Path.cwd())
     template_repos = ([previous.public] if previous else [])
     if Path.cwd().resolve() == Path(root).resolve():
@@ -379,7 +381,8 @@ def run_wizard(path, root, *, language=None, load_existing=None):
            '通常使用 flashrick/PreviewMesh；\n'
            '使用兼容的 PreviewMesh 分支仓库时才需要更改。')
     data['project'] = dict(control_repository=control, control_directory=control_dir,
-                           public_repository=ui.choose('PreviewMesh code repository (public)', 'PreviewMesh 代码仓库（公开）', template_repos, validate_repo),
+                           public_repository=ui.choose('PreviewMesh code repository (public)', 'PreviewMesh 代码仓库（公开）', template_repos, validate_repo,
+                                                       default=previous.public if previous else None),
                            language=language)
     ui.section(2, 'Preview access', '预览访问',
                'Choose the server address, allowed client network and preview domain.',
@@ -416,7 +419,8 @@ def run_wizard(path, root, *, language=None, load_existing=None):
                f'已有配置中的局域网 IPv4：{previous.lan_ip}。\n'
                '下面也会列出这个地址，供你核对。')
         ips.insert(0, previous.lan_ip)
-    data['network'] = dict(lan_ip=ui.choose('Preview server LAN IPv4', '预览服务器的局域网 IPv4', ips, private_ip))
+    data['network'] = dict(lan_ip=ui.choose('Preview server LAN IPv4', '预览服务器的局域网 IPv4', ips, private_ip,
+                                          default=previous.lan_ip if previous else None))
     ui.say('The allowed subnet limits which client addresses can access previews.\n'
            'auto uses the actual network and prefix length of the interface\n'
            'with your selected LAN IPv4.\n'
@@ -425,7 +429,22 @@ def run_wizard(path, root, *, language=None, load_existing=None):
            '允许访问的网段决定哪些客户端地址能打开预览。\n'
            'auto 会使用所选局域网 IPv4 所属网卡的实际网络和前缀长度。\n'
            '也可以填写包含该地址的私有 IPv4 网段，例如 192.168.1.0/24。')
-    data['network']['allowed_subnet'] = ui.ask('Allowed client subnet', '允许访问的客户端网段', previous.subnet if previous else 'auto')
+    def allowed_subnet(value):
+        # Catch network mistakes here, before the user fills in credentials and applications.
+        if value != 'auto':
+            network = ipaddress.IPv4Network(value, strict=True)
+            address = ipaddress.IPv4Address(data['network']['lan_ip'])
+            if not any(network.subnet_of(net) for net in RFC1918) or address not in network:
+                raise ValueError()
+        return value
+
+    data['network']['allowed_subnet'] = ui.ask(
+        'Allowed client subnet', '允许访问的客户端网段', previous.subnet if previous else 'auto', allowed_subnet,
+        retry_message=ui.text(
+            'Enter auto or a private IPv4 network containing the selected LAN address, '
+            'such as 192.168.1.0/24 (use the network address, not a host address); q exits.',
+            '请输入 auto 或包含所选局域网地址的私有 IPv4 网段，例如 192.168.1.0/24'
+            '（使用网络地址，而不是主机地址）；输入 q 退出。'))
     ui.say('The domain suffix is the end of each preview hostname,\n'
            'allowing different pull requests to have their own URLs.',
            '域名后缀是每个预览域名的结尾，\n'
@@ -490,7 +509,8 @@ def run_wizard(path, root, *, language=None, load_existing=None):
                'after the notification workflow is merged.',
                '填写这个应用的 GitHub 仓库，例如 your-name/your-app。\n'
                '通知工作流合并后，该仓库的拉取请求（PR）会触发预览。')
-        application = dict(repository=ui.choose('Application repository', '应用源码仓库', repos, validate_repo),
+        application = dict(repository=ui.choose('Application repository', '应用源码仓库', repos, validate_repo,
+                                                default=old.repository if old else None),
                            directory=directory, port=application_port(directory, old.port if old else None, language=language))
         ui.say('The application access token lets deployment automation read this repository\n'
                'and update its pull request feedback.\n'
