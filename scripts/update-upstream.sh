@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Pull generic PreviewMesh changes into a customer control repository.
-# The script deliberately creates a review branch and never pushes it.
+# The default mode creates a review branch; direct mode updates main locally.
 
 usage() {
   cat <<'EOF'
@@ -14,6 +14,9 @@ Options:
   --url URL         upstream Git URL when the remote does not exist
   --ref BRANCH      upstream branch to fetch (default: main)
   --branch NAME     update branch name (default: generated)
+  --direct          update the current main branch instead of creating a branch
+  --validate        run control-repository checks before committing a direct update
+  --push            push a direct update to origin (requires --direct)
   -h, --help        show this help
 EOF
 }
@@ -34,6 +37,9 @@ upstream_remote="upstream"
 upstream_url=""
 upstream_ref="main"
 update_branch=""
+direct_update=false
+validate_update=false
+push_update=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,6 +68,18 @@ while [[ $# -gt 0 ]]; do
       update_branch=$2
       shift 2
       ;;
+    --direct)
+      direct_update=true
+      shift
+      ;;
+    --validate)
+      validate_update=true
+      shift
+      ;;
+    --push)
+      push_update=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -82,6 +100,16 @@ cd "$repo_root"
 base_branch=$(git branch --show-current)
 [[ -n "$base_branch" ]] || die "the repository is in detached HEAD state"
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || die "working tree must be clean"
+[[ "$push_update" == false || "$direct_update" == true ]] || die "--push requires --direct"
+[[ "$validate_update" == false || "$direct_update" == true ]] || die "--validate requires --direct"
+
+if [[ "$direct_update" == true ]]; then
+  [[ "$base_branch" == "main" ]] || die "--direct must run on the main branch"
+  git remote get-url origin >/dev/null 2>&1 || die "origin remote is required for --direct"
+  # Bring the private control branch current before applying public changes.
+  git pull --ff-only origin "$base_branch"
+  [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || die "working tree must be clean after pulling origin"
+fi
 
 if git remote get-url "$upstream_remote" >/dev/null 2>&1; then
   configured_url=$(git remote get-url "$upstream_remote")
@@ -92,6 +120,12 @@ else
   git remote add "$upstream_remote" "$upstream_url"
   resolved_upstream_url=$upstream_url
   printf 'Added remote %s: %s\n' "$upstream_remote" "$upstream_url"
+fi
+
+if [[ "$push_update" == true ]]; then
+  origin_push_url=$(git remote get-url --push origin)
+  upstream_push_url=$(git remote get-url --push "$upstream_remote")
+  [[ "$origin_push_url" != "$upstream_push_url" ]] || die "origin and upstream must use different push URLs"
 fi
 
 git fetch --no-tags "$upstream_remote" "$upstream_ref"
@@ -105,13 +139,15 @@ if git merge-base --is-ancestor "$target_ref" "$base_branch"; then
   exit 0
 fi
 
-if [[ -z "$update_branch" ]]; then
+if [[ "$direct_update" == false && -z "$update_branch" ]]; then
   safe_ref=${upstream_ref//[^A-Za-z0-9._-]/-}
   update_branch="update/previewmesh-${safe_ref}-$(date -u +%Y%m%d%H%M%S)"
 fi
 
-git show-ref --verify --quiet "refs/heads/$update_branch" && die "branch already exists: $update_branch"
-git switch -c "$update_branch" >/dev/null
+if [[ "$direct_update" == false ]]; then
+  git show-ref --verify --quiet "refs/heads/$update_branch" && die "branch already exists: $update_branch"
+  git switch -c "$update_branch" >/dev/null
+fi
 
 merge_mode="normal"
 if git merge-base "$base_branch" "$target_ref" >/dev/null 2>&1; then
@@ -120,7 +156,9 @@ if git merge-base "$base_branch" "$target_ref" >/dev/null 2>&1; then
     unexpected_conflicts=$(printf '%s\n' "$conflicts" | sed '/^$/d; /^config\/repositories\.json$/d')
     if [[ -n "$unexpected_conflicts" ]]; then
       git merge --abort || true
-      git switch "$base_branch" >/dev/null
+      if [[ "$direct_update" == false ]]; then
+        git switch "$base_branch" >/dev/null
+      fi
       die "merge conflicts require manual review:\n$unexpected_conflicts"
     fi
   fi
@@ -153,11 +191,25 @@ fi
 git add -A
 if git diff --cached --quiet; then
   git merge --abort || true
-  git switch "$base_branch" >/dev/null
+  if [[ "$direct_update" == false ]]; then
+    git switch "$base_branch" >/dev/null
+  fi
   printf 'No customer-visible changes were found.\n'
   emit_output "updated=false"
   emit_output "branch="
   exit 0
+fi
+
+if [[ "$validate_update" == true ]]; then
+  printf 'Validating the direct control-repository update before committing.\n'
+  if ! go test ./... ||
+    ! go vet ./... ||
+    ! python3 scripts/check-workflow.py ||
+    ! python3 scripts/check-github-secrets.py ||
+    ! python3 scripts/check-onboard-source.py; then
+    git merge --abort || true
+    die "control-repository validation failed; the main branch was not updated"
+  fi
 fi
 
 if [[ "$merge_mode" == "history-bridge" ]]; then
@@ -167,7 +219,20 @@ else
 fi
 
 new_sha=$(git rev-parse HEAD)
-printf 'Created %s at %s from %s (%s).\n' "$update_branch" "$new_sha" "$target_ref" "$target_sha"
-printf 'Review the diff, run local checks, then push the branch and open a PR.\n'
-emit_output "updated=true"
-emit_output "branch=$update_branch"
+target_branch=${update_branch:-$base_branch}
+printf 'Created %s at %s from %s (%s).\n' "$target_branch" "$new_sha" "$target_ref" "$target_sha"
+if [[ "$direct_update" == true ]]; then
+  printf 'Updated %s directly.\n' "$base_branch"
+  if [[ "$push_update" == true ]]; then
+    git push origin "$base_branch"
+    printf 'Pushed %s to origin.\n' "$base_branch"
+  else
+    printf 'Review the diff and push %s when ready.\n' "$base_branch"
+  fi
+  emit_output "updated=true"
+  emit_output "branch=$base_branch"
+else
+  printf 'Review the diff, run local checks, then push the branch and open a PR.\n'
+  emit_output "updated=true"
+  emit_output "branch=$update_branch"
+fi

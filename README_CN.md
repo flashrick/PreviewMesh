@@ -402,6 +402,8 @@ scripts/update-upstream.sh --remote upstream --ref main
 
 推送更新分支或创建 PR 前，先审核变更并运行本地检查。更新器会保留私有仓库的应用注册信息，不会自动更新已经发布到应用仓库的通知工作流。合并更新后，如果本机管理文件需要刷新，请重新运行 `install`。
 
+如果希望由运维人员用一条命令直接更新，请在 private control checkout 中运行 `scripts/sync-previewmesh.sh`。如果该脚本还没有同步到 control checkout，可以先从公开 PreviewMesh checkout 运行 `scripts/sync-previewmesh.sh --repo-dir /path/to/previewmesh-control`。它会先将 `main` 快进到 `origin`，再获取 `upstream/main`，保留 `config/repositories.json`，运行 control 仓库检查，并且只在检查通过后推送 `main`。运行前必须保持工作树干净。
+
 </details>
 
 ## 相关文档

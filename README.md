@@ -412,6 +412,8 @@ scripts/update-upstream.sh --remote upstream --ref main
 
 Review the update branch and run local verification before pushing it or opening a pull request. The updater preserves the private repository's application registrations and does not update already-published application notification workflows automatically. Rerun `install` after merging an update when local managed files need refreshing.
 
+For an operator-controlled one-command update, run `scripts/sync-previewmesh.sh` from the private control checkout. If the helper has not been synchronized into that checkout yet, run this copy once with `--repo-dir /path/to/previewmesh-control`. It fast-forwards `main` from `origin`, fetches `upstream/main`, preserves `config/repositories.json`, runs the control-repository checks, and pushes `main` only after validation succeeds. The working tree must be clean.
+
 </details>
 
 ## Related documentation
