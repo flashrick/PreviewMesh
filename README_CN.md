@@ -391,18 +391,46 @@ go build -o "$CONTROL_DIR/bin/previewmesh" ./cmd/previewmesh
 <details>
 <summary>更新私有部署管理 checkout</summary>
 
-请在私有 checkout 中运行更新，而不是在公开源代码目录中运行。先审核或暂存本地改动：
+引导式 `init`/`install` 流程会创建或恢复私有部署管理 checkout。后续升级请继续使用这个 checkout，并与公开源代码 checkout 分开。将 `CONTROL_DIR` 设为它的本地路径，切换到 `main`，然后先审核或暂存本地改动：
 
 ~~~bash
+CONTROL_DIR=/path/to/previewmesh-control
+cd "$CONTROL_DIR"
 git switch main
 git pull --ff-only origin main
 git status --short
 scripts/update-upstream.sh --remote upstream --ref main
 ~~~
 
-推送更新分支或创建 PR 前，先审核变更并运行本地检查。更新器会保留私有仓库的应用注册信息，不会自动更新已经发布到应用仓库的通知工作流。合并更新后，如果本机管理文件需要刷新，请重新运行 `install`。
+更新器的默认模式会获取公开 `main` 分支并创建审核分支，不会提交或推送到 `main`。如果缺少 `upstream` remote，脚本会自动添加公开 PreviewMesh 仓库。请审核生成的分支，并在推送分支、创建 PR 前运行控制仓库更新工作流使用的检查：
 
-如果希望由运维人员用一条命令直接更新，请在 private control checkout 中运行 `scripts/sync-previewmesh.sh`。如果该脚本还没有同步到 control checkout，可以先从公开 PreviewMesh checkout 运行 `scripts/sync-previewmesh.sh --repo-dir /path/to/previewmesh-control`。它会先将 `main` 快进到 `origin`，再获取 `upstream/main`，保留 `config/repositories.json`，运行 control 仓库检查，并且只在检查通过后推送 `main`。运行前必须保持工作树干净。
+~~~bash
+git diff --check
+go test ./...
+go vet ./...
+python3 scripts/check-workflow.py
+python3 scripts/check-github-secrets.py
+python3 scripts/check-onboard-source.py
+git push --set-upstream origin "$(git branch --show-current)"
+~~~
+
+更新器会保留私有仓库中 `config/repositories.json` 的应用注册信息；GitHub secrets 位于 Git 之外，不会被修改。它不会自动更新已经发布到应用仓库的通知工作流。合并更新后，如果本机管理文件需要刷新，请重新运行 `install`。
+
+如果希望由运维人员用一条命令直接更新，请在私有 checkout 中运行：
+
+~~~bash
+cd "$CONTROL_DIR"
+scripts/sync-previewmesh.sh
+~~~
+
+如果该辅助脚本还没有同步到这个 checkout，可以先从公开 PreviewMesh checkout 运行一次，并用 `--repo-dir` 指向私有 checkout：
+
+~~~bash
+/path/to/PreviewMesh/scripts/sync-previewmesh.sh --repo-dir "$CONTROL_DIR"
+~~~
+
+直接更新模式要求当前分支为 `main` 且工作树干净。它会先将 `main` 快进到 `origin`，再获取 `upstream/main`，保留 `config/repositories.json`，运行控制仓库检查，并且只在检查通过后推送 `main`。如果需要创建 PR，或客户改动需要审核，请使用审核分支模式。
+
 
 </details>
 

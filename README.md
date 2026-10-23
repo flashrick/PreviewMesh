@@ -401,18 +401,45 @@ Use `"$CONTROL_DIR/bin/control"` and `"$CONTROL_DIR/bin/previewmesh"` from the p
 <details>
 <summary>Update a private deployment-management checkout</summary>
 
-Run updates from the private checkout, not this public source directory. Review or stash local changes first:
+The guided `init`/`install` flow creates or resumes the private deployment-management checkout. Use that existing checkout for later upgrades; keep it separate from this public source checkout. Set `CONTROL_DIR` to its local path, switch to `main`, and review or stash local changes first:
 
 ~~~bash
+CONTROL_DIR=/path/to/previewmesh-control
+cd "$CONTROL_DIR"
 git switch main
 git pull --ff-only origin main
 git status --short
 scripts/update-upstream.sh --remote upstream --ref main
 ~~~
 
-Review the update branch and run local verification before pushing it or opening a pull request. The updater preserves the private repository's application registrations and does not update already-published application notification workflows automatically. Rerun `install` after merging an update when local managed files need refreshing.
+The default updater mode fetches the public `main` branch and creates a review branch; it does not commit to or push `main`. If the `upstream` remote is missing, the script adds the public PreviewMesh repository automatically. Review the generated branch, then run the same checks used by the control repository's update workflow before pushing it and opening a pull request:
 
-For an operator-controlled one-command update, run `scripts/sync-previewmesh.sh` from the private control checkout. If the helper has not been synchronized into that checkout yet, run this copy once with `--repo-dir /path/to/previewmesh-control`. It fast-forwards `main` from `origin`, fetches `upstream/main`, preserves `config/repositories.json`, runs the control-repository checks, and pushes `main` only after validation succeeds. The working tree must be clean.
+~~~bash
+git diff --check
+go test ./...
+go vet ./...
+python3 scripts/check-workflow.py
+python3 scripts/check-github-secrets.py
+python3 scripts/check-onboard-source.py
+git push --set-upstream origin "$(git branch --show-current)"
+~~~
+
+The updater preserves the private repository's application registrations in `config/repositories.json`; GitHub secrets are outside Git and are not changed. It does not update already-published application notification workflows automatically. Rerun `install` after merging an update when local managed files need refreshing.
+
+For an operator-controlled one-command update, run this from the private checkout:
+
+~~~bash
+cd "$CONTROL_DIR"
+scripts/sync-previewmesh.sh
+~~~
+
+If the helper has not been synchronized into that checkout yet, run the public copy once with `--repo-dir` pointing at the private checkout:
+
+~~~bash
+/path/to/PreviewMesh/scripts/sync-previewmesh.sh --repo-dir "$CONTROL_DIR"
+~~~
+
+This direct mode requires `main` and a clean working tree. It fast-forwards `main` from `origin`, fetches `upstream/main`, preserves `config/repositories.json`, runs the control-repository checks, and pushes `main` only after validation succeeds. Review-mode upgrades are preferable when you need a pull request or customer-specific changes require review.
 
 </details>
 
