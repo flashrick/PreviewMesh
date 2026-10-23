@@ -117,28 +117,62 @@ type runner struct {
 	r result
 }
 
-const commandDiagnosticLimit = 4096
+const (
+	commandDiagnosticLimit  = 4096
+	commandDiagnosticMarker = " ... [middle output truncated] ... "
+	commandDiagnosticSuffix = " [truncated]"
+)
 
-// boundedOutput prevents a noisy external tool from filling the result artifact.
+// boundedOutput keeps the beginning and end of noisy tool output for diagnostics.
 type boundedOutput struct {
 	bytes.Buffer
+	tail      []byte
+	total     int
 	truncated bool
 }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
+	b.total += len(p)
 	remaining := commandDiagnosticLimit - b.Len()
 	if remaining > 0 {
 		if len(p) > remaining {
 			_, _ = b.Buffer.Write(p[:remaining])
-			b.truncated = true
 		} else {
 			_, _ = b.Buffer.Write(p)
 		}
-	} else if len(p) > 0 {
-		b.truncated = true
 	}
+	// Keep a rolling suffix so the final BuildKit or registry error survives.
+	combined := make([]byte, 0, len(b.tail)+len(p))
+	combined = append(combined, b.tail...)
+	combined = append(combined, p...)
+	if len(combined) > commandDiagnosticLimit {
+		combined = combined[len(combined)-commandDiagnosticLimit:]
+	}
+	b.tail = combined
+	b.truncated = b.total > commandDiagnosticLimit
 	// Report the complete write to the command so it can continue safely after the cap.
 	return len(p), nil
+}
+
+func (b *boundedOutput) String() string {
+	if !b.truncated {
+		return b.Buffer.String()
+	}
+	return string(b.Bytes()) + commandDiagnosticMarker + string(b.tail)
+}
+
+// compactDiagnostic bounds the final message while retaining both useful edges.
+func compactDiagnostic(output string, limit int) string {
+	if len(output) <= limit || limit <= 0 {
+		return output
+	}
+	if limit <= len(commandDiagnosticMarker) {
+		return output[:limit]
+	}
+	budget := limit - len(commandDiagnosticMarker)
+	head := budget / 2
+	tail := budget - head
+	return output[:head] + commandDiagnosticMarker + output[len(output)-tail:]
 }
 
 // commandDiagnostic redacts known credentials before exposing tool stderr in evidence.
@@ -155,12 +189,16 @@ func commandDiagnostic(output string, truncated bool) string {
 	if output == "" {
 		return ""
 	}
-	if len(output) > commandDiagnosticLimit {
-		output = output[:commandDiagnosticLimit]
+	if len(output) > commandDiagnosticLimit-len(commandDiagnosticSuffix) {
 		truncated = true
 	}
+	limit := commandDiagnosticLimit
 	if truncated {
-		output += " [truncated]"
+		limit -= len(commandDiagnosticSuffix)
+	}
+	output = compactDiagnostic(output, limit)
+	if truncated {
+		output += commandDiagnosticSuffix
 	}
 	return output
 }

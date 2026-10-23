@@ -563,6 +563,41 @@ func TestCommandFailureKeepsRedactedDiagnostics(t *testing.T) {
 	}
 }
 
+// TestCommandFailureKeepsHeadAndTailDiagnostics keeps the final BuildKit cause visible.
+func TestCommandFailureKeepsHeadAndTailDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "docker")
+	script := `#!/bin/sh
+printf '%s\n' 'buildkit: starting image export' >&2
+i=0
+while [ "$i" -lt 5000 ]; do
+  printf 'x' >&2
+  i=$((i + 1))
+done
+printf '%s\n' 'failed to push image: denied: token=registry-secret' >&2
+exit 1
+`
+	if err := os.WriteFile(tool, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PUBLISH_TOKEN", "registry-secret")
+	x := runner{o: options{timeout: time.Second}}
+	_, err := x.run(nil, "docker", "buildx", "build")
+	if err == nil || !strings.Contains(err.Error(), "buildkit: starting image export") {
+		t.Fatalf("stderr head diagnostic missing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to push image: denied: token=<REDACTED>") {
+		t.Fatalf("stderr tail diagnostic missing: %v", err)
+	}
+	if strings.Contains(err.Error(), "registry-secret") {
+		t.Fatalf("stderr tail secret was not redacted: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("truncation marker missing: %v", err)
+	}
+}
+
 // TestUIDConflictCannotReportCleanupSuccess rejects deletion when the UID precondition fails.
 func TestUIDConflictCannotReportCleanupSuccess(t *testing.T) {
 	x := fakeTools(t, ownedNS(strings.Repeat("a", 40)), false)
