@@ -1,76 +1,46 @@
+<div align="center">
+
 # PreviewMesh
 
-<div align="center">
-  <p><strong>Private pull-request previews with exact-commit verification, K3s isolation, and automatic cleanup.</strong></p>
-  <p>
-    <a href="README_CN.md">中文说明</a> ·
-    <a href="#quick-start">Quick start</a> ·
-    <a href="#how-it-works">How it works</a> ·
-    <a href="#verify-a-change">Verify a change</a>
-  </p>
-  <p>
-    <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.25 or newer"></a>
-    <a href="charts/preview/Chart.yaml"><img src="https://img.shields.io/badge/Helm-3-0F1689?logo=helm&logoColor=white" alt="Helm 3"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license"></a>
-  </p>
-  <img src="assets/previewmesh-flow.svg" alt="PreviewMesh workflow: an eligible pull request becomes an exact commit, immutable image, isolated K3s preview, verified health response, and cleaned-up environment." width="100%">
+**Private pull-request previews with exact-commit verification, K3s isolation, and automatic cleanup.**
+
+[![Go 1.25 or newer](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Helm 3](https://img.shields.io/badge/Helm-3-0F1689?logo=helm&logoColor=white)](charts/preview/Chart.yaml)
+[![MIT license](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
+
+[Features](#features) · [How it works](#how-it-works) · [Install](#install) · [Use a preview](#use-a-preview) · [Troubleshooting](#troubleshooting) · [中文说明](README_CN.md)
+
+<img src="assets/previewmesh-flow.svg" alt="PreviewMesh workflow: an eligible pull request becomes an exact commit, immutable image, isolated K3s preview, verified health response, and cleaned-up environment." width="100%">
+
 </div>
 
-PreviewMesh gives every pull request its own local preview environment. When a pull request changes, it builds the exact version and creates an isolated preview link on the local development cluster. Product, QA, and business teams can try the feature before it is merged, without waiting for someone to set up a test environment. When the review is finished, PreviewMesh cleans up the environment automatically. This makes feedback faster and reduces maintenance work and wasted resources.
+PreviewMesh gives every eligible pull request its own temporary preview on your private development network, so product, QA, and business teams can try a change before it merges without waiting for someone to set up a test environment.
 
-PreviewMesh creates a temporary application URL on a private development network for eligible pull requests. It builds the exact source commit, publishes an immutable image, deploys it to K3s, verifies `/health` and the served commit SHA, reports the result to the pull request, and removes the preview when the pull request closes.
+Each time a pull request changes, PreviewMesh builds that exact commit, publishes an immutable image, deploys it to K3s, checks that the running app reports the expected commit, and posts the link on the pull request. When the pull request closes, the preview is removed.
 
 > [!WARNING]
 > This is the public PreviewMesh code repository. Keep the deployment-management repository created from it private. Never commit GitHub tokens, kubeconfigs, real repository registrations, private URLs, or runtime evidence here.
 
-## Quick links
+## Features
 
-- [Quick start](#quick-start)
-- [What you get](#what-you-get)
-- [How it works](#how-it-works)
-- [Project map](#project-map)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Use a preview](#use-a-preview)
-- [Operate and troubleshoot](#operate-and-troubleshoot)
-- [Verify a change](#verify-a-change)
-- [Update the control repository](#update-control-repository)
-- [Advanced reference](#advanced-reference)
-- [Related documentation](#related-documentation)
-
-## Quick start
-
-Use the guided installer to create or update the private deployment-management checkout. Run it from this public PreviewMesh checkout:
-
-~~~bash
-bash scripts/setup.sh init
-bash scripts/setup.sh install --config /path/to/setup.ini
-~~~
-
-Keep the public checkout, private deployment-management checkout, and application checkout in separate directories. If you are evaluating a change rather than installing infrastructure, run [Verify a change](#verify-a-change) instead.
-
-## What you get
-
-| Capability | Behavior |
-| --- | --- |
-| Exact revisions | Builds the pull request's full commit SHA and deploys the resulting image by immutable digest. |
-| Isolated previews | Creates a predictable, owned Kubernetes namespace and release for each registered repository and pull request. |
-| Trusted eligibility | Checks the registered repository ID and name, current pull request state, same-repository head and base, and author write access. Fork pull requests are rejected. |
-| Runtime verification | Waits for the workload and ingress, then requires HTTP 200 with `status: "ok"` and the expected `commit_sha` from `/health`. |
-| Pull-request feedback | Publishes an immediate pending check; when a PR closes, it adds an idempotent cleanup-in-progress comment before dispatch, then publishes the terminal result and **Open preview** URL for a verified deployment. |
-| Cleanup | Removes the owned preview after a pull request closes or merges, with inspection and bounded retry paths for recovery. |
+- **Exact revisions:** builds the pull request's full commit SHA and deploys the image by immutable digest.
+- **Isolated previews:** gives each registered repository and pull request a predictable, owned Kubernetes namespace and release.
+- **Trusted eligibility:** checks the registered repository ID and name, the current pull request state, same-repository head and base, and author write access. Fork pull requests are rejected.
+- **Runtime verification:** waits for the workload and ingress, then requires HTTP 200 from `/health` with `status: "ok"` and the expected `commit_sha`.
+- **Pull-request feedback:** publishes a pending check right away, then the final result and an **Open preview** link once a deployment is verified.
+- **Automatic cleanup:** removes the owned preview when a pull request closes or merges, with inspection and bounded retry paths for recovery.
 
 ## How it works
 
-PreviewMesh uses three separate repository roles:
+PreviewMesh separates three repository roles:
 
-| Repository role | Responsibility | Visibility |
+| Repository | Holds | Visibility |
 | --- | --- | --- |
-| PreviewMesh code repository | Reusable Go code, Helm chart, workflows, setup scripts, and public documentation. | Public |
-| Deployment-management repository | Trusted workflows, application registrations, Actions secrets, runner configuration, and the private control plane. | Private |
-| Application repository | Application code, a root `Dockerfile`, `/health`, and the notification workflow. | Public or private |
+| **PreviewMesh code** (this repository) | Reusable Go code, Helm chart, workflows, setup scripts, and documentation. | Public |
+| **Deployment management** (also called the control repository) | Trusted workflows, application registrations, Actions secrets, runner configuration, and the control plane. | Private |
+| **Application** | Your code, a root `Dockerfile`, `/health`, and the notification workflow. | Public or private |
 
-The public repository is source code for creating or updating a private deployment-management repository. It is not the control plane, and an application repository must not be entered as the deployment-management repository.
+This repository is the source for creating or updating a deployment-management repository; it is not the control plane itself. Don't enter an application repository as the deployment-management repository.
 
 ~~~mermaid
 flowchart LR
@@ -85,105 +55,81 @@ flowchart LR
     A2[Close or merge PR] --> J[Remove owned namespace]
 ~~~
 
-Important boundaries:
-
-- The source notification workflow forwards metadata only; it does not check out or execute pull-request code.
-- Only applications registered in the private deployment-management repository are accepted.
-- Preview workflows remain disabled until the private repository sets `PREVIEWMESH_ENABLED=true`.
-- The self-hosted runner must use a restricted kubeconfig on a dedicated development cluster. Do not give it a cluster-admin kubeconfig.
-- The preview URL is private-network access, not public internet hosting.
-
-## Project map
-
-| Path | Responsibility |
-| --- | --- |
-| [`cmd/previewmesh/`](cmd/previewmesh/) | Lifecycle CLI for preflight, build, deploy, verify, status, and cleanup. |
-| [`cmd/control/`](cmd/control/) | Trusted repository registration, pull-request inspection, and GitHub reporting. |
-| [`.github/workflows/preview.yml`](.github/workflows/preview.yml) | Control-plane workflow that builds, deploys, verifies, and reports a preview. |
-| [`templates/source-notify.yml`](templates/source-notify.yml) | Metadata-only application workflow that notifies the private control repository. |
-| [`charts/preview/`](charts/preview/) | Helm chart for the preview Deployment, Service, Ingress, and namespace-scoped identity. |
-| [`scripts/`](scripts/) | Guided setup, onboarding, maintenance, evidence, and local verification tools. |
-| [`ops/kubernetes/`](ops/kubernetes/) | Restricted runner RBAC and Traefik configuration for the development cluster. |
+> [!IMPORTANT]
+> Keep these trust boundaries in place:
+>
+> - The notification workflow forwards metadata only. It never checks out or runs pull-request code.
+> - Only applications registered in the deployment-management repository are accepted.
+> - Preview workflows stay disabled until that repository sets `PREVIEWMESH_ENABLED=true`.
+> - The self-hosted runner must use a restricted kubeconfig on a dedicated development cluster, never a cluster-admin one.
+> - Preview URLs are for private-network access, not public internet hosting.
 
 ## Requirements
 
-The guided installer supports **Ubuntu 22.04 or 24.04 x64**, including those distributions on **WSL2 with systemd**. Use a normal Linux user with `sudo` access, a dedicated development K3s cluster, and a stable private LAN IPv4 address. WSL installations also require Windows administrator access for the LAN entry.
+**Host:** Ubuntu 22.04 or 24.04 x64, including on WSL2 with systemd. You need:
 
-You will need:
+- a normal Linux user with `sudo` access, plus Windows administrator access on WSL for the LAN entry;
+- a dedicated development K3s cluster and a stable private LAN IPv4 address;
+- access to the GitHub repositories involved, and an authenticated `gh` CLI when the installer asks for one;
+- separate, non-overlapping local directories for the public code, the deployment-management checkout, and each application checkout;
+- token files outside any Git checkout, readable only by their owner.
 
-- access to the GitHub repositories involved in the installation;
-- an authenticated `gh` CLI session when the installer or onboarding flow requests it;
-- separate local directories for the public code, private deployment-management checkout, and each application checkout;
-- token files outside Git checkouts, protected so only the owning user can read them.
-
-### Application contract
-
-Each registered application must provide:
+**Application:** each registered application must provide:
 
 | Requirement | Contract |
 | --- | --- |
 | Image | A root `Dockerfile` that builds for `linux/amd64`. |
-| Network | The application listens on `0.0.0.0` at its registered HTTP port. |
-| Runtime | The image is compatible with UID/GID `65532` and does not require extra Linux capabilities. |
+| Network | Listens on `0.0.0.0` at its registered HTTP port. |
+| Runtime | Compatible with UID/GID `65532`, with no extra Linux capabilities. |
 | Health endpoint | `GET /health` returns HTTP 200 and JSON containing `status: "ok"` and the runtime `PREVIEW_COMMIT_SHA`. |
-
-For example:
 
 ~~~json
 {"status":"ok","commit_sha":"the value of PREVIEW_COMMIT_SHA"}
 ~~~
 
-The preflight can inspect the Dockerfile and optionally run a temporary local container. Those checks do not prove a cluster deployment, ingress reachability, or application-level tests. The first real pull request verifies the complete path.
-
 ## Install
 
-Run the following from the public PreviewMesh checkout. The public checkout, private deployment-management checkout, and application checkouts must not overlap.
+The guided installer creates or updates the deployment-management repository and prepares the machine. For a step-by-step alternative, see the [manual installation reference](ops/install/manual.md).
 
 ### 1. Create the configuration
 
-The wizard stores the active configuration at `~/.config/previewmesh/setup.ini` by default. It stores token file paths, not token values.
-
 ~~~bash
+git clone https://github.com/flashrick/PreviewMesh.git
+cd PreviewMesh
 bash scripts/setup.sh init
 ~~~
 
-To use another location, pass it explicitly:
+The wizard asks for your repositories and local directories, application ports, token file paths, private LAN address, allowed subnet, preview domain suffix, and output language. It saves them to `~/.config/previewmesh/setup.ini`, storing token file paths rather than token values.
 
-~~~bash
-bash scripts/setup.sh init --config /path/to/setup.ini
-~~~
+To use another location, pass `--config /path/to/setup.ini` to every setup command. Add `--template` to `init` to get a commented template instead of the wizard.
 
-The wizard asks for the private deployment-management repository, its local checkout, the public PreviewMesh repository, application repositories and ports, token file paths, the private LAN address, the allowed subnet, the preview domain suffix, and the output language. Keep all repository roles and local directories separate.
-
-If `init` finds an existing PreviewMesh installation record or system service, it reports the detected traces and lets you choose one of three cumulative cleanup levels. The selected cleanup runs immediately, before the new configuration wizard starts. Level 1 resets only local installer settings and state. Level 2 also removes local PreviewMesh services and Runner files, while keeping K3s and the remote Runner registration. Level 3 also removes the configured local control/source checkouts, including dirty working-tree files, after path/origin safety checks and an explicit repository-delete confirmation. After that selected cleanup completes, `init` checks `~/.config/previewmesh/secrets/*.token` and asks whether those token files should also be removed. K3s, GitHub repositories, remote resources, and the new configuration are preserved. An existing Runner for another control repository is otherwise left running while the new install uses a separate local Runner directory.
-
-If you need a commented template without starting the interactive flow:
-
-~~~bash
-bash scripts/setup.sh init --template --config /path/to/setup.ini
-~~~
-
-Do not put a filled-in configuration or token values in this repository.
+> [!CAUTION]
+> If `init` finds an existing installation, it offers a cleanup that runs immediately and can delete local files, including local repository checkouts. Read [Clean up an installation](ops/install/cleanup.md) before choosing a level.
 
 ### 2. Install the control plane
 
 ~~~bash
-bash scripts/setup.sh install --config /path/to/setup.ini
+bash scripts/setup.sh install
 ~~~
 
-`install` prepares the tools, private deployment-management repository, GitHub secrets, K3s permissions, restricted runner, preview network entry, source-notification integration, and readiness checks. It is resumable; when a stage fails, fix the reported issue and rerun the same command.
+This prepares the tools, the deployment-management repository, GitHub secrets, K3s permissions, a restricted runner, the preview network entry, the source-notification workflow, and readiness checks. It is resumable: if a stage fails, fix the reported issue and rerun the same command.
 
-During the source-notification stage, `install` handles the local application workflow without publishing application changes:
+It also builds the CLI at `<control checkout>/bin/previewmesh`. That binary belongs to that checkout, so it is not installed globally or added to `PATH`.
 
-- If `.github/workflows/previewmesh-notify.yml` is missing, it creates it.
-- If the file is already the expected current template, it leaves it unchanged. If it is an exact recognized current or historical PreviewMesh template with values that need updating (or a previously installer-managed version), it upgrades the file and saves the old content beside it as `previewmesh-notify.yml.previewmesh.bak`.
-- If the file is custom, `install` preserves it and writes the complete current workflow to `previewmesh-notify.yml.previewmesh-proposed` plus `previewmesh-notify.yml.previewmesh.patch`. A custom workflow is a review case; it does not make the install stage fail.
+### 3. Publish the notification workflow
 
-You do not need to copy a patch line by line. For a custom workflow, review the complete proposed file and patch first, preserve any logic you intentionally want to keep in the tracked workflow, and then publish that reviewed workflow. `install` never commits, pushes, or merges application changes.
+`install` prepares `.github/workflows/previewmesh-notify.yml` in your local application checkout but never commits, pushes, or merges application changes:
 
-The `.previewmesh.bak`, `.previewmesh-proposed`, and `.previewmesh.patch` files are local review artifacts; unless you intentionally want to retain them, do not commit them to the application repository.
+| Existing file | What `install` does |
+| --- | --- |
+| None | Creates it. |
+| Current template | Leaves it unchanged. |
+| Recognized current or older template that needs new values, or a version the installer managed | Upgrades it and saves the old content as `previewmesh-notify.yml.previewmesh.bak`. |
+| Custom workflow | Keeps it and writes `previewmesh-notify.yml.previewmesh-proposed` and `previewmesh-notify.yml.previewmesh.patch` for review. The install stage still succeeds. |
 
-After reviewing the workflow, run this short sequence from the application checkout. For a newly created file, inspect the complete file before staging it:
+For a custom workflow, review the proposed file and patch, keep any logic you want in the tracked workflow, and publish that. The `.previewmesh.bak`, `.previewmesh-proposed`, and `.previewmesh.patch` files are local review artifacts, so don't commit them unless you mean to keep them.
+
+Inspect the workflow, then publish it from the application checkout:
 
 ~~~bash
 cd /path/to/application-checkout
@@ -196,178 +142,65 @@ git commit -m "Update PreviewMesh source notification"
 git push origin HEAD
 ~~~
 
-The `git add` command names only the workflow, so the local review artifacts are not staged. `git push origin HEAD` can publish directly when the current branch is the application's default branch. Otherwise, follow the repository's policy and open or update a pull request.
+`git add` names only the workflow, so review artifacts aren't staged. `git push origin HEAD` publishes directly only when you're on the application's default branch; otherwise, follow that repository's policy and open or update a pull request.
 
-The setup `install` command also builds the user-facing CLI at `<control checkout>/bin/previewmesh`. If `CONTROL_DIR` points to the private control checkout, use `"$CONTROL_DIR/bin/previewmesh"`; the binary is scoped to that checkout and its configuration. It is not installed globally, and a bare `previewmesh` command is not added to `PATH`.
+<details>
+<summary>Prefer a generated onboarding pull request?</summary>
 
-The installer prepares infrastructure. It does not rewrite application code or prove that an application can serve its preview. The [manual installation reference](ops/install/manual.md) explains each infrastructure step when the guided path is not suitable.
-
-### 3. Optional: prepare an onboarding PR with `onboard-source`
-
-The local review and commit flow above is the normal path. If you prefer a GitHub-generated PR containing only the notification workflow, `onboard-source` is an optional helper. Its default mode only prints the complete proposed change:
+`onboard-source` is an optional alternative. By default it only prints the complete proposed change. After reviewing it, add `--create-pr` to open a pull request:
 
 ~~~bash
-bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO
+bash scripts/setup.sh onboard-source --source OWNER/REPO
+bash scripts/setup.sh onboard-source --source OWNER/REPO --create-pr
 ~~~
 
-After reviewing that output, add `--create-pr` to create a dedicated onboarding pull request:
+It submits only the notification workflow and doesn't merge the pull request or change other application code. Merge it on the default branch before creating a test preview.
 
-~~~bash
-bash scripts/setup.sh onboard-source --config /path/to/setup.ini --source OWNER/REPO --create-pr
-~~~
+</details>
 
-The command submits only `.github/workflows/previewmesh-notify.yml`; it does not merge the PR or modify other application code. Review or edit the PR as needed, preserve any intentional custom logic, and merge it on the application's default branch before creating a test preview.
+### 4. Create your first preview
 
-### 4. Create the first preview
+1. Open a pull request from a branch in the registered application repository to its default branch. Don't use a fork.
+2. Wait for the deployment-management workflow to finish. The `PreviewMesh` check shows that the request is waiting as soon as the notification workflow succeeds.
+3. Confirm the build, deployment, readiness, health, and commit checks succeed.
+4. Open the generated URL from a machine on the private network. The [preview access guide](ops/install/access.md) covers DNS, hosts files, WSL, port `18080`, and `/health` checks.
+5. Close or merge the pull request. The pull request shows that cleanup is in progress, and the URL may keep working briefly until the namespace removal is confirmed.
 
-1. Create a normal pull request from a branch in the registered application repository to its default branch. Do not use a fork.
-2. After the application notification workflow succeeds, the `PreviewMesh` check immediately shows that the request is waiting for the deployment-management workflow to start; wait for that workflow to finish.
-3. Confirm the build, deployment, readiness, health, and commit-revision checks succeed.
-4. Open the generated URL from a machine that can reach the configured private network. Follow the [preview access guide](ops/install/access.md) for DNS, hosts-file, WSL, port `18080`, and `/health` checks.
-5. Close or merge the pull request. The PR immediately shows that cleanup is in progress; the preview URL may remain available briefly, then stops routing after the cleanup workflow confirms namespace removal.
-
-### Deployment wait time
-
-Deployment is asynchronous. A successful source notification, a dispatched workflow, or a `pending`/`queued` PreviewMesh check only means that the request was accepted or is waiting; it does not mean that the preview is ready. Wait for the control workflow to finish and for the status to become `ready` before opening the URL.
-
-The wait varies with workflow queueing, image build and push, image pull, K3s scheduling, Pod/Service/Ingress readiness, and `/health` verification. The CLI uses a five-minute default timeout per external operation and a one-minute HTTP verification deadline. These are safety limits for individual steps, not an end-to-end deployment estimate or SLA.
-
-If the check remains `pending` or `queued`, inspect the control workflow and keep waiting. If it becomes `failure`, inspect the failed stage and its workflow log before retrying; do not treat a timeout as proof that the application itself is unhealthy.
+> [!NOTE]
+> The installer and its checks prepare infrastructure, but only a first real pull request proves the whole path. `check`, `doctor`, and the preflight don't prove a cluster deployment, ingress reachability, or application tests.
 
 ## Use a preview
-
-The normal development loop is:
 
 ~~~text
 push a branch -> open a same-repository PR -> wait for deployment -> review the private URL -> close or merge -> confirm cleanup
 ~~~
 
-To inspect a preview from the private deployment-management checkout, use the control-local CLI built by `install`:
+Deployment is asynchronous. A successful notification or a `pending` or `queued` check only means the request was accepted, so wait for the status to become `ready` before opening the URL. The wait depends on workflow queueing, image build and pull, K3s scheduling, and `/health` verification. The CLI's defaults of five minutes per external operation and one minute for HTTP verification are safety limits, not a deployment estimate.
+
+Inspect previews with the CLI from your deployment-management checkout:
 
 ~~~bash
 CONTROL_DIR=/path/to/previewmesh-control
-gh auth status
-"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123
-~~~
-
-For automation-friendly output:
-
-~~~bash
-"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123 --json
-~~~
-
-`status` reads the current pull-request state, `PreviewMesh` commit status, and structured workflow feedback through the authenticated `gh` CLI. It does not probe the preview URL, query Kubernetes, or perform a live health check. A `ready` result is based on complete, recent evidence for the current commit; after closure, `removed` confirms cleanup evidence.
-
-HTTP 200 alone is not enough. A successful application verification also requires `status: ok` and a `commit_sha` matching the exact source revision requested for that run.
-
-### User preview commands
-
-For everyday local operations, use the CLI from the private control checkout without remembering Kubernetes details. Set `CONTROL_DIR` to that checkout and use its explicit path; the installer does not provide a bare `previewmesh` command on `PATH`:
-
-~~~bash
-CONTROL_DIR=/path/to/previewmesh-control
-"$CONTROL_DIR/bin/previewmesh" help
 "$CONTROL_DIR/bin/previewmesh" ps
 "$CONTROL_DIR/bin/previewmesh" inspect 123
 "$CONTROL_DIR/bin/previewmesh" health 123
-"$CONTROL_DIR/bin/previewmesh" rm 123
+"$CONTROL_DIR/bin/previewmesh" status --repo OWNER/REPO --pr 123
 ~~~
 
-The tool reads the installed PreviewMesh configuration and current control-repository registry automatically. `ps` shows live Kubernetes runtime state and URLs; `inspect` combines runtime details with GitHub lifecycle evidence; `health` performs a live `/health` request. Use `--json` for scripts and `--all` to include resources that do not belong to the configured control repository.
-
-`rm` removes only an owned preview Namespace. It asks for confirmation, requires `--force` for an open pull request, and never changes the pull request itself. The existing `preflight`, `build`, `deploy`, `verify`, `cleanup`, `cleanup-inspect`, `cleanup-retry`, and `status` commands remain available for CI and advanced operations; invoke them with this control-local binary or with a separately built CI binary.
-
-## Operate and troubleshoot
-
-### Check and resume
-
-These setup commands are read-only checks:
-
-~~~bash
-# Read configuration and inspect prerequisites.
-bash scripts/setup.sh check --config /path/to/setup.ini
-
-# Inspect installed services, credentials, DNS and GitHub setup.
-bash scripts/setup.sh doctor --config /path/to/setup.ini
-~~~
-
-`--config` is a setup-script option. It selects the setup configuration; it does not create a separate installation state. `doctor` reports infrastructure readiness and pending onboarding work, but neither `check` nor `doctor` proves a successful application preview.
-
-If an old installation must be cleaned, use one of the cumulative cleanup levels and inspect the plan with `--dry-run` first:
-
-~~~bash
-# Level 1: setup.ini, its draft, and installer state only; keep services,
-# Runner files, repositories, and remote resources.
-bash scripts/setup.sh cleanup --level 1 --config /path/to/setup.ini --dry-run
-
-# Level 2: level 1 plus local Runner files and PreviewMesh systemd/ingress
-# services; keep K3s and the remote Runner registration.
-bash scripts/setup.sh cleanup --level 2 --config /path/to/setup.ini --dry-run
-
-# Level 3: level 2 plus configured local control/source Git checkouts.
-bash scripts/setup.sh cleanup --level 3 --config /path/to/setup.ini --dry-run
-~~~
-
-Remove `--dry-run` only after reviewing the plan. Level 2 does not uninstall K3s or delete the remote GitHub Runner registration; use the separate `--remote-runner` option only when that remote resource may be removed. In non-interactive mode, remote deletion additionally requires `--confirm-remote-runner`. On WSL, level 2 also removes the PreviewMesh Windows firewall rule, port forwarding, scheduled task, and `ProgramData\PreviewMesh` configuration. Level 3 removes only the configured local control/source Git checkouts. It does not delete GitHub repositories, Secrets, workflows, or other remote resources; a checkout with uncommitted, untracked, or ignored files requires explicit `--allow-dirty-repositories`. The public PreviewMesh checkout is always protected.
-
-Token files and PreviewMesh Kubernetes namespaces/RBAC are not included by default. Select them separately with `--include-credentials` and `--cluster`; `--cluster` also leaves K3s installed. The advanced `--select` interface remains available for independent items. Removing local Runner files while keeping the remote registration leaves that Runner offline, so use it only for a migration or an explicitly retired installation.
-
-Choose the highest level you need in one run. Do not run level 1 or 2 first and then expect level 3 to discover the old source paths after `setup.ini` has been removed.
-
-### Configuration and credential boundaries
-
-| Location | Purpose | Handling |
+| Command | Source | What it tells you |
 | --- | --- | --- |
-| Public PreviewMesh checkout | Reusable code, charts, workflows, templates, and safe examples. | Public; never add real registrations, credentials, or runtime evidence. |
-| Private deployment-management checkout | Trusted workflows and `config/repositories.json` registrations. | Keep private and commit registrations only there. |
-| `~/.config/previewmesh/setup.ini` | Per-user repository, directory, network, port, and token-path settings. | Keep outside Git and owner-readable; it stores references, not token contents. |
-| `~/.local/share/previewmesh/install-state.json` | Per-account installation checkpoints and ownership state. | Keep outside Git and owner-readable; do not delete it to bypass a control-repository mismatch. |
-| Token files | Application, dispatch, and GHCR credentials. | Keep outside Git with owner-only permissions. |
+| `ps` | Kubernetes | Live runtime state and URLs. Add `--all` to include previews from other control repositories. |
+| `inspect TARGET` | Kubernetes and GitHub | Runtime details together with lifecycle evidence. |
+| `health TARGET` | Live HTTP request | The current `/health` response. A healthy response alone doesn't prove the lifecycle is `ready`. |
+| `status --repo OWNER/REPO --pr N` | GitHub, through `gh` | `ready` from complete, recent evidence for the current commit, or `removed` from cleanup evidence. It doesn't probe the URL or query Kubernetes. |
+| `rm TARGET` | Kubernetes | Removes one owned preview namespace after confirmation (`--yes` skips the prompt). An open pull request also requires `--force`. The pull request itself is never changed. |
 
-The application workflow uses `PREVIEWMESH_DISPATCH_TOKEN` to notify the private deployment-management repository. The private repository stores source-repository secrets and `GHCR_READ_TOKEN`. The installer explains the required scopes and destinations; never copy those values into this public checkout.
-
-### Troubleshooting
-
-| Symptom | First checks |
-| --- | --- |
-| No application notification | Confirm the workflow is on the application default branch, Actions is enabled, and the onboarding PR was merged. Fork PRs are intentionally skipped. |
-| Deployment jobs are skipped | Set `PREVIEWMESH_ENABLED=true` in the private deployment-management repository and dispatch its `main` workflow. |
-| The `local` job stays queued | Check that the private repository's self-hosted runner is online and has `self-hosted`, `Linux`, `X64`, and `previewmesh` labels. |
-| Registration or authorization fails | Compare the private registration's repository ID and owner/name. The PR must be in that repository and its author must have write access. |
-| Image push or pull fails | Check GitHub package write access for the build workflow, `GHCR_READ_TOKEN`, and the `ghcr-pull` Secret used by the preview namespace. |
-| Readiness or HTTP verification fails | Check Deployment, Pod, Service, Traefik, the configured hostname, and the `/health` response. Use the [preview access guide](ops/install/access.md). |
-| `status` has no usable URL | Evidence may be pending, failed, expired, or associated with an older commit. Inspect the latest workflow and rerun the preview. `status` does not probe the URL. |
-| A preview remains after PR closure | The PR's cleanup-in-progress comment explains the short transition while the closed-PR notification and control workflow run. If dispatch failed, fix it and manually retry the cleanup path. |
-| WSL access stops working | Rerun `init` to confirm the current Windows host LAN address, then rerun `install`. Review the [manual WSL and access guidance](ops/install/access.md). |
-
-For runner permissions, see [Kubernetes access](ops/kubernetes/README.md). For a full manual setup, see [manual installation](ops/install/manual.md). For lifecycle and recovery details, see [preview lifecycle verification](ops/verification/preview-lifecycle.md).
-
-## Verify a change
-
-Run the repository's canonical local verification from the public checkout:
-
-~~~bash
-bash scripts/verify-local.sh
-~~~
-
-It checks the Go code, workflow and setup fixtures, Python validation, Bash syntax, the Helm chart, and GitHub Actions workflow syntax. It does not deploy an application or require access to GitHub, GHCR, K3s, the private network, or application credentials.
-
-For focused checks, use:
-
-~~~bash
-go test ./...
-go vet ./...
-helm lint charts/preview
-~~~
-
-## Advanced reference
+`TARGET` can be a pull request number, `source#PR`, `owner/name#PR`, or a preview name. Add `--json` for scripts.
 
 <details>
-<summary>Direct CLI lifecycle</summary>
+<summary>Advanced: direct CLI lifecycle</summary>
 
-The private deployment-management workflow is the recommended path because it rechecks pull-request state and handles superseded revisions and cleanup. The lower-level CLI commands are available for trusted control environments:
-
-Build both trusted command-line tools into the private control checkout with explicit paths:
+The deployment-management workflow is the recommended path because it rechecks pull-request state and handles superseded revisions and cleanup. These lower-level commands are for trusted control environments. Build both tools into the control checkout:
 
 ~~~bash
 CONTROL_DIR=/path/to/previewmesh-control
@@ -375,154 +208,90 @@ go build -o "$CONTROL_DIR/bin/control" ./cmd/control
 go build -o "$CONTROL_DIR/bin/previewmesh" ./cmd/previewmesh
 ~~~
 
-The companion `control` CLI validates trusted registrations and pull-request state before reporting to GitHub:
-
 | Command | Purpose |
 | --- | --- |
 | `control resolve` | Resolve one exact repository registration. |
 | `control inspect` | Validate the pull request, source repository, fork status, and author access. |
 | `control status` | Publish commit status and structured pull-request feedback. |
+| `previewmesh preflight` | Inspect an application checkout and optionally run a temporary local container. |
+| `previewmesh build` | Validate the exact checkout and publish an image for the control workflow. |
+| `previewmesh deploy` | Deploy an immutable image digest to an owned preview namespace. |
+| `previewmesh verify` | Wait for readiness and verify `/health` and the served revision. |
+| `previewmesh cleanup` | Remove an owned preview after a pull request closes. |
+| `previewmesh cleanup-inspect` | Collect ownership and cleanup state without deleting resources. |
+| `previewmesh cleanup-retry` | Retry cleanup using the original namespace identity. |
 
-The `previewmesh` CLI owns the deployment lifecycle:
-
-| Command | Purpose |
-| --- | --- |
-| `preflight` | Inspect an application checkout and optionally run a temporary local container check. |
-| `build` | Validate the exact checkout and publish an image for the control workflow. |
-| `deploy` | Deploy an immutable image digest to an owned preview namespace. |
-| `verify` | Wait for readiness and verify `/health` and the served revision. |
-| `cleanup` | Remove an owned preview after a pull request closes. |
-| `cleanup-inspect` | Collect ownership and cleanup state without deleting resources. |
-| `cleanup-retry` | Retry cleanup using the original namespace identity. |
-
-Use `"$CONTROL_DIR/bin/control"` and `"$CONTROL_DIR/bin/previewmesh"` from the private control checkout for the exact flags. Keep `previewmesh` control-local; it is not installed globally. Never pass private credentials through public documentation or shell history.
+Run `previewmesh <command> --help` for exact flags. Never pass private credentials through public documentation or shell history.
 
 </details>
+
+## Troubleshooting
+
+Start with the read-only setup checks. `check` validates the configuration and prerequisites, and `doctor` inspects installed services, credentials, DNS, GitHub setup, and pending onboarding work:
+
+~~~bash
+bash scripts/setup.sh check
+bash scripts/setup.sh doctor
+~~~
+
+| Symptom | First checks |
+| --- | --- |
+| No application notification | Confirm the workflow is on the application's default branch, Actions is enabled, and the onboarding pull request was merged. Fork pull requests are intentionally skipped. |
+| Deployment jobs are skipped | Set `PREVIEWMESH_ENABLED=true` in the deployment-management repository and dispatch its `main` workflow. |
+| The `local` job stays queued | Check that the self-hosted runner is online with the `self-hosted`, `Linux`, `X64`, and `previewmesh` labels. |
+| Registration or authorization fails | Compare the registered repository ID and owner/name. The pull request must be in that repository and its author must have write access. |
+| Image push or pull fails | Check GitHub package write access for the build workflow, `GHCR_READ_TOKEN`, and the `ghcr-pull` secret in the preview namespace. |
+| A check stays `pending` or `queued` | Inspect the control workflow and keep waiting. These states don't mean the preview failed. |
+| A check becomes `failure` | Read the failed stage and its workflow log before retrying. A timeout doesn't prove the application is unhealthy. |
+| Readiness or HTTP verification fails | Check the Deployment, Pod, Service, Traefik, the configured hostname, and the `/health` response. See the [preview access guide](ops/install/access.md). |
+| `status` has no usable URL | Evidence may be pending, failed, expired, or from an older commit. Inspect the latest workflow and rerun the preview. |
+| A preview remains after closing | The cleanup-in-progress comment explains the short transition. If dispatch failed, fix it and manually retry the cleanup path. |
+| WSL access stops working | Rerun `init` to confirm the current Windows host LAN address, then rerun `install`. See the [preview access guide](ops/install/access.md). |
+
+### Where configuration and credentials live
+
+| Location | Purpose | Handling |
+| --- | --- | --- |
+| PreviewMesh checkout | Reusable code, charts, workflows, templates, and safe examples. | Public. Never add real registrations, credentials, or runtime evidence. |
+| Deployment-management checkout | Trusted workflows and `config/repositories.json` registrations. | Private. Commit registrations only here. |
+| `~/.config/previewmesh/setup.ini` | Per-user repository, directory, network, port, and token-path settings. | Outside Git and owner-readable. Holds references, not token contents. |
+| `~/.local/share/previewmesh/install-state.json` | Per-account installation checkpoints and ownership state. | Outside Git and owner-readable. Don't delete it to bypass a control-repository mismatch. |
+| Token files | Application, dispatch, and GHCR credentials. | Outside Git with owner-only permissions. |
+
+The application workflow uses `PREVIEWMESH_DISPATCH_TOKEN` to notify the deployment-management repository, which stores the source-repository secrets and `GHCR_READ_TOKEN`. The installer explains the required scopes and destinations.
 
 <a id="update-control-repository"></a>
-<details>
-<summary>Update a private deployment-management checkout</summary>
 
-The guided `init`/`install` flow creates or resumes the private deployment-management checkout. Use that existing checkout for later upgrades; keep it separate from this public source checkout. Choose either the review-branch path or the direct-sync path below for each update; do not run both paths for the same update.
+## Update and clean up
 
-Review-branch path:
+- **Update:** [Update a private deployment-management checkout](ops/install/upgrade.md) describes two paths: a generated review branch and pull request (`scripts/update-upstream.sh`), or a validated direct push to `main` (`scripts/sync-previewmesh.sh`). Choose one per update. Both preserve your application registrations.
+- **Clean up:** [Clean up an installation](ops/install/cleanup.md) explains the three cumulative levels of `bash scripts/setup.sh cleanup`. Preview the plan first with `--dry-run`, and choose the highest level you need in one run.
 
-1. Enter the private deployment-management checkout, prepare `main`, and confirm that the working tree is clean. Run these commands in order:
+## Development
 
-   ~~~bash
-   # Enter the existing private deployment-management checkout.
-   # Prepare the local main branch.
-   git switch main
-   # This must print nothing before you pull.
-   git status --short
-   git pull --ff-only origin main
-   # This must print nothing before you continue.
-   git status --short
-   ~~~
-
-   If either `git status --short` command prints anything, stop and review, commit, or stash those changes. The updater requires a clean working tree.
-
-2. Run the default updater to create a review branch:
-
-   ~~~bash
-   # Stay in the private deployment-management checkout.
-   scripts/update-upstream.sh --remote upstream --ref main
-   ~~~
-
-   The default updater fetches the public `main` branch and creates a generated review branch; it does not commit to or push `main`. If the `upstream` remote is missing, the script adds the public PreviewMesh repository automatically. If it reports that the repository is already up to date, there is no branch to validate or publish.
-
-3. After the updater reports a generated branch, get its name and run the control-repository checks while that branch is checked out:
-
-   ~~~bash
-   # Stay on the generated review branch.
-   git branch --show-current
-   # Review the generated changes.
-   git diff --stat main...HEAD
-   # Run the required control-repository checks.
-   git diff --check main...HEAD
-   go test ./...
-   go vet ./...
-   python3 scripts/check-workflow.py
-   python3 scripts/check-github-secrets.py
-   python3 scripts/check-onboard-source.py
-   ~~~
-
-4. After every check passes, run the push and `gh pr create` commands in this order:
-
-   ~~~bash
-   # Stay on the generated review branch after validation passes.
-   git push --set-upstream origin "$(git branch --show-current)"
-   gh pr create \
-     --base main \
-     --head "$(git branch --show-current)" \
-     --title "chore: update PreviewMesh from upstream" \
-     --body "Review the upstream PreviewMesh changes before merging."
-   ~~~
-
-   If any validation command fails, do not run either the push or `gh pr create` command. Keep the branch local, fix or review the failure, and rerun the checks before publishing it.
-
-   Normally, `gh pr create` identifies the current private control repository from this checkout's GitHub `origin`. If it reports `no default remote repository has been set`, first check whether `origin` is missing or points to a different repository:
-
-   ~~~bash
-   git remote get-url origin
-   git remote -v
-   ~~~
-
-   Confirm that `origin` points to the private control repository target and that `upstream` points to the public PreviewMesh source. If `origin` is missing or incorrect, repair the remote first and run `git remote get-url origin` again.
-
-   One-time recovery for the first PR from this control checkout (only after the error above): if `origin` points to the correct private control repository and `gh pr create` still reports the same error, run this once, then rerun the `gh pr create` command in step 4:
-
-   ~~~bash
-   gh repo set-default origin
-   ~~~
-
-   ~~~bash
-   # After setting the default remote, run or retry this command.
-   gh pr create \
-     --base main \
-     --head "$(git branch --show-current)" \
-     --title "chore: update PreviewMesh from upstream" \
-     --body "Review the upstream PreviewMesh changes before merging."
-   ~~~
-
-   Do not repeat this recovery command for later updates. Use `--repo` only for troubleshooting or an intentional cross-repository operation; it is not part of the normal flow.
-
-   `gh pr create` creates the pull request only; it does not merge it. Keep the current generated `update/preview...` review branch checked out while the PR review and checks are pending. Do not switch to `main` or merge locally.
-
-   After the PR is merged on GitHub, return to the private control checkout and synchronize the local `main` branch:
-
-   ~~~bash
-   git switch main
-   git pull --ff-only origin main
-   ~~~
-
-   Removing the merged review branch locally or remotely is optional.
-
-The updater preserves the private repository's application registrations in `config/repositories.json`; GitHub secrets are outside Git and are not changed. It does not update already-published application notification workflows automatically. Rerun `install` after merging an update when local managed files need refreshing.
-
-Alternative direct-sync path:
-
-Use this one-command path instead of the review-branch path when the operator intends to update and push `main` directly. Do not run it after the review-branch path or combine both paths for the same update. It requires `main` and a clean working tree, fast-forwards `main` from `origin`, fetches `upstream/main`, preserves `config/repositories.json`, runs the control-repository checks, commits the update, and pushes `main` only after validation succeeds. It does not create a pull request.
-
-If the helper is already present in the private checkout, run:
+Run the canonical local verification from this checkout. It needs `git`, Go 1.25+, `python3` with PyYAML, Helm 3, and `actionlint`, but no access to GitHub, GHCR, K3s, the private network, or application credentials, and it doesn't deploy anything:
 
 ~~~bash
-# Run from the private deployment-management checkout.
-scripts/sync-previewmesh.sh
+bash scripts/verify-local.sh
 ~~~
 
-If the helper is not yet present in the private checkout, invoke the public copy directly against that checkout. This command is the direct-sync path itself; it is not a separate preparation step:
+It covers the Go code, workflow and setup fixtures, Python validation, Bash syntax, the Helm chart, and workflow syntax. For focused checks, run `go test ./...`, `go vet ./...`, or `helm lint charts/preview`.
 
-~~~bash
-# Run from the public PreviewMesh checkout.
-scripts/sync-previewmesh.sh --repo-dir /path/to/previewmesh-control
-~~~
+| Path | Responsibility |
+| --- | --- |
+| [`cmd/previewmesh/`](cmd/previewmesh/) | Lifecycle CLI for preflight, build, deploy, verify, status, and cleanup. |
+| [`cmd/control/`](cmd/control/) | Trusted repository registration, pull-request inspection, and GitHub reporting. |
+| [`.github/workflows/preview.yml`](.github/workflows/preview.yml) | Control-plane workflow that builds, deploys, verifies, and reports a preview. |
+| [`templates/source-notify.yml`](templates/source-notify.yml) | Metadata-only application workflow that notifies the control repository. |
+| [`charts/preview/`](charts/preview/) | Helm chart for the preview Deployment, Service, Ingress, and namespace-scoped identity. |
+| [`scripts/`](scripts/) | Guided setup, onboarding, maintenance, evidence, and local verification tools. |
+| [`ops/kubernetes/`](ops/kubernetes/) | Restricted runner RBAC and Traefik configuration for the development cluster. |
 
-</details>
+## Documentation
 
-## Related documentation
-
-- [Preview access](ops/install/access.md) — DNS, hosts files, WSL/LAN access, port `18080`, and `/health` verification.
-- [Manual installation](ops/install/manual.md) — infrastructure setup when the guided installer is not suitable.
-- [Kubernetes runner access](ops/kubernetes/README.md) — restricted kubeconfig and RBAC boundary.
-- [Preview lifecycle verification](ops/verification/preview-lifecycle.md) — operational lifecycle and cleanup checks.
+- [Preview access](ops/install/access.md): DNS, hosts files, WSL/LAN access, port `18080`, and `/health` verification.
+- [Manual installation](ops/install/manual.md): infrastructure setup when the guided installer isn't suitable.
+- [Update a deployment-management checkout](ops/install/upgrade.md): review-branch and direct-sync upgrades.
+- [Clean up an installation](ops/install/cleanup.md): cleanup levels and optional remote and cluster removal.
+- [Kubernetes runner access](ops/kubernetes/README.md): restricted kubeconfig and RBAC boundary.
+- [Preview lifecycle verification](ops/verification/preview-lifecycle.md): operational lifecycle and cleanup checks.
