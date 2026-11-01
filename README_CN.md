@@ -242,7 +242,7 @@ bash scripts/setup.sh doctor
 | 注册或授权失败 | 对照注册的仓库 ID 和 owner/name。PR 必须属于该仓库，作者必须具有写权限。 |
 | 镜像推送或拉取失败 | 检查构建工作流的 GitHub package 写权限、`GHCR_READ_TOKEN` 和预览 Namespace 中的 `ghcr-pull` Secret。 |
 | 检查一直处于 `pending` 或 `queued` | 查看控制工作流并继续等待。这些状态不代表预览失败。 |
-| 检查变为 `failure` | 重试前先查看失败阶段及其工作流日志。超时不能证明应用本身不健康。 |
+| 检查变为 `failure` | 重试前先查看 PR 评论 **Deployment checks** 中的失败阶段和错误信息，需要更多细节时再查看工作流日志。超时不能证明应用本身不健康。 |
 | 就绪或 HTTP 验证失败 | 检查 Deployment、Pod、Service、Traefik、配置的 hostname 和 `/health` 响应。请看[预览访问说明](ops/install/access.md)。 |
 | `status` 没有可用 URL | 证据可能仍在等待、已经失败、已过期，或属于旧提交。检查最新工作流并重新运行预览。 |
 | PR 关闭后预览仍存在 | “清理进行中”评论会说明这段短暂过渡。如果派发失败，修复后手动重试清理路径。 |

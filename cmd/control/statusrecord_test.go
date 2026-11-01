@@ -24,6 +24,8 @@ func TestReportStatusPublishesStructuredEvidence(t *testing.T) {
 		ServedSHA:            sha,
 		RevisionVerification: "success",
 		Result:               "success",
+		// Tool text belongs in the readable table, never the machine-readable record.
+		Error: "tool output stays out of the record",
 		StageTimings: []statusrecord.Timing{{
 			Stage: "readiness", StartedAtUTC: "2026-10-04T00:00:00Z", EndedAtUTC: "2026-10-04T00:00:01Z", DurationSeconds: 1, Result: "success",
 		}},
@@ -75,7 +77,10 @@ func TestReportStatusPublishesStructuredEvidence(t *testing.T) {
 	if err := json.Unmarshal([]byte(data[:end]), &record); err != nil {
 		t.Fatalf("structured evidence JSON: %v", err)
 	}
-	if strings.Contains(data[:end], "error") || strings.Contains(data[:end], "secret") {
+	if !strings.Contains(commentBody[:start], "| Error | tool output stays out of the record |") {
+		t.Fatalf("readable error missing: %q", commentBody)
+	}
+	if strings.Contains(data[:end], "error") || strings.Contains(data[:end], "tool output") || strings.Contains(data[:end], "secret") {
 		t.Fatalf("structured evidence contains a non-allowlisted field: %s", data[:end])
 	}
 	if record.StatusID != 51 || record.Repository != "owner/demo" || record.PR != "3" || record.SHA != sha || record.State != "success" || record.RunURL != runURL || record.URL != previewURL {

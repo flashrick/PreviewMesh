@@ -242,7 +242,7 @@ bash scripts/setup.sh doctor
 | Registration or authorization fails | Compare the registered repository ID and owner/name. The pull request must be in that repository and its author must have write access. |
 | Image push or pull fails | Check GitHub package write access for the build workflow, `GHCR_READ_TOKEN`, and the `ghcr-pull` secret in the preview namespace. |
 | A check stays `pending` or `queued` | Inspect the control workflow and keep waiting. These states don't mean the preview failed. |
-| A check becomes `failure` | Read the failed stage and its workflow log before retrying. A timeout doesn't prove the application is unhealthy. |
+| A check becomes `failure` | Read the failed stage and error under **Deployment checks** in the PR comment, then the workflow log if you need more detail, before retrying. A timeout doesn't prove the application is unhealthy. |
 | Readiness or HTTP verification fails | Check the Deployment, Pod, Service, Traefik, the configured hostname, and the `/health` response. See the [preview access guide](ops/install/access.md). |
 | `status` has no usable URL | Evidence may be pending, failed, expired, or from an older commit. Inspect the latest workflow and rerun the preview. |
 | A preview remains after closing | The cleanup-in-progress comment explains the short transition. If dispatch failed, fix it and manually retry the cleanup path. |

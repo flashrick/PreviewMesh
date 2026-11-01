@@ -2,9 +2,41 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"previewmesh/internal/statusrecord"
+	"regexp"
 	"strings"
 )
+
+// errorDisplayLimit bounds tool stderr in PR comments; it exceeds the normal cell limit
+// because the actionable part of a failure is often at the end of the output.
+const errorDisplayLimit = 1000
+
+var (
+	// Runners redact their own tokens, but a comment is the last boundary before readers,
+	// so also catch URL credentials and GitHub tokens the tools may have echoed.
+	urlCredentials = regexp.MustCompile(`://[^/\s@]+@`)
+	githubTokens   = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`)
+	// escapeCell neutralizes Markdown, HTML, mentions, and issue links in API or tool text.
+	escapeCell = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "|", "&#124;", "`", "&#96;", "*", "&#42;", "_", "&#95;", "[", "&#91;", "]", "&#93;", "\\", "&#92;", "@", "&#64;", "#", "&#35;", "\n", " ", "\r", " ")
+)
+
+// publicError redacts credentials, then keeps both ends of an oversized failure message.
+func publicError(value string) string {
+	if secret := os.Getenv("SOURCE_TOKEN"); len(secret) >= 4 {
+		value = strings.ReplaceAll(value, secret, "<REDACTED>")
+	}
+	value = urlCredentials.ReplaceAllString(value, "://<REDACTED>@")
+	value = githubTokens.ReplaceAllString(value, "<REDACTED>")
+	if len(value) > errorDisplayLimit {
+		const marker = " ... "
+		head := errorDisplayLimit / 4
+		tail := errorDisplayLimit - head - len(marker)
+		value = value[:head] + marker + value[len(value)-tail:]
+	}
+	// Byte slicing can split a multibyte character at either cut.
+	return strings.ToValidUTF8(value, "")
+}
 
 // reportEvidence contains only the observations intended for PR feedback.
 type reportEvidence struct {
@@ -19,6 +51,7 @@ type reportEvidence struct {
 	Rollback             string                `json:"rollback"`
 	Cleanup              string                `json:"cleanup"`
 	Result               string                `json:"result"`
+	Error                string                `json:"error"`
 	StageTimings         []statusrecord.Timing `json:"stage_timings"`
 }
 
@@ -31,7 +64,7 @@ func (e reportEvidence) markdown() string {
 		if len(value) > 500 {
 			value = value[:500]
 		}
-		return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "|", "&#124;", "`", "&#96;", "*", "&#42;", "_", "&#95;", "[", "&#91;", "]", "&#93;", "\\", "&#92;", "\n", " ", "\r", " ").Replace(value)
+		return escapeCell.Replace(value)
 	}
 	http := "not checked / no response"
 	if e.HTTPStatus != 0 {
@@ -48,6 +81,10 @@ func (e reportEvidence) markdown() string {
 	body := "\n<details>\n<summary><strong>Deployment checks</strong></summary>\n\n| Check | Observed result |\n| --- | --- |\n"
 	for _, row := range rows {
 		body += "| " + row[0] + " | " + cell(row[1]) + " |\n"
+		// Show the cause beside its stage; successful attempts have no error row.
+		if row[0] == "Failed stage" && e.Error != "" {
+			body += "| Error | " + escapeCell.Replace(publicError(e.Error)) + " |\n"
+		}
 	}
 	return body + "\nRuntime observations are a snapshot at the end of the attempt, after rollback if attempted. Service/Ingress presence alone does not establish reachability.\n\n</details>\n"
 }

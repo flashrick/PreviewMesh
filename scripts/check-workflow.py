@@ -143,6 +143,13 @@ elif args[:2] == ['get', 'secret']: sys.exit(0)
 elif args[0] == 'wait' and any(arg.startswith('--for=condition=PodScheduled') for arg in args): sys.exit(0)
 elif args[0] == 'wait' and args[1].startswith('--for=jsonpath='): sys.exit(0)
 elif args[:2] == ['rollout', 'status']: sys.exit(1)
+elif args[:2] == ['get', 'deployment'] and not any(arg.startswith('--request-timeout') for arg in args):
+    # Readiness resolves the current ReplicaSet; runtime observations pass a request timeout.
+    print(json.dumps({'metadata':{'generation':1, 'annotations':{'deployment.kubernetes.io/revision':'1'}}, 'status':{'observedGeneration':1}}))
+    sys.exit(0)
+elif args[:2] == ['get', 'replicasets']:
+    print(json.dumps({'items':[{'metadata':{'labels':{'pod-template-hash':'abc123'}, 'annotations':{'deployment.kubernetes.io/revision':'1'}}}]}))
+    sys.exit(0)
 elif args[0] == 'get' and args[1] in ['deployment', 'pods', 'service', 'ingress']:
     print('{}')
     sys.exit(0)
