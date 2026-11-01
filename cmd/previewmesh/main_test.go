@@ -189,7 +189,20 @@ func fakeTools(t *testing.T, nsJSON string, helmFail bool) *runner {
 	script := `#!/bin/sh
 # Record each fake command so tests can assert the orchestration order.
 printf '%s\n' "$*" >> "$CALLS"
+# A Pod check that still selects the replaced Pod loses it during the handoff.
+case "$*" in
+ wait*' pod -l '*) case "$*" in *pod-template-hash=new34*) ;; *) echo 'Error from server (NotFound): pods "old" not found' >&2; exit 1;; esac;;
+esac
 case "$1 $2" in
+ 'get deployment')
+  # Runtime observations pass a request timeout and stay independent of selector resolution.
+  case "$*" in *--request-timeout*) exit 0;; esac
+  if [ "$API_FAIL_DEPLOYMENT" = 1 ]; then exit 1; fi
+  observed=2
+  # The first read after an update can predate the controller observing the new generation.
+  if [ -n "$DEPLOYMENT_LAG_FILE" ] && [ ! -e "$DEPLOYMENT_LAG_FILE" ]; then : > "$DEPLOYMENT_LAG_FILE"; observed=1; fi
+  printf '{"metadata":{"generation":2,"annotations":{"deployment.kubernetes.io/revision":"7"}},"status":{"observedGeneration":%s}}' "$observed";;
+ 'get replicasets') printf '{"items":[{"metadata":{"labels":{"pod-template-hash":"old12"},"annotations":{"deployment.kubernetes.io/revision":"6"}}},{"metadata":{"labels":{"pod-template-hash":"new34"},"annotations":{"deployment.kubernetes.io/revision":"7"}}}]}';;
  'get namespace') if [ "$API_FAIL" = 1 ]; then exit 1; fi; printf '%s' "$NAMESPACE_JSON";;
  'wait --for=create') exit 0;;
  'wait --for=condition=PodScheduled') if [ "$SCHEDULING_NO_MATCH" = 1 ]; then exit 1; fi; exit 0;;
@@ -229,7 +242,7 @@ func TestReadinessChecksAllResources(t *testing.T) {
 	}
 	callText := string(calls)
 	rollout := "rollout status deployment/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
-	pods := "wait --for=condition=Ready pod -l app.kubernetes.io/instance=pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
+	pods := "wait --for=condition=Ready pod -l app.kubernetes.io/instance=pm-r12-pr3,pod-template-hash=new34 -n pm-r12-pr3 --timeout=1s"
 	service := "wait --for=jsonpath={.spec.clusterIP} service/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
 	ingress := "wait --for=jsonpath={.status.loadBalancer.ingress} ingress/pm-r12-pr3 -n pm-r12-pr3 --timeout=1s"
 	checks := []string{rollout, pods, service, ingress}
@@ -280,11 +293,54 @@ func TestReadinessWaitsForPodCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(calls), "wait --for=create --for=condition=PodScheduled pod -l app.kubernetes.io/instance=pm-r12-pr3") {
+	if !strings.Contains(string(calls), "wait --for=create --for=condition=PodScheduled pod -l app.kubernetes.io/instance=pm-r12-pr3,pod-template-hash=new34") {
 		t.Fatalf("scheduling wait did not wait for Pod creation first: %s", calls)
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("HTTP verification requests=%d, want 1", requests.Load())
+	}
+}
+
+// TestReadinessIgnoresReplacedPods keeps a Pod deleted during rollout from failing the attempt.
+func TestReadinessIgnoresReplacedPods(t *testing.T) {
+	x := fakeTools(t, "", false)
+	if err := x.waitReadiness(); err != nil {
+		t.Fatalf("replaced Pod caused readiness failure: %v", err)
+	}
+	calls, err := os.ReadFile(os.Getenv("CALLS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All four Pod waits must share the selector of the current ReplicaSet.
+	if got := strings.Count(string(calls), "pod -l app.kubernetes.io/instance=pm-r12-pr3,pod-template-hash=new34 "); got != 4 {
+		t.Fatalf("Pod waits scoped to the current ReplicaSet = %d, want 4\ncalls: %s", got, calls)
+	}
+}
+
+// TestPodSelectorWaitsForController avoids selecting the old ReplicaSet before the controller converges.
+func TestPodSelectorWaitsForController(t *testing.T) {
+	x := fakeTools(t, "", false)
+	x.o.timeout = 5 * time.Second
+	t.Setenv("DEPLOYMENT_LAG_FILE", filepath.Join(t.TempDir(), "observed"))
+	selector, err := x.currentPodSelector()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "app.kubernetes.io/instance=pm-r12-pr3,pod-template-hash=new34"; selector != want {
+		t.Fatalf("selector = %q, want %q", selector, want)
+	}
+}
+
+// TestPodSelectorReportsAPIFailure keeps API errors from waiting out the whole timeout.
+func TestPodSelectorReportsAPIFailure(t *testing.T) {
+	x := fakeTools(t, "", false)
+	x.o.timeout = time.Minute
+	t.Setenv("API_FAIL_DEPLOYMENT", "1")
+	if err := x.waitReadiness(); err == nil || !strings.Contains(err.Error(), "pod scheduling check failed") {
+		t.Fatalf("error=%v, want pod scheduling check failure", err)
+	}
+	if x.r.FailedStage != "scheduling" {
+		t.Fatalf("failed stage = %q, want scheduling", x.r.FailedStage)
 	}
 }
 

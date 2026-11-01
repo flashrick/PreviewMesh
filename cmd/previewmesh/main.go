@@ -25,6 +25,9 @@ import (
 // domain prefixes labels and annotations owned by PreviewMesh.
 const domain = "previewmesh.local/"
 
+// revisionAnnotation links a Deployment to the ReplicaSet of its current rollout.
+const revisionAnnotation = "deployment.kubernetes.io/revision"
+
 // Match canonical positive decimal identifiers.
 var decimal = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -644,37 +647,109 @@ func healthObservedWithRecorder(ctx context.Context, url, sha string, status *in
 	}
 }
 
+// currentPodTemplateHash returns the Pod template hash of the Deployment's current ReplicaSet.
+// An empty hash without an error means the Deployment controller has not converged yet.
+func (x *runner) currentPodTemplateHash() (string, error) {
+	data, err := x.run(nil, "kubectl", "get", "deployment", x.r.Namespace, "-n", x.r.Namespace, "-o", "json")
+	if err != nil {
+		return "", err
+	}
+	var deployment struct {
+		Metadata struct {
+			Generation  int64
+			Annotations map[string]string
+		}
+		Status struct{ ObservedGeneration int64 }
+	}
+	if err = json.Unmarshal(data, &deployment); err != nil {
+		return "", fmt.Errorf("invalid Deployment response: %w", err)
+	}
+	// The revision annotation is only current once the controller has observed this generation.
+	revision := deployment.Metadata.Annotations[revisionAnnotation]
+	if revision == "" || deployment.Status.ObservedGeneration < deployment.Metadata.Generation {
+		return "", nil
+	}
+	data, err = x.run(nil, "kubectl", "get", "replicasets", "-l", "app.kubernetes.io/instance="+x.r.Namespace, "-n", x.r.Namespace, "-o", "json")
+	if err != nil {
+		return "", err
+	}
+	var replicaSets struct {
+		Items []struct {
+			Metadata struct{ Labels, Annotations map[string]string }
+		}
+	}
+	if err = json.Unmarshal(data, &replicaSets); err != nil {
+		return "", fmt.Errorf("invalid ReplicaSet response: %w", err)
+	}
+	for _, replicaSet := range replicaSets.Items {
+		if replicaSet.Metadata.Annotations[revisionAnnotation] == revision {
+			return replicaSet.Metadata.Labels["pod-template-hash"], nil
+		}
+	}
+	return "", nil
+}
+
+// currentPodSelector limits Pod checks to the Deployment's current ReplicaSet.
+// Replaced Pods keep the instance label while terminating, and kubectl wait fails
+// with NotFound if one of them is deleted during the wait.
+func (x *runner) currentPodSelector() (string, error) {
+	deadline := time.Now().Add(x.o.timeout)
+	for {
+		hash, err := x.currentPodTemplateHash()
+		if err != nil {
+			return "", err
+		}
+		if hash != "" {
+			return "app.kubernetes.io/instance=" + x.r.Namespace + ",pod-template-hash=" + hash, nil
+		}
+		// Only controller lag is retried; API failures above are reported immediately.
+		if !time.Now().Before(deadline) {
+			return "", errors.New("current ReplicaSet was not resolved before the timeout")
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // waitReadiness waits for the workload, Service address, and Ingress controller status.
 func (x *runner) waitReadiness() error {
-	selector := "app.kubernetes.io/instance=" + x.r.Namespace
+	selector := ""
 	timeout := "--timeout=" + x.o.timeout.String()
 	checks := []struct {
-		stage string
-		args  []string
-		err   string
+		stage      string
+		conditions []string
+		err        string
 	}{
 		{
 			stage: "scheduling",
 			// A Deployment update can briefly have no matching Pod while the old Pod is removed.
 			// Wait for creation before checking scheduling so that handoff is not reported as a failure.
-			args: []string{"kubectl", "wait", "--for=create", "--for=condition=PodScheduled", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
-			err:  "pod scheduling check failed",
+			conditions: []string{"--for=create", "--for=condition=PodScheduled"},
+			err:        "pod scheduling check failed",
 		},
 		{
-			stage: "image_pull",
-			args:  []string{"kubectl", "wait", "--for=jsonpath={.status.containerStatuses[0].imageID}", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
-			err:   "image pull check failed",
+			stage:      "image_pull",
+			conditions: []string{"--for=jsonpath={.status.containerStatuses[0].imageID}"},
+			err:        "image pull check failed",
 		},
 		{
-			stage: "container_start",
-			args:  []string{"kubectl", "wait", "--for=jsonpath={.status.containerStatuses[0].state.running.startedAt}", "pod", "-l", selector, "-n", x.r.Namespace, timeout},
-			err:   "container start check failed",
+			stage:      "container_start",
+			conditions: []string{"--for=jsonpath={.status.containerStatuses[0].state.running.startedAt}"},
+			err:        "container start check failed",
 		},
 	}
 	for _, check := range checks {
 		check := check
 		if err := x.stage(check.stage, func() error {
-			if _, err := x.run(nil, check.args[0], check.args[1:]...); err != nil {
+			// Resolve once per readiness pass, inside the first stage so failures keep a stage.
+			if selector == "" {
+				var err error
+				if selector, err = x.currentPodSelector(); err != nil {
+					return fmt.Errorf("%s: %w", check.err, err)
+				}
+			}
+			args := append([]string{"wait"}, check.conditions...)
+			args = append(args, "pod", "-l", selector, "-n", x.r.Namespace, timeout)
+			if _, err := x.run(nil, "kubectl", args...); err != nil {
 				return fmt.Errorf("%s: %w", check.err, err)
 			}
 			return nil
