@@ -221,7 +221,16 @@ def main() -> None:
         after = run_install(home, config, fake_bin)
         after_output = after.stdout + after.stderr
         assert "another deployment management repository" not in after_output
-        assert "systemd is required" in after_output or "sudo -v" in after_output or "Supported:" in after_output, after_output
+        # After state cleanup, install must move past the old-control guard and stop at a host
+        # prerequisite. On WSL the restricted PATH hides powershell.exe, so the interop check is
+        # the first prerequisite reached there.
+        host_prerequisites = (
+            "systemd is required",
+            "sudo -v",
+            "Supported:",
+            "Enable WSL Windows interoperability",
+        )
+        assert any(message in after_output for message in host_prerequisites), after_output
 
     print("Cleanup checks passed: selective removal, token handling, install resume boundary, dry-run and non-interactive guard.")
 
